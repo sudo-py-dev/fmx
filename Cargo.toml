@@ -1,0 +1,33 @@
+[package]
+name = "muxr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A lightweight, fast media converter (video, audio, image, PDF) with a clean GUI"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "persistence",
+    "wayland",
+    "x11",
+] }
+image = { version = "0.25", default-features = false, features = [
+    "bmp", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
+] }
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
