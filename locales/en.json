@@ -394,5 +394,8 @@
   "ytdlp.unsupported": "No ready-made yt-dlp for this system. Install yt-dlp yourself, then press Scan again.",
   "availability.ytdlp_offer": "Needs yt-dlp — open the tool to download it.",
   "settings.ytdlp_hint": "Video sites change often. If downloads stop working, update yt-dlp.",
-  "error.download_failed": "Download failed. If this keeps happening, update yt-dlp in Settings."
+  "error.download_failed": "Download failed. If this keeps happening, update yt-dlp in Settings.",
+  "action.paste": "Paste",
+  "hint.paste_url": "Paste the address you copied (Ctrl+V also works).",
+  "need.ytdlp": "Download yt-dlp above to continue."
 }

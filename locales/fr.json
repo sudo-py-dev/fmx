@@ -393,5 +393,8 @@
   "ytdlp.unsupported": "Aucun yt-dlp prêt à l’emploi pour ce système. Installez yt-dlp, puis cliquez sur Rechercher à nouveau.",
   "availability.ytdlp_offer": "Nécessite yt-dlp — ouvrez l’outil pour le télécharger.",
   "settings.ytdlp_hint": "Les sites de vidéos changent souvent. Si les téléchargements ne marchent plus, mettez yt-dlp à jour.",
-  "error.download_failed": "Le téléchargement a échoué. Si cela se répète, mettez yt-dlp à jour dans les Paramètres."
+  "error.download_failed": "Le téléchargement a échoué. Si cela se répète, mettez yt-dlp à jour dans les Paramètres.",
+  "action.paste": "Coller",
+  "hint.paste_url": "Collez l’adresse copiée (Ctrl+V fonctionne aussi).",
+  "need.ytdlp": "Téléchargez yt-dlp ci-dessus pour continuer."
 }

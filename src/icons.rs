@@ -27,6 +27,7 @@ pub const CARET_RIGHT: &str = "\u{E13A}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const CHECK: &str = "\u{E182}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
+pub const CLIPBOARD: &str = "\u{E196}";
 pub const DISC: &str = "\u{E564}";
 pub const EYE: &str = "\u{E220}";
 pub const DOWNLOAD: &str = "\u{E20C}";
@@ -98,6 +99,7 @@ mod tests {
             CARET_UP,
             CHECK,
             CHECK_CIRCLE,
+            CLIPBOARD,
             DISC,
             EYE,
             DOWNLOAD,

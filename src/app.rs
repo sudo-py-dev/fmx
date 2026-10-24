@@ -185,6 +185,8 @@ pub struct MuxrApp {
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
+    /// Put the keyboard in the web-address box on the next frame.
+    focus_url: bool,
     /// Helper programs being downloaded right now.
     installs: Vec<HelperInstall>,
     /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
@@ -233,6 +235,7 @@ impl MuxrApp {
             category: settings.last_tool.category(),
             in_editor: false,
             search: String::new(),
+            focus_url: false,
             installs: Vec::new(),
             preview_index: 0,
             details: HashMap::new(),
@@ -263,6 +266,7 @@ impl MuxrApp {
         self.settings.last_tool = tool;
         self.category = tool.category();
         self.in_editor = true;
+        self.focus_url = tool.input_kind() == InputKind::Url;
     }
 
     fn open_category(&mut self, category: Category) {
@@ -454,6 +458,12 @@ impl MuxrApp {
 
     /// What is still missing before the tool can run, in plain words.
     fn blocker(&self) -> Option<String> {
+        // Inside the tool, the setup card for yt-dlp is right above.
+        if self.toolbox.missing(self.tool.requires()) == Some(External::YtDlp)
+            && Helper::YtDlp.offered()
+        {
+            return Some(tr("need.ytdlp").to_owned());
+        }
         self.unavailable_reason(self.tool)
             .or_else(|| self.input_missing())
             .or_else(|| {
@@ -533,6 +543,19 @@ impl MuxrApp {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&ENQUEUE)) && self.can_enqueue() {
             self.enqueue();
+        }
+        // In the downloader, Ctrl+V works even when the address box isn't selected.
+        if self.in_editor
+            && self.tool.input_kind() == InputKind::Url
+            && ctx.memory(|m| m.focused().is_none())
+            && let Some(text) = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Paste(text) => Some(text.clone()),
+                    _ => None,
+                })
+            })
+        {
+            self.url = text.trim().to_owned();
         }
     }
 
@@ -1262,14 +1285,38 @@ impl MuxrApp {
         }
     }
 
+    /// The web-address box with a Paste button beside it.
     fn url_input(&mut self, ui: &mut egui::Ui) {
-        ui.add(
-            TextEdit::singleline(&mut self.url)
-                .hint_text("https://…")
-                .font(egui::FontId::proportional(16.0))
-                .margin(Margin::symmetric(10, 8))
-                .desired_width(f32::INFINITY),
-        );
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let paste = widgets::button(
+                    ui,
+                    Some(icons::CLIPBOARD),
+                    tr("action.paste"),
+                    Kind::Secondary,
+                    Size::Regular,
+                    true,
+                )
+                .on_hover_text(tr("hint.paste_url"))
+                .clicked();
+                let edit = ui.add(
+                    TextEdit::singleline(&mut self.url)
+                        .hint_text("https://…")
+                        .font(egui::FontId::proportional(16.0))
+                        .margin(Margin::symmetric(10, 8))
+                        .desired_width(f32::INFINITY),
+                );
+                if paste {
+                    // Replace whatever was there with the clipboard's address.
+                    self.url.clear();
+                    edit.request_focus();
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                } else if std::mem::take(&mut self.focus_url) {
+                    edit.request_focus();
+                }
+            });
+        });
     }
 
     /// The add buttons, then the files, or a drop zone while there are none.

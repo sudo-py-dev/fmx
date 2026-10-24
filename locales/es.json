@@ -393,5 +393,8 @@
   "ytdlp.unsupported": "No hay yt-dlp listo para este sistema. Instala yt-dlp y pulsa Buscar de nuevo.",
   "availability.ytdlp_offer": "Necesita yt-dlp: abre la herramienta para descargarlo.",
   "settings.ytdlp_hint": "Los sitios de vídeo cambian a menudo. Si las descargas dejan de funcionar, actualiza yt-dlp.",
-  "error.download_failed": "La descarga falló. Si vuelve a pasar, actualiza yt-dlp en Ajustes."
+  "error.download_failed": "La descarga falló. Si vuelve a pasar, actualiza yt-dlp en Ajustes.",
+  "action.paste": "Pegar",
+  "hint.paste_url": "Pega la dirección que copiaste (también funciona Ctrl+V).",
+  "need.ytdlp": "Descarga yt-dlp arriba para continuar."
 }

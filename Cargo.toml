@@ -11,6 +11,7 @@ calamine = "0.37.0"
 dirs = "6"
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
+    "clipboard",
     "default_fonts",
     "glow",
     "persistence",
@@ -34,6 +35,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
 ttf-parser = "0.25"
 ureq = "3"
+# GNOME-style (Adwaita) title bar with a title and real close/minimize/maximize
+# buttons on Wayland; without it winit draws a bare fallback frame.
+winit = { version = "0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
