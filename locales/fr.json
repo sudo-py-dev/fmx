@@ -119,8 +119,8 @@
   "desc.pdf_to_images": "Rend chaque page du PDF en image.",
   "desc.pdf_to_text": "Extrait le texte d’un PDF en conservant la mise en page.",
   "desc.pdf_to_html": "Transforme un PDF en une seule page HTML.",
-  "desc.pdf_to_word": "Convertit un PDF en document Word modifiable avec LibreOffice.",
-  "desc.office_to_pdf": "Convertit des fichiers Word, Excel, PowerPoint et OpenDocument en PDF avec LibreOffice.",
+  "desc.pdf_to_word": "Convertit un PDF en document Word modifiable (texte et sauts de page).",
+  "desc.office_to_pdf": "Convertit Word, Excel, PowerPoint, OpenDocument, CSV, Markdown, HTML et texte en PDF, sans suite bureautique.",
   "desc.pdf_merge": "Fusionne des PDF en un seul, dans l’ordre de la liste.",
   "desc.pdf_split": "Enregistre chaque page d’un PDF dans son propre fichier.",
   "desc.pdf_compress": "Réduit un PDF en sous-échantillonnant ses images (Ghostscript).",
@@ -307,5 +307,15 @@
   "grid.results": "Résultats de recherche",
   "grid.search": "Rechercher un outil…",
   "grid.no_results": "Aucun outil ne correspond à votre recherche.",
-  "grid.hint": "Choisissez un outil pour ajouter des fichiers et régler les options. Vous pouvez aussi déposer des fichiers dans la fenêtre."
+  "grid.hint": "Choisissez un outil pour ajouter des fichiers et régler les options. Vous pouvez aussi déposer des fichiers dans la fenêtre.",
+  "setup.title": "Les outils multimédia ont besoin de ffmpeg",
+  "setup.body": "Muxr peut télécharger sa propre copie vérifiée (ffmpeg {version}) dans son dossier de données. Rien n’est installé sur le système.",
+  "setup.download": "Télécharger ffmpeg ({mb} Mo)",
+  "setup.done": "ffmpeg est prêt. Les outils multimédia sont activés.",
+  "setup.unsupported": "Aucun ffmpeg prêt pour ce système. Installez ffmpeg ou choisissez-le dans Paramètres.",
+  "setup.network": "Échec du téléchargement : {error}",
+  "setup.checksum": "Le téléchargement ne correspondait pas à sa somme de contrôle et a été supprimé.",
+  "setup.too_large": "L’archive téléchargée avait une taille inattendue et a été supprimée.",
+  "error.bad_document": "Impossible de lire le document : {detail}",
+  "error.legacy_office": "Les anciens fichiers .{ext} nécessitent LibreOffice. Enregistrez-le en .docx/.pptx/.xlsx ou installez LibreOffice."
 }

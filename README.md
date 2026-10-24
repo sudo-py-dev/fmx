@@ -38,23 +38,31 @@ overwrite existing files, and failed jobs leave no partial files behind.
 
 ## Requirements
 
-The image, Images → PDF and ISO ↔ CSO tools are built in. Everything else uses helper programs,
-which Muxr finds next to its executable or on `PATH`. A tool whose helper is missing is greyed out
-and says what to install.
+**Nothing has to be installed.**
+
+- **ffmpeg:** media tools use ffmpeg, which Muxr finds in this order: the path set in Settings, next
+  to the `muxr` executable, on `PATH`, then Muxr's own copy. If none exists, Muxr offers to
+  download a static ffmpeg 6.1.1 build (about 20–30 MB) into its data folder
+  (`~/.local/share/muxr` on Linux). The download is checked against its published SHA-256 before
+  use, and nothing is installed system-wide.
+- **Documents:** Office → PDF is built in. It reads DOCX, ODT, PPTX, ODP, XLSX, XLS, ODS, CSV,
+  Markdown, HTML, RTF and text, and writes PDFs with an embedded Unicode font. PDF → Word writes
+  DOCX natively. Only old binary `.doc`/`.ppt` files need LibreOffice, and only if you convert them.
+- **Images, Images → PDF, PDF → Excel, ISO ↔ CSO, DVD/CD → ISO** are built in.
+
+Optional helpers turn on extra tools when present (found next to the app or on `PATH`):
 
 | Helper | Used for | Debian/Ubuntu package |
 |---|---|---|
-| ffmpeg | all video/audio tools, DVD/CD ripping, screen recording | `ffmpeg` |
-| Poppler | PDF → images/TXT/HTML, merge and split PDF | `poppler-utils` |
+| Poppler | PDF → images/TXT/HTML/Word/Excel, merge and split PDF | `poppler-utils` |
 | Ghostscript | compress PDF | `ghostscript` |
-| LibreOffice | Office → PDF, PDF → Word | `libreoffice` |
 | Calibre | eBook conversions | `calibre` |
 | xorriso | folder → ISO | `xorriso` |
-| Monkey's Audio | APE output | `monkeys-audio` |
 | yt-dlp | video downloader | `yt-dlp` |
+| Monkey's Audio | APE output | `monkeys-audio` |
+| LibreOffice | legacy `.doc`/`.ppt` → PDF | `libreoffice` |
 
-You can point Muxr at a specific ffmpeg in **Settings**. Formats your ffmpeg build cannot encode,
-such as AMR without `libopencore_amrnb`, are greyed out too.
+Formats your ffmpeg build cannot encode, such as AMR without `libopencore_amrnb`, are greyed out.
 
 On Wayland the screen recorder can only capture X11 (XWayland) windows, because ffmpeg has no
 Wayland capture. Log in to an X11 session to record the whole desktop.

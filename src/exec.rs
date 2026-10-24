@@ -7,11 +7,13 @@ use std::sync::atomic::AtomicBool;
 use crate::catalog::{AudioFormat, Tool};
 use crate::cso;
 use crate::disc;
-use crate::docs::{self, OfficeTarget};
+use crate::docs;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::imaging;
 use crate::jobs::{JobError, JobSpec};
+use crate::office;
+use crate::pdfgen;
 use crate::plan::{self, BLURAY_PROTOCOL, CD_DEMUXER, DVD_DEMUXER, Input, PlanError};
 use crate::process::{self, StopMode, Watch};
 use crate::sheet;
@@ -128,8 +130,8 @@ fn run_tool(
             &docs::pdf_compress(first_input(spec)?, out, opts.quality),
             cancel,
         ),
-        Tool::OfficeToPdf => office(spec, toolbox, cancel, OfficeTarget::Pdf),
-        Tool::PdfToWord => office(spec, toolbox, cancel, OfficeTarget::Docx),
+        Tool::OfficeToPdf => office_to_pdf(spec, toolbox, cancel),
+        Tool::PdfToWord => pdf_to_word(spec, toolbox, cancel),
         Tool::ToEbook(_) => run_plain(
             need(toolbox, External::EbookConvert)?,
             &docs::ebook_convert(first_input(spec)?, out),
@@ -220,6 +222,44 @@ fn run_tool(
     }
 }
 
+/// Renders a document to PDF natively. Old binary .doc/.ppt files need
+/// LibreOffice, which is used only if it happens to be installed.
+fn office_to_pdf(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
+    let input = first_input(spec)?;
+    let ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !office::NATIVE_EXTENSIONS.contains(&ext.as_str())
+        && toolbox.get(External::Soffice).is_some()
+    {
+        return office(spec, toolbox, cancel);
+    }
+    let blocks = office::read_document(input).map_err(JobError::Office)?;
+    pdfgen::render(&blocks, &spec.output).map_err(|e| match e {
+        pdfgen::PdfError::Io(e) => JobError::Io(e),
+        pdfgen::PdfError::Font => JobError::Io(std::io::Error::other("font")),
+    })
+}
+
+/// Lays out the PDF's text with Poppler and writes it as a Word document.
+fn pdf_to_word(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
+    let input = first_input(spec)?;
+    let parent = spec.output.parent().unwrap_or(Path::new("."));
+    let text_file = tempfile::Builder::new()
+        .suffix(".txt")
+        .tempfile_in(parent)
+        .map_err(JobError::Io)?;
+    run_plain(
+        need(toolbox, External::Pdftotext)?,
+        &docs::pdf_to_text(input, text_file.path()),
+        cancel,
+    )?;
+    let text = std::fs::read_to_string(text_file.path()).map_err(JobError::Io)?;
+    office::write_docx(&office::text_pages(&text), &spec.output).map_err(JobError::Office)
+}
+
 /// LibreOffice writes `<stem>.<ext>` into an output folder; convert into a
 /// private folder beside the destination, then move the result into place.
 /// Lays out the PDF's text with Poppler, then writes one sheet per page.
@@ -283,24 +323,15 @@ fn to_ape(
     run_plain(mac, &args, cancel)
 }
 
-fn office(
-    spec: &JobSpec,
-    toolbox: &Toolbox,
-    cancel: &AtomicBool,
-    target: OfficeTarget,
-) -> Result<(), JobError> {
+fn office(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
     let input = first_input(spec)?;
     let soffice = need(toolbox, External::Soffice)?;
     let parent = spec.output.parent().unwrap_or(Path::new("."));
     let staging = tempfile::tempdir_in(parent).map_err(JobError::Io)?;
     let profile = tempfile::tempdir().map_err(JobError::Io)?;
-    let args = docs::office_convert(input, staging.path(), profile.path(), target);
+    let args = docs::office_to_pdf(input, staging.path(), profile.path());
     run_plain(soffice, &args, cancel)?;
-    let ext = if target == OfficeTarget::Pdf {
-        "pdf"
-    } else {
-        "docx"
-    };
+    let ext = "pdf";
     let stem = input.file_stem().ok_or(JobError::NoOutput)?;
     let produced = staging.path().join(stem).with_extension(ext);
     if !produced.is_file() {
@@ -802,5 +833,160 @@ mod e2e {
         )
         .expect("probe");
         assert!(info.has_video);
+    }
+}
+
+/// Office → PDF with no helper programs at all: the toolbox is empty.
+#[cfg(test)]
+mod office_e2e {
+    use super::*;
+    use crate::options::Options;
+    use std::io::Write as _;
+
+    fn zip_with(path: &Path, files: &[(&str, &str)]) {
+        let file = std::fs::File::create(path).expect("create");
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, body) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .expect("entry");
+            zip.write_all(body.as_bytes()).expect("write");
+        }
+        zip.finish().expect("finish");
+    }
+
+    fn fixtures(dir: &Path) -> Vec<(PathBuf, &'static str)> {
+        let docx = dir.join("report.docx");
+        crate::office::write_docx(
+            &[vec!["Docx heading text".into(), "Second paragraph".into()]],
+            &docx,
+        )
+        .expect("docx");
+        let xlsx = dir.join("sheet.xlsx");
+        let mut wb = rust_xlsxwriter::Workbook::new();
+        let ws = wb.add_worksheet();
+        ws.write_string(0, 0, "Fruit").expect("cell");
+        ws.write_string(1, 0, "Mango").expect("cell");
+        ws.write_number(1, 1, 42.0).expect("cell");
+        wb.save(&xlsx).expect("xlsx");
+        let pptx = dir.join("deck.pptx");
+        zip_with(
+            &pptx,
+            &[(
+                "ppt/slides/slide1.xml",
+                r#"<p:sld xmlns:p="p" xmlns:a="a"><a:p><a:r><a:t>Slide title</a:t></a:r></a:p><a:p><a:r><a:t>Bullet one</a:t></a:r></a:p></p:sld>"#,
+            )],
+        );
+        let odt = dir.join("letter.odt");
+        zip_with(
+            &odt,
+            &[(
+                "content.xml",
+                r#"<office:document-content xmlns:office="o" xmlns:text="t"><office:body><office:text><text:h text:outline-level="1">Odt heading</text:h><text:p>Dear reader</text:p></office:text></office:body></office:document-content>"#,
+            )],
+        );
+        let csv = dir.join("data.csv");
+        std::fs::write(&csv, "name,qty\nwidget,7\n").expect("csv");
+        let html = dir.join("page.html");
+        std::fs::write(&html, "<h1>Html heading</h1><p>Body &amp; soul</p>").expect("html");
+        let md = dir.join("notes.md");
+        std::fs::write(&md, "# Notes\n\n- remember milk\n").expect("md");
+        vec![
+            (docx, "Docx heading text"),
+            (xlsx, "Mango"),
+            (pptx, "Slide title"),
+            (odt, "Odt heading"),
+            (csv, "widget"),
+            (html, "Body & soul"),
+            (md, "remember milk"),
+        ]
+    }
+
+    #[test]
+    fn office_documents_convert_without_helpers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let empty = Toolbox::default();
+        let pdftotext = Toolbox::detect(None)
+            .get(External::Pdftotext)
+            .map(Path::to_path_buf);
+        for (input, needle) in fixtures(dir.path()) {
+            let output = input.with_extension("pdf");
+            let spec = JobSpec {
+                tool: Tool::OfficeToPdf,
+                inputs: vec![input.clone()],
+                url: None,
+                output: output.clone(),
+                options: Options::default(),
+            };
+            execute(&spec, &empty, &AtomicBool::new(false), |_| {})
+                .unwrap_or_else(|e| panic!("{}: {e}", input.display()));
+            let bytes = std::fs::read(&output).expect("pdf");
+            assert!(bytes.starts_with(b"%PDF-"), "{}", input.display());
+            if let Some(tool) = &pdftotext {
+                let out = std::process::Command::new(tool)
+                    .arg(&output)
+                    .arg("-")
+                    .output()
+                    .expect("pdftotext");
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    text.contains(needle),
+                    "{}: {needle:?} not in {text:?}",
+                    input.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_doc_without_libreoffice_explains_itself() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let input = dir.path().join("old.doc");
+        std::fs::write(&input, b"\xd0\xcf\x11\xe0").expect("doc");
+        let spec = JobSpec {
+            tool: Tool::OfficeToPdf,
+            inputs: vec![input],
+            url: None,
+            output: dir.path().join("old.pdf"),
+            options: Options::default(),
+        };
+        let err = execute(&spec, &Toolbox::default(), &AtomicBool::new(false), |_| {})
+            .expect_err("needs LibreOffice");
+        assert!(err.to_string().contains("LibreOffice"), "{err}");
+    }
+
+    #[test]
+    fn pdf_to_word_round_trip() {
+        let Some(_) = Toolbox::detect(None).get(External::Pdftotext) else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pdf = dir.path().join("in.pdf");
+        crate::pdfgen::render(
+            &[crate::pdfgen::Block::Paragraph(vec![
+                crate::pdfgen::Span::plain("Round trip words"),
+            ])],
+            &pdf,
+        )
+        .expect("pdf");
+        let docx = dir.path().join("out.docx");
+        let spec = JobSpec {
+            tool: Tool::PdfToWord,
+            inputs: vec![pdf],
+            url: None,
+            output: docx.clone(),
+            options: Options::default(),
+        };
+        execute(
+            &spec,
+            &Toolbox::detect(None),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .expect("pdf to word");
+        let text = format!(
+            "{:?}",
+            crate::office::read_document(&docx).expect("read docx")
+        );
+        assert!(text.contains("Round trip words"), "{text}");
     }
 }

@@ -705,8 +705,8 @@ impl InputKind {
             ],
             Self::Pdf => &["pdf"],
             Self::Documents => &[
-                "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp",
-                "txt", "html",
+                "docx", "odt", "rtf", "xlsx", "xlsm", "xls", "ods", "csv", "tsv", "pptx", "odp",
+                "txt", "md", "html", "htm", "doc", "ppt",
             ],
             Self::Ebooks => &[
                 "epub", "mobi", "azw3", "azw", "fb2", "pdf", "txt", "docx", "html", "lit", "pdb",
@@ -885,7 +885,9 @@ impl Tool {
             Self::PdfMerge => &[External::Pdfunite],
             Self::PdfSplit => &[External::Pdfseparate],
             Self::PdfCompress => &[External::Ghostscript],
-            Self::OfficeToPdf | Self::PdfToWord => &[External::Soffice],
+            // Native readers and writers; LibreOffice is only an optional extra for .doc/.ppt.
+            Self::OfficeToPdf => &[],
+            Self::PdfToWord => &[External::Pdftotext],
             Self::ToEbook(_) => &[External::EbookConvert],
             Self::FolderToIso => &[External::Xorriso],
             Self::Download => &[External::YtDlp, External::Ffmpeg],

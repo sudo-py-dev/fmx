@@ -81,33 +81,13 @@ pub fn pdf_compress(input: &Path, output: &Path, quality: Quality) -> Vec<OsStri
     args
 }
 
-/// What LibreOffice should produce.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OfficeTarget {
-    Pdf,
-    Docx,
-}
-
-/// LibreOffice headless conversion into `out_dir`, isolated in its own
+/// LibreOffice headless conversion to PDF into `out_dir`, isolated in its own
 /// profile so it never collides with a running office instance.
-pub fn office_convert(
-    input: &Path,
-    out_dir: &Path,
-    profile_dir: &Path,
-    target: OfficeTarget,
-) -> Vec<OsString> {
+pub fn office_to_pdf(input: &Path, out_dir: &Path, profile_dir: &Path) -> Vec<OsString> {
     let mut profile = OsString::from("-env:UserInstallation=file://");
     profile.push(profile_dir.as_os_str());
     let mut args = vec![profile];
-    args.extend(os(&["--headless", "--norestore"]));
-    match target {
-        OfficeTarget::Pdf => args.extend(os(&["--convert-to", "pdf"])),
-        OfficeTarget::Docx => args.extend(os(&[
-            "--infilter=writer_pdf_import",
-            "--convert-to",
-            "docx:MS Word 2007 XML",
-        ])),
-    }
+    args.extend(os(&["--headless", "--norestore", "--convert-to", "pdf"]));
     args.extend(["--outdir".into(), out_dir.into(), input.into()]);
     args
 }
@@ -246,21 +226,13 @@ mod tests {
 
     #[test]
     fn office_uses_isolated_profile() {
-        let t = text(&office_convert(
-            Path::new("/a.docx"),
+        let t = text(&office_to_pdf(
+            Path::new("/a.doc"),
             Path::new("/o"),
             Path::new("/tmp/p"),
-            OfficeTarget::Pdf,
         ));
         assert!(t.starts_with("-env:UserInstallation=file:///tmp/p --headless"));
-        assert!(t.ends_with("--convert-to pdf --outdir /o /a.docx"));
-        let docx = text(&office_convert(
-            Path::new("/a.pdf"),
-            Path::new("/o"),
-            Path::new("/p"),
-            OfficeTarget::Docx,
-        ));
-        assert!(docx.contains("--infilter=writer_pdf_import"));
+        assert!(t.ends_with("--convert-to pdf --outdir /o /a.doc"));
     }
 
     #[test]

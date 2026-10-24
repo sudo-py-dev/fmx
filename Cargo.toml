@@ -7,6 +7,8 @@ description = "A lightweight, fast all-in-one media, document and disc converter
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+calamine = "0.37.0"
+dirs = "6"
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "default_fonts",
@@ -15,18 +17,24 @@ eframe = { version = "0.37", default-features = false, features = [
     "wayland",
     "x11",
 ] }
+epaint_default_fonts = "0.37"
 flate2 = "1.1.10"
 image = { version = "0.25", default-features = false, features = [
     "bmp", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
+quick-xml = "0.42"
 rayon = "1.12.0"
 rfd = "0.17"
 rust_xlsxwriter = "0.96.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+ttf-parser = "0.25"
+ureq = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

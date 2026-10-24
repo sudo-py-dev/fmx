@@ -120,8 +120,8 @@
   "desc.pdf_to_images": "Render every PDF page as an image.",
   "desc.pdf_to_text": "Extract the text of a PDF, keeping its layout.",
   "desc.pdf_to_html": "Turn a PDF into a single HTML page.",
-  "desc.pdf_to_word": "Convert a PDF into an editable Word document with LibreOffice.",
-  "desc.office_to_pdf": "Convert Word, Excel, PowerPoint and OpenDocument files to PDF with LibreOffice.",
+  "desc.pdf_to_word": "Convert a PDF into an editable Word document (text and page breaks).",
+  "desc.office_to_pdf": "Convert Word, Excel, PowerPoint, OpenDocument, CSV, Markdown, HTML and text files to PDF — built in, no office suite needed.",
   "desc.pdf_merge": "Combine PDFs into one, in list order.",
   "desc.pdf_split": "Save every page of a PDF as its own file.",
   "desc.pdf_compress": "Shrink a PDF by downsampling its images (Ghostscript).",
@@ -308,5 +308,15 @@
   "grid.results": "Search results",
   "grid.search": "Search tools…",
   "grid.no_results": "No tool matches your search.",
-  "grid.hint": "Pick a tool to add files and set options. You can also drop files anywhere in the window."
+  "grid.hint": "Pick a tool to add files and set options. You can also drop files anywhere in the window.",
+  "setup.title": "Media tools need ffmpeg",
+  "setup.body": "Muxr can download its own verified copy (ffmpeg {version}) into its data folder. Nothing is installed system-wide.",
+  "setup.download": "Download ffmpeg ({mb} MB)",
+  "setup.done": "ffmpeg is ready. Media tools are enabled.",
+  "setup.unsupported": "No ready-made ffmpeg for this system. Install ffmpeg or choose it in Settings.",
+  "setup.network": "Download failed: {error}",
+  "setup.checksum": "The download did not match its published checksum and was discarded.",
+  "setup.too_large": "The downloaded archive unpacked to an unexpected size and was discarded.",
+  "error.bad_document": "Could not read the document: {detail}",
+  "error.legacy_office": "Old .{ext} files need LibreOffice. Save the file as .docx/.pptx/.xlsx, or install LibreOffice."
 }

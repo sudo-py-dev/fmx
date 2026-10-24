@@ -2,7 +2,8 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -16,6 +17,7 @@ use crate::catalog::{
 };
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
+use crate::ffmpeg_setup;
 use crate::i18n::{self, tr, trf};
 use crate::icons;
 use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
@@ -42,6 +44,14 @@ const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
 const MAX_SCAN_FILES: usize = 10_000;
 /// Progress below this is too early to estimate time left.
 const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
+
+/// A running download of Muxr's own ffmpeg.
+struct FfmpegInstall {
+    /// Progress as `f32` bits.
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+    rx: mpsc::Receiver<Result<PathBuf, String>>,
+}
 
 /// What happens once the whole queue has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +89,7 @@ pub struct MuxrApp {
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
+    ffmpeg_install: Option<FfmpegInstall>,
     after_done: AfterDone,
     was_busy: bool,
     shutdown_at: Option<Instant>,
@@ -118,6 +129,7 @@ impl MuxrApp {
             category: settings.last_tool.category(),
             in_editor: false,
             search: String::new(),
+            ffmpeg_install: None,
             after_done: AfterDone::Nothing,
             was_busy: false,
             shutdown_at: None,
@@ -644,6 +656,10 @@ impl MuxrApp {
             });
         });
         ui.add_space(12.0);
+        if self.toolbox.get(External::Ffmpeg).is_none() {
+            self.ffmpeg_setup_card(ui);
+            ui.add_space(12.0);
+        }
         let needle = self.search.trim().to_lowercase();
         let tools: Vec<Tool> = if searching {
             Category::ALL
@@ -716,6 +732,12 @@ impl MuxrApp {
         if let Some(reason) = self.unavailable_reason(self.tool) {
             ui.add_space(4.0);
             widgets::chip(ui, icons::WARNING, &reason, p.warning);
+        }
+        if self.tool.requires().contains(&External::Ffmpeg)
+            && self.toolbox.get(External::Ffmpeg).is_none()
+        {
+            ui.add_space(10.0);
+            self.ffmpeg_setup_card(ui);
         }
         ui.add_space(10.0);
         card(ui, |ui| match self.tool.input_kind() {
@@ -1701,6 +1723,124 @@ impl MuxrApp {
         }
     }
 
+    fn start_ffmpeg_install(&mut self, ctx: &egui::Context) {
+        let progress = Arc::new(AtomicU32::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (thread_progress, thread_cancel, ctx) =
+            (Arc::clone(&progress), Arc::clone(&cancel), ctx.clone());
+        std::thread::spawn(move || {
+            let result = ffmpeg_setup::install(&thread_cancel, |p| {
+                thread_progress.store(p.to_bits(), Ordering::Relaxed);
+                ctx.request_repaint();
+            })
+            .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.ffmpeg_install = Some(FfmpegInstall {
+            progress,
+            cancel,
+            rx,
+        });
+    }
+
+    fn poll_ffmpeg_install(&mut self) {
+        let Some(task) = &self.ffmpeg_install else {
+            return;
+        };
+        let Ok(result) = task.rx.try_recv() else {
+            return;
+        };
+        self.ffmpeg_install = None;
+        match result {
+            Ok(_) => {
+                self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
+                self.toasts.push(ToastKind::Success, tr("setup.done"));
+            }
+            Err(message) => self.toasts.push(ToastKind::Error, message),
+        }
+    }
+
+    /// The download button, or progress and Cancel while it runs.
+    fn ffmpeg_install_controls(&mut self, ui: &mut egui::Ui) {
+        if let Some(task) = &self.ffmpeg_install {
+            let fraction = f32::from_bits(task.progress.load(Ordering::Relaxed));
+            let cancel = Arc::clone(&task.cancel);
+            ui.horizontal(|ui| {
+                widgets::progress(
+                    ui,
+                    egui::Id::unique("ffmpeg_download"),
+                    fraction,
+                    format!("{:.0}%", fraction * 100.0),
+                    PROGRESS_WIDTH,
+                );
+                if widgets::button(
+                    ui,
+                    Some(icons::X),
+                    tr("action.cancel"),
+                    Kind::Ghost,
+                    Size::Small,
+                    true,
+                )
+                .clicked()
+                {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            });
+        } else if ffmpeg_setup::build_for_this_platform().is_some() {
+            let label = trf(
+                "setup.download",
+                &[(
+                    "mb",
+                    &(ffmpeg_setup::build_for_this_platform().map_or(0, |b| b.size) / 1_000_000),
+                )],
+            );
+            if widgets::button_tinted(
+                ui,
+                Some(icons::DOWNLOAD),
+                Some(art::hue::BLUE),
+                &label,
+                Kind::Primary,
+                Size::Regular,
+                true,
+            )
+            .clicked()
+            {
+                self.start_ffmpeg_install(ui.ctx());
+            }
+        } else {
+            ui.label(RichText::new(tr("setup.unsupported")).weak());
+        }
+    }
+
+    /// Explains that media tools need ffmpeg and offers Muxr's own copy.
+    fn ffmpeg_setup_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::icon_tile(
+                    ui,
+                    art::Art {
+                        glyph: art::glyph::FILM_STRIP,
+                        hue: art::hue::BLUE,
+                    },
+                    40.0,
+                    true,
+                );
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(tr("setup.title")).strong());
+                    ui.label(
+                        RichText::new(trf("setup.body", &[("version", &ffmpeg_setup::VERSION)]))
+                            .weak(),
+                    );
+                    ui.add_space(6.0);
+                    self.ffmpeg_install_controls(ui);
+                });
+            });
+        });
+    }
+
     fn ffmpeg_setting(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
         match self.toolbox.get(External::Ffmpeg) {
@@ -1709,6 +1849,7 @@ impl MuxrApp {
             }
             None => {
                 widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
+                self.ffmpeg_install_controls(ui);
             }
         }
         ui.horizontal(|ui| {
@@ -2205,6 +2346,7 @@ impl eframe::App for MuxrApp {
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
         self.check_after_done(&ctx);
+        self.poll_ffmpeg_install();
         let p = theme::palette(ui);
 
         let bar = |fill| {

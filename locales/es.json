@@ -119,8 +119,8 @@
   "desc.pdf_to_images": "Convierte cada página del PDF en una imagen.",
   "desc.pdf_to_text": "Extrae el texto de un PDF conservando su diseño.",
   "desc.pdf_to_html": "Convierte un PDF en una sola página HTML.",
-  "desc.pdf_to_word": "Convierte un PDF en un documento de Word editable con LibreOffice.",
-  "desc.office_to_pdf": "Convierte archivos de Word, Excel, PowerPoint y OpenDocument a PDF con LibreOffice.",
+  "desc.pdf_to_word": "Convierte un PDF en un documento de Word editable (texto y saltos de página).",
+  "desc.office_to_pdf": "Convierte Word, Excel, PowerPoint, OpenDocument, CSV, Markdown, HTML y texto a PDF, sin suite ofimática.",
   "desc.pdf_merge": "Une varios PDF en uno, en el orden de la lista.",
   "desc.pdf_split": "Guarda cada página de un PDF como archivo propio.",
   "desc.pdf_compress": "Reduce un PDF reduciendo la resolución de sus imágenes (Ghostscript).",
@@ -307,5 +307,15 @@
   "grid.results": "Resultados de búsqueda",
   "grid.search": "Buscar herramientas…",
   "grid.no_results": "Ninguna herramienta coincide con la búsqueda.",
-  "grid.hint": "Elige una herramienta para añadir archivos y ajustar opciones. También puedes soltar archivos en la ventana."
+  "grid.hint": "Elige una herramienta para añadir archivos y ajustar opciones. También puedes soltar archivos en la ventana.",
+  "setup.title": "Las herramientas multimedia necesitan ffmpeg",
+  "setup.body": "Muxr puede descargar su propia copia verificada (ffmpeg {version}) en su carpeta de datos. No se instala nada en el sistema.",
+  "setup.download": "Descargar ffmpeg ({mb} MB)",
+  "setup.done": "ffmpeg está listo. Las herramientas multimedia están activas.",
+  "setup.unsupported": "No hay ffmpeg listo para este sistema. Instala ffmpeg o elígelo en Ajustes.",
+  "setup.network": "La descarga falló: {error}",
+  "setup.checksum": "La descarga no coincidía con su suma de verificación y se descartó.",
+  "setup.too_large": "El archivo descargado tenía un tamaño inesperado y se descartó.",
+  "error.bad_document": "No se pudo leer el documento: {detail}",
+  "error.legacy_office": "Los archivos .{ext} antiguos necesitan LibreOffice. Guárdalo como .docx/.pptx/.xlsx o instala LibreOffice."
 }

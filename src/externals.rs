@@ -116,6 +116,9 @@ impl Toolbox {
             .filter_map(|ext| {
                 let found = match (ext, ffmpeg_override) {
                     (External::Ffmpeg, Some(path)) => path.is_file().then(|| path.to_path_buf()),
+                    // Muxr's own copy is the fallback when the system has none.
+                    (External::Ffmpeg, None) => find_on_path(ext.binaries())
+                        .or_else(|| crate::ffmpeg_setup::managed_binary().filter(|p| p.is_file())),
                     _ => find_on_path(ext.binaries()),
                 };
                 found.map(|p| (ext, p))
