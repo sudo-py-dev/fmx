@@ -16,6 +16,7 @@ use crate::catalog::{
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
+use crate::icons;
 use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
 use crate::options::{
     self, Channels, Corner, DownloadKind, Edit, HwAccel, MixLayout, Quality, Rect, Resolution,
@@ -29,6 +30,7 @@ const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key:
 const SIDEBAR_WIDTH: f32 = 220.0;
 const QUEUE_HEIGHT: f32 = 260.0;
 const PROGRESS_WIDTH: f32 = 180.0;
+const DROP_ZONE_HEIGHT: f32 = 100.0;
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
 /// Task-list files larger than this are refused.
 const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
@@ -79,6 +81,7 @@ pub struct MuxrApp {
 
 impl MuxrApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        icons::install(&cc.egui_ctx);
         let mut settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE_KEY))
@@ -380,9 +383,15 @@ impl MuxrApp {
             ui.separator();
             let counts = self.queue.counts();
             let (label, hint) = if self.queue.is_running {
-                (tr("action.pause"), tr("hint.pause"))
+                (
+                    icons::label(icons::PAUSE, tr("action.pause")),
+                    tr("hint.pause"),
+                )
             } else {
-                (tr("action.start"), tr("hint.start"))
+                (
+                    icons::label(icons::PLAY, tr("action.start")),
+                    tr("hint.start"),
+                )
             };
             if ui.button(label).on_hover_text(hint).clicked() {
                 self.queue.is_running = !self.queue.is_running;
@@ -390,7 +399,7 @@ impl MuxrApp {
             if ui
                 .add_enabled(
                     counts.running + counts.queued > 0,
-                    Button::new(tr("action.stop_all")),
+                    Button::new(icons::label(icons::STOP, tr("action.stop_all"))),
                 )
                 .on_hover_text(tr("hint.stop_all"))
                 .clicked()
@@ -398,7 +407,10 @@ impl MuxrApp {
                 self.queue.cancel_all();
             }
             if ui
-                .add_enabled(counts.failed > 0, Button::new(tr("action.retry")))
+                .add_enabled(
+                    counts.failed > 0,
+                    Button::new(icons::label(icons::ARROW_CLOCKWISE, tr("action.retry"))),
+                )
                 .clicked()
             {
                 self.queue.retry_failed();
@@ -406,17 +418,23 @@ impl MuxrApp {
             if ui
                 .add_enabled(
                     counts.done + counts.failed > 0,
-                    Button::new(tr("action.clear_finished")),
+                    Button::new(icons::label(icons::BROOM, tr("action.clear_finished"))),
                 )
                 .clicked()
             {
                 self.queue.clear_finished();
             }
             ui.separator();
-            if ui.button(tr("action.save_list")).clicked() {
+            if ui
+                .button(icons::label(icons::FLOPPY_DISK, tr("action.save_list")))
+                .clicked()
+            {
                 self.save_task_list();
             }
-            if ui.button(tr("action.load_list")).clicked() {
+            if ui
+                .button(icons::label(icons::FOLDER_OPEN, tr("action.load_list")))
+                .clicked()
+            {
                 self.load_task_list();
             }
             ui.separator();
@@ -429,7 +447,10 @@ impl MuxrApp {
                 |a| a.label().to_owned(),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button(tr("action.settings")).clicked() {
+                if ui
+                    .button(icons::label(icons::GEAR, tr("action.settings")))
+                    .clicked()
+                {
                     self.show_settings = !self.show_settings;
                 }
             });
@@ -444,7 +465,9 @@ impl MuxrApp {
             |d| d.display().to_string(),
         );
         ui.label(RichText::new(current).monospace());
-        if ui.button(tr("action.change")).clicked()
+        if ui
+            .button(icons::label(icons::FOLDER, tr("action.change")))
+            .clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
             self.settings.output_dir = Some(dir);
@@ -478,7 +501,7 @@ impl MuxrApp {
                                 };
                                 let hover = reason.map_or_else(
                                     || tool.description().to_owned(),
-                                    |r| format!("{}\n⚠ {r}", tool.description()),
+                                    |r| format!("{}\n{} {r}", tool.description(), icons::WARNING),
                                 );
                                 if ui
                                     .selectable_label(self.tool == tool, text)
@@ -499,7 +522,10 @@ impl MuxrApp {
         ui.heading(self.tool_title());
         ui.label(RichText::new(self.tool.description()).weak());
         if let Some(reason) = self.unavailable_reason(self.tool) {
-            ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                icons::label(icons::WARNING, &reason),
+            );
         }
         ui.add_space(6.0);
         match self.tool.input_kind() {
@@ -513,7 +539,10 @@ impl MuxrApp {
             InputKind::Capture => {
                 ui.label(tr("input.capture"));
                 if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                    ui.colored_label(ui.visuals().warn_fg_color, tr("warning.wayland_capture"));
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        icons::label(icons::WARNING, tr("warning.wayland_capture")),
+                    );
                 }
             }
             _ => self.file_list(ui),
@@ -556,11 +585,11 @@ impl MuxrApp {
         });
     }
 
-    fn primary_label(&self) -> &'static str {
+    fn primary_label(&self) -> String {
         match self.tool {
-            Tool::Record => tr("action.start_recording"),
-            Tool::Download => tr("action.download"),
-            _ => tr("action.enqueue"),
+            Tool::Record => icons::label(icons::RECORD, tr("action.start_recording")),
+            Tool::Download => icons::label(icons::DOWNLOAD, tr("action.download")),
+            _ => icons::label(icons::LIST_PLUS, tr("action.enqueue")),
         }
     }
 
@@ -589,9 +618,9 @@ impl MuxrApp {
         let kind = self.tool.input_kind();
         ui.horizontal_wrapped(|ui| {
             let add_label = if kind.picks_folders() {
-                tr("action.add_folders")
+                icons::label(icons::FOLDER_PLUS, tr("action.add_folders"))
             } else {
-                tr("action.add_files")
+                icons::label(icons::FILE_PLUS, tr("action.add_files"))
             };
             if ui
                 .button(add_label)
@@ -601,14 +630,23 @@ impl MuxrApp {
                 self.pick_files();
             }
             if kind == InputKind::Disc
-                && ui.button(tr("action.add_iso")).clicked()
+                && ui
+                    .button(icons::label(icons::DISC, tr("action.add_iso")))
+                    .clicked()
                 && let Some(paths) = rfd::FileDialog::new()
                     .add_filter("ISO", &["iso"])
                     .pick_files()
             {
                 self.add_files(paths);
             }
-            if !kind.picks_folders() && ui.button(tr("action.add_folder_scan")).clicked() {
+            if !kind.picks_folders()
+                && ui
+                    .button(icons::label(
+                        icons::FOLDER_PLUS,
+                        tr("action.add_folder_scan"),
+                    ))
+                    .clicked()
+            {
                 self.add_folder();
             }
             if ui
@@ -638,19 +676,21 @@ impl MuxrApp {
         egui::Frame::group(ui.style())
             .stroke(stroke)
             .show(ui, |ui| {
-                ui.set_min_height(110.0);
                 ui.set_width(ui.available_width());
                 if self.files.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new(tr("files.empty")).weak())
-                    });
+                    // A fixed height: inside the scrolling editor, "fill available" is unbounded.
+                    let size = egui::vec2(ui.available_width(), DROP_ZONE_HEIGHT);
+                    ui.add_sized(
+                        size,
+                        egui::Label::new(RichText::new(tr("files.empty")).weak()),
+                    );
                     return;
                 }
                 ScrollArea::vertical().max_height(170.0).show(ui, |ui| {
                     for (i, path) in self.files.iter().enumerate() {
                         ui.horizontal(|ui| {
                             if ui
-                                .small_button("✕")
+                                .small_button(icons::X)
                                 .on_hover_text(tr("action.remove"))
                                 .clicked()
                             {
@@ -658,14 +698,17 @@ impl MuxrApp {
                             }
                             if ordered {
                                 if ui
-                                    .add_enabled(i > 0, Button::new("▲").small())
+                                    .add_enabled(i > 0, Button::new(icons::CARET_UP).small())
                                     .on_hover_text(tr("action.move_up"))
                                     .clicked()
                                 {
                                     action = Some(FileAction::Swap(i, i - 1));
                                 }
                                 if ui
-                                    .add_enabled(i + 1 < self.files.len(), Button::new("▼").small())
+                                    .add_enabled(
+                                        i + 1 < self.files.len(),
+                                        Button::new(icons::CARET_DOWN).small(),
+                                    )
                                     .on_hover_text(tr("action.move_down"))
                                     .clicked()
                                 {
@@ -674,7 +717,7 @@ impl MuxrApp {
                             }
                             if probeable
                                 && ui
-                                    .small_button("ℹ")
+                                    .small_button(icons::INFO)
                                     .on_hover_text(tr("action.media_info"))
                                     .clicked()
                             {
@@ -955,7 +998,7 @@ impl MuxrApp {
     fn advanced_video(&mut self, ui: &mut egui::Ui, format: VideoFormat) {
         let toolbox = &self.toolbox;
         let opts = &mut self.settings.options;
-        egui::CollapsingHeader::new(tr("section.output_settings"))
+        egui::CollapsingHeader::new(icons::label(icons::SLIDERS, tr("section.output_settings")))
             .id_salt("adv_video")
             .show(ui, |ui| {
                 egui::Grid::new("adv_video_grid")
@@ -1012,7 +1055,7 @@ impl MuxrApp {
 
     fn advanced_audio(&mut self, ui: &mut egui::Ui, lossy: bool) {
         let opts = &mut self.settings.options;
-        egui::CollapsingHeader::new(tr("section.output_settings"))
+        egui::CollapsingHeader::new(icons::label(icons::SLIDERS, tr("section.output_settings")))
             .id_salt("adv_audio")
             .show(ui, |ui| {
                 audio_grid(ui, &mut opts.audio, lossy);
@@ -1021,7 +1064,7 @@ impl MuxrApp {
 
     fn edit_panel(&mut self, ui: &mut egui::Ui, video: bool) {
         let edit = &mut self.settings.options.edit;
-        egui::CollapsingHeader::new(tr("section.edit"))
+        egui::CollapsingHeader::new(icons::label(icons::SCISSORS, tr("section.edit")))
             .id_salt("edit_panel")
             .show(ui, |ui| {
                 ui.label(RichText::new(tr("hint.edit_applies")).weak());
@@ -1117,9 +1160,9 @@ impl MuxrApp {
                                     let label = if job.spec.tool == Tool::Record
                                         && job.state != JobState::Queued
                                     {
-                                        tr("action.stop_recording")
+                                        icons::label(icons::STOP, tr("action.stop_recording"))
                                     } else {
-                                        tr("action.cancel")
+                                        icons::label(icons::X, tr("action.cancel"))
                                     };
                                     if ui.small_button(label).clicked() {
                                         cancel = Some(job.id);
@@ -1127,11 +1170,22 @@ impl MuxrApp {
                                 }
                                 JobState::Done { .. } => {
                                     if job.spec.output.is_file()
-                                        && ui.small_button(tr("action.open")).clicked()
+                                        && ui
+                                            .small_button(icons::label(
+                                                icons::ARROW_SQUARE_OUT,
+                                                tr("action.open"),
+                                            ))
+                                            .clicked()
                                     {
                                         open_path(&job.spec.output);
                                     }
-                                    if ui.small_button(tr("action.open_folder")).clicked() {
+                                    if ui
+                                        .small_button(icons::label(
+                                            icons::FOLDER,
+                                            tr("action.open_folder"),
+                                        ))
+                                        .clicked()
+                                    {
                                         reveal(&job.spec.output);
                                     }
                                     if ui.small_button(tr("action.remove")).clicked() {
@@ -1223,9 +1277,9 @@ impl MuxrApp {
                 continue;
             }
             let (mark, color) = if self.toolbox.get(ext).is_some() {
-                ("✔", SUCCESS_COLOR)
+                (icons::CHECK_CIRCLE, SUCCESS_COLOR)
             } else {
-                ("✖", ui.visuals().weak_text_color())
+                (icons::X_CIRCLE, ui.visuals().weak_text_color())
             };
             ui.colored_label(color, format!("{mark} {}", ext.name()));
         }
@@ -1473,7 +1527,7 @@ fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
         ui.label(file_name(path))
             .on_hover_text(path.display().to_string());
         if ui
-            .small_button("✕")
+            .small_button(icons::X)
             .on_hover_text(tr("action.remove"))
             .clicked()
         {
@@ -1528,13 +1582,16 @@ fn status_cell(ui: &mut egui::Ui, tool: Tool, state: &JobState) {
         }
         JobState::Done { elapsed } => {
             let secs = format!("{:.1}", elapsed.as_secs_f32());
-            ui.colored_label(SUCCESS_COLOR, trf("status.done", &[("secs", &secs)]));
+            ui.colored_label(
+                SUCCESS_COLOR,
+                icons::label(icons::CHECK_CIRCLE, &trf("status.done", &[("secs", &secs)])),
+            );
         }
         JobState::Failed(message) => {
             let first_line = message.lines().next().unwrap_or_default();
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                trf("status.failed", &[("reason", &first_line)]),
+                icons::label(icons::X_CIRCLE, first_line),
             )
             .on_hover_text(message);
         }

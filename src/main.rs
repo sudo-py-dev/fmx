@@ -10,6 +10,7 @@ mod exec;
 mod externals;
 mod ffmpeg;
 mod i18n;
+mod icons;
 mod imaging;
 mod jobs;
 mod options;

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::externals::External;
 use crate::i18n::tr;
+use crate::icons;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -25,15 +26,16 @@ impl Category {
         Self::Utilities,
     ];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Video => tr("category.video"),
-            Self::Audio => tr("category.audio"),
-            Self::Image => tr("category.image"),
-            Self::Document => tr("category.document"),
-            Self::Rom => tr("category.rom"),
-            Self::Utilities => tr("category.utilities"),
-        }
+    pub fn label(self) -> String {
+        let (icon, key) = match self {
+            Self::Video => (icons::FILM_STRIP, "category.video"),
+            Self::Audio => (icons::MUSIC_NOTES, "category.audio"),
+            Self::Image => (icons::IMAGE, "category.image"),
+            Self::Document => (icons::FILE_TEXT, "category.document"),
+            Self::Rom => (icons::DISC, "category.rom"),
+            Self::Utilities => (icons::WRENCH, "category.utilities"),
+        };
+        icons::label(icon, tr(key))
     }
 
     pub fn tools(self) -> Vec<Tool> {
@@ -461,12 +463,12 @@ impl EbookFormat {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Epub => "eBook → EPUB",
-            Self::Mobi => "eBook → MOBI",
-            Self::Azw3 => "eBook → AZW3",
-            Self::Fb2 => "eBook → FB2",
-            Self::Pdf => "eBook → PDF",
-            Self::Txt => "eBook → TXT",
+            Self::Epub => tr("tool.ebook_epub"),
+            Self::Mobi => tr("tool.ebook_mobi"),
+            Self::Azw3 => tr("tool.ebook_azw3"),
+            Self::Fb2 => tr("tool.ebook_fb2"),
+            Self::Pdf => tr("tool.ebook_pdf"),
+            Self::Txt => tr("tool.ebook_txt"),
         }
     }
 }

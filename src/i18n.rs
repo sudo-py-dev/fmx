@@ -21,9 +21,15 @@ const FALLBACK: usize = 0;
 static CATALOGS: OnceLock<Vec<HashMap<String, String>>> = OnceLock::new();
 static ACTIVE: AtomicUsize = AtomicUsize::new(FALLBACK);
 
-fn parse(src: &str) -> HashMap<String, String> {
+/// egui's built-in fonts have no U+2192 arrow, so it is drawn from the icon font.
+const ARROW: char = '→';
+
+pub(crate) fn parse(src: &str) -> HashMap<String, String> {
     // The files are compiled in, so a parse failure is a build-time bug caught by tests.
-    serde_json::from_str(src).unwrap_or_default()
+    let map: HashMap<String, String> = serde_json::from_str(src).unwrap_or_default();
+    map.into_iter()
+        .map(|(k, v)| (k, v.replace(ARROW, crate::icons::ARROW_RIGHT)))
+        .collect()
 }
 
 fn catalogs() -> &'static [HashMap<String, String>] {
