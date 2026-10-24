@@ -66,10 +66,11 @@ jobs:
       - run: rustup toolchain install stable --profile minimal; rustup default stable
       - run: cargo test --locked
       - run: cargo build --release --locked
-      - run: choco install innosetup --no-progress -y
-      - name: Build the installer
+      - name: Build the setup wizard (Inno Setup)
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DSourceExe=..\..\target\release\muxr.exe" packaging\windows\muxr.iss
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DBinDir=$pwd\target\release" "/DOutDir=$pwd\dist" packaging\windows\muxr.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:

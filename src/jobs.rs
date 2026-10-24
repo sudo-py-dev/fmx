@@ -375,7 +375,9 @@ mod tests {
         )
         .expect("jobs");
         assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].output, PathBuf::from("/a/1_joined.mp4"));
+        // Inputs are made absolute, which on Windows adds the current drive.
+        let expected = std::path::absolute("/a/1_joined.mp4").expect("absolute");
+        assert_eq!(jobs[0].output, expected);
         let err = plan_jobs(
             &select(Tool::Mux, &files[..1], None, &opts),
             &mut HashSet::new(),

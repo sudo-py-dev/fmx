@@ -221,7 +221,9 @@ mod tests {
     #[test]
     fn pdf_split_pattern() {
         let t = text(&pdf_split(Path::new("/a.pdf"), Path::new("/o/x%y")));
-        assert!(t.ends_with("/o/x%%y/page-%d.pdf"), "{t}");
+        // Built with join so the separator matches the platform.
+        let pattern = Path::new("/o/x%%y").join("page-%d.pdf");
+        assert!(t.ends_with(&*pattern.to_string_lossy()), "{t}");
     }
 
     #[test]

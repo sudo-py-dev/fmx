@@ -633,7 +633,9 @@ mod tests {
         let pdf = dir.path().join("doc.pdf");
         render(&sample(), &pdf).expect("render");
         let txt = dir.path().join("doc.txt");
+        // UTF-8 like the PDF → TXT tool; Windows builds default to Latin-1.
         let status = std::process::Command::new(pdftotext)
+            .args(["-enc", "UTF-8"])
             .arg(&pdf)
             .arg(&txt)
             .status()

@@ -1,0 +1,8 @@
+# Signed test files must keep their exact bytes (no CRLF conversion on Windows).
+packaging/test-fixtures/** -text
+# Byte-exact keys, icons and fonts.
+packaging/update-key.pub -text
+*.png binary
+*.ico binary
+*.icns binary
+*.ttf binary

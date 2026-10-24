@@ -363,7 +363,17 @@ pub enum Installed {
 pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError> {
     match release.kind {
         InstallKind::WindowsSetup => {
-            spawn_detached(&file.to_string_lossy(), ["/SILENT", "/CLOSEAPPLICATIONS"])?;
+            // The setup closes Muxr, upgrades it, and starts it again (its [Run] section).
+            spawn_detached(
+                &file.to_string_lossy(),
+                [
+                    "/SILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/NORESTART",
+                    "/CLOSEAPPLICATIONS",
+                    "/NORESTARTAPPLICATIONS",
+                ],
+            )?;
             Ok(Installed::QuitForInstaller)
         }
         InstallKind::MacDmg => {
