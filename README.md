@@ -1,6 +1,6 @@
 # Muxr
 
-A lightweight, fast all-in-one converter written in Rust. It is a single ~14 MB native binary with an egui GUI (OpenGL/glow, no web engine),
+A lightweight, fast all-in-one converter written in Rust. It is a single ~22 MB native binary with an egui GUI (OpenGL/glow, no web engine),
 available in English, Spanish, French and German.
 
 ## Tools
@@ -35,6 +35,33 @@ status chips, and toast notifications. "Reduce motion" in Settings turns the ani
 and choose an action for when everything is done (open the output folder or shut down after a
 60-second countdown). Drag & drop and recursive folder adding work everywhere. Output names never
 overwrite existing files, and failed jobs leave no partial files behind.
+
+## Install
+
+Download the file for your system from the
+[latest release](https://github.com/sudo-py-dev/muxr/releases/latest):
+
+| System | File |
+|---|---|
+| Windows 10/11 (64-bit) | `muxr-<version>-windows-x64-setup.exe` (installs for you or all users) |
+| macOS 11+ (Intel and Apple silicon) | `muxr-<version>-macos-universal.dmg` (drag Muxr to Applications) |
+| Ubuntu / Debian (64-bit) | `muxr_<version>_amd64.deb` (`sudo apt install ./muxr_<version>_amd64.deb`) |
+| Other Linux (64-bit) | `muxr-<version>-linux-x86_64.tar.gz` (portable, run `./muxr`) |
+
+The macOS build is not notarized yet: the first time, right-click Muxr and choose **Open**.
+
+## Updates
+
+Muxr checks GitHub once a day for a newer release (turn this off, or **Check now**, in
+Settings → Updates) and offers it in a banner. Updates are safe by design:
+
+- Muxr only talks to this repository's GitHub releases, over HTTPS, and never offers an older
+  version, a draft or a pre-release.
+- Every release file is signed with Muxr's release key (minisign / Ed25519). The public key is
+  built into Muxr (`packaging/update-key.pub`), and the signature must name the exact file and
+  version. A file that fails the check is deleted and never run.
+- The Windows installer and the `.deb`/`.dmg` open in the system installer; the portable Linux
+  build replaces itself and asks you to restart.
 
 ## Requirements
 
@@ -81,6 +108,19 @@ when the queue finishes.
 ```bash
 cargo run --release
 ```
+
+## Making a release
+
+1. Set the new `version` in `Cargo.toml` (the only place the version is written; the app,
+   installers and updater all read it from there) and commit.
+2. Tag and push: `git tag v0.0.2 && git push origin master v0.0.2`.
+3. The [release workflow](.github/workflows/release.yml) checks that the tag matches
+   `Cargo.toml`, tests and builds on Linux, Windows and macOS, signs every file with the
+   `MUXR_SIGNING_KEY` repository secret, verifies the signatures against
+   `packaging/update-key.pub`, and publishes the release.
+
+Packaging files live in `packaging/`: icons (`make-icons.py`), the Debian desktop entry, the
+Inno Setup script for Windows, and the macOS app bundle script.
 
 ## Tests
 

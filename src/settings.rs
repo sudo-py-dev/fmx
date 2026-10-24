@@ -33,6 +33,12 @@ pub struct Settings {
     pub reduce_motion: bool,
     /// Show a system notification when the queue finishes.
     pub notify_when_done: bool,
+    /// Look for a newer Muxr on GitHub about once a day.
+    pub check_updates: bool,
+    /// When Muxr last looked for updates (seconds since 1970).
+    pub last_update_check: u64,
+    /// A release the user chose to skip; it is not offered again.
+    pub skipped_version: Option<String>,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -61,6 +67,9 @@ impl Default for Settings {
             theme: ThemeChoice::System,
             reduce_motion: false,
             notify_when_done: true,
+            check_updates: true,
+            last_update_check: 0,
+            skipped_version: None,
         }
     }
 }

@@ -1,0 +1,131 @@
+# Builds, signs and publishes a release when a version tag is pushed:
+#   git tag v0.0.1 && git push origin v0.0.1
+# The tag must match the version in Cargo.toml.
+#
+# Every file is signed with the release key (secret MUXR_SIGNING_KEY) and
+# checked against packaging/update-key.pub, the public key built into Muxr,
+# before anything is published. Muxr's updater refuses unsigned files.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Check the tag matches Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04 # older glibc, so the build runs on more distributions
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: cargo install cargo-deb --locked --version 3.8.0
+      - name: Package
+        run: |
+          mkdir -p dist
+          cargo deb --no-build --output "dist/muxr_${VERSION}_amd64.deb"
+          tar -czf "dist/muxr-${VERSION}-linux-x86_64.tar.gz" -C target/release muxr -C "$PWD" README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal; rustup default stable
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: choco install innosetup --no-progress -y
+      - name: Build the installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DSourceExe=..\..\target\release\muxr.exe" packaging\windows\muxr.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --locked
+      - run: packaging/macos/build-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # only this job can create the release
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cargo install rsign2 --locked --version 0.6.7
+      - name: Sign and verify every file
+        env:
+          MUXR_SIGNING_KEY: ${{ secrets.MUXR_SIGNING_KEY }}
+        run: |
+          if [ -z "$MUXR_SIGNING_KEY" ]; then
+            echo "::error::The MUXR_SIGNING_KEY secret is not set"
+            exit 1
+          fi
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MUXR_SIGNING_KEY" > "$key"
+          cd dist
+          for file in *; do
+            # The updater requires exactly this trusted comment.
+            rsign sign -W -s "$key" -x "$file.minisig" -t "muxr $VERSION $file" "$file"
+            rsign verify -p ../packaging/update-key.pub -x "$file.minisig" "$file"
+          done
+          sha256sum -- * > SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sed "s/@VERSION@/$VERSION/g" packaging/release-notes.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Muxr $VERSION" --notes-file notes.md

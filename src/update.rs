@@ -1,0 +1,576 @@
+//! Checking GitHub for a newer Muxr and installing it safely.
+//!
+//! What keeps this safe:
+//! - Requests go only over HTTPS, to this repository's GitHub releases.
+//! - Only a version newer than the running one is offered, never a downgrade,
+//!   draft or pre-release.
+//! - Every downloaded file needs a minisign (Ed25519) signature made with the
+//!   release key, whose public half is compiled into Muxr. The signed "trusted
+//!   comment" must name exactly this file and version, so an older or different
+//!   signed file cannot be swapped in.
+//! - Downloads are size-limited, verified while streaming, and only moved into
+//!   place once the signature checks out. Nothing unverified is ever run.
+
+use std::fmt;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use minisign_verify::{PublicKey, Signature};
+use serde::Deserialize;
+
+use crate::ffmpeg_setup::agent;
+use crate::i18n::{tr, trf};
+use crate::process::spawn_detached;
+
+/// The running version, from `Cargo.toml`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+const LATEST_RELEASE_API: &str = "https://api.github.com/repos/sudo-py-dev/muxr/releases/latest";
+const DOWNLOAD_PREFIX: &str = "https://github.com/sudo-py-dev/muxr/releases/download/";
+const RELEASES_PAGE: &str = "https://github.com/sudo-py-dev/muxr/releases";
+/// The release signing key (public half); the private half signs in CI.
+const RELEASE_KEY: &str = include_str!("../packaging/update-key.pub");
+const MAX_API_BYTES: u64 = 1 << 20;
+const MAX_SIGNATURE_BYTES: u64 = 4 << 10;
+const MAX_PACKAGE_BYTES: u64 = 300 << 20;
+const MAX_BINARY_BYTES: u64 = 300 << 20;
+const CHUNK: usize = 64 * 1024;
+/// How often Muxr looks for updates on its own, in seconds.
+pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// A plain `major.minor.patch` version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+impl Version {
+    /// Parses `1.2.3` or `v1.2.3`. Pre-release and build suffixes are refused,
+    /// so test builds are never offered as updates.
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let text = text.strip_prefix('v').unwrap_or(text);
+        let mut parts = text.split('.');
+        let mut next = || parts.next()?.parse::<u64>().ok();
+        let version = Self {
+            major: next()?,
+            minor: next()?,
+            patch: next()?,
+        };
+        parts.next().is_none().then_some(version)
+    }
+
+    pub fn current() -> Self {
+        Self::parse(VERSION).expect("Cargo.toml has a plain version")
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// How Muxr was installed, which decides what an update downloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallKind {
+    /// The Debian package (`/usr/bin/muxr`).
+    Deb,
+    /// The portable Linux archive, run from wherever it was unpacked.
+    LinuxPortable,
+    WindowsSetup,
+    MacDmg,
+}
+
+impl InstallKind {
+    /// This computer's kind, if releases include a build for it.
+    pub fn detect() -> Option<Self> {
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("windows", "x86_64") => Some(Self::WindowsSetup),
+            ("macos", _) => Some(Self::MacDmg),
+            ("linux", "x86_64") => {
+                let exe = std::env::current_exe().ok()?;
+                Some(if exe.starts_with("/usr") {
+                    Self::Deb
+                } else {
+                    Self::LinuxPortable
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The release file for this kind; the release workflow uses the same names.
+    pub fn asset_name(self, version: Version) -> String {
+        match self {
+            Self::Deb => format!("muxr_{version}_amd64.deb"),
+            Self::LinuxPortable => format!("muxr-{version}-linux-x86_64.tar.gz"),
+            Self::WindowsSetup => format!("muxr-{version}-windows-x64-setup.exe"),
+            Self::MacDmg => format!("muxr-{version}-macos-universal.dmg"),
+        }
+    }
+}
+
+/// The signed comment every release file's signature must carry.
+pub fn trusted_comment(version: Version, asset: &str) -> String {
+    format!("muxr {version} {asset}")
+}
+
+/// A newer release, ready to download.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    pub version: Version,
+    /// The release page, for "What's new".
+    pub page: String,
+    pub kind: InstallKind,
+    asset: String,
+    url: String,
+    signature_url: String,
+    size: u64,
+}
+
+#[derive(Debug)]
+pub enum UpdateError {
+    Unsupported,
+    Network(String),
+    BadRelease,
+    Signature,
+    TooLarge,
+    Io(std::io::Error),
+    Cancelled,
+}
+
+impl fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str(tr("update.unsupported")),
+            Self::Network(e) => f.write_str(&trf("update.network", &[("error", e)])),
+            Self::BadRelease => f.write_str(tr("update.bad_release")),
+            Self::Signature => f.write_str(tr("update.bad_signature")),
+            Self::TooLarge => f.write_str(tr("update.too_large")),
+            Self::Io(e) => f.write_str(&trf("error.io", &[("error", e)])),
+            Self::Cancelled => f.write_str(tr("status.cancelled")),
+        }
+    }
+}
+
+impl std::error::Error for UpdateError {}
+
+impl From<std::io::Error> for UpdateError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+#[derive(Deserialize)]
+struct ApiRelease {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    assets: Vec<ApiAsset>,
+}
+
+#[derive(Deserialize)]
+struct ApiAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
+
+fn network(e: ureq::Error) -> UpdateError {
+    UpdateError::Network(e.to_string())
+}
+
+/// Picks the update for `kind` out of GitHub's "latest release" answer, if it
+/// is newer than `current` and well-formed.
+fn newer_release(
+    json: &str,
+    current: Version,
+    kind: InstallKind,
+) -> Result<Option<Release>, UpdateError> {
+    let api: ApiRelease = serde_json::from_str(json).map_err(|_| UpdateError::BadRelease)?;
+    let Some(version) = Version::parse(&api.tag_name) else {
+        return Ok(None);
+    };
+    if api.draft || api.prerelease || version <= current {
+        return Ok(None);
+    }
+    let asset = kind.asset_name(version);
+    let signature = format!("{asset}.minisig");
+    // Files must come from this repository's download area for this exact tag.
+    let expected_prefix = format!("{DOWNLOAD_PREFIX}{}/", api.tag_name);
+    let find = |name: &str| {
+        api.assets.iter().find(|a| {
+            a.name == name && a.browser_download_url == format!("{expected_prefix}{name}")
+        })
+    };
+    let (Some(file), Some(sig)) = (find(&asset), find(&signature)) else {
+        return Err(UpdateError::BadRelease);
+    };
+    if file.size > MAX_PACKAGE_BYTES {
+        return Err(UpdateError::TooLarge);
+    }
+    let page = if api.html_url.starts_with(RELEASES_PAGE) {
+        api.html_url
+    } else {
+        RELEASES_PAGE.to_owned()
+    };
+    Ok(Some(Release {
+        version,
+        page,
+        kind,
+        url: file.browser_download_url.clone(),
+        signature_url: sig.browser_download_url.clone(),
+        size: file.size,
+        asset,
+    }))
+}
+
+/// Asks GitHub for the latest release; `None` means Muxr is up to date.
+pub fn check() -> Result<Option<Release>, UpdateError> {
+    let kind = InstallKind::detect().ok_or(UpdateError::Unsupported)?;
+    let response = agent()
+        .get(LATEST_RELEASE_API)
+        .header("User-Agent", &format!("muxr/{VERSION}"))
+        .header("Accept", "application/vnd.github+json")
+        .call();
+    let mut response = match response {
+        // No published release yet: nothing newer exists.
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        other => other.map_err(network)?,
+    };
+    let json = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_API_BYTES)
+        .read_to_string()
+        .map_err(network)?;
+    newer_release(&json, Version::current(), kind)
+}
+
+/// Checks a signature file against `key` and the comment it must carry.
+fn checked_signature(text: &str, key: &PublicKey, comment: &str) -> Result<Signature, UpdateError> {
+    let signature = Signature::decode(text).map_err(|_| UpdateError::Signature)?;
+    // The comment is covered by the signature, which `finalize` checks later.
+    if signature.trusted_comment() != comment {
+        return Err(UpdateError::Signature);
+    }
+    key.verify_stream(&signature)
+        .map_err(|_| UpdateError::Signature)?;
+    Ok(signature)
+}
+
+/// Streams `source` into `dest` while verifying it against `signature`.
+fn download_signed(
+    mut source: impl Read,
+    dest: &mut impl std::io::Write,
+    key: &PublicKey,
+    signature: &Signature,
+    size: u64,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<(), UpdateError> {
+    let mut verifier = key
+        .verify_stream(signature)
+        .map_err(|_| UpdateError::Signature)?;
+    let mut buf = vec![0u8; CHUNK];
+    let mut received = 0u64;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(UpdateError::Cancelled);
+        }
+        let n = source
+            .read(&mut buf)
+            .map_err(|e| UpdateError::Network(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        received += n as u64;
+        if received > size {
+            return Err(UpdateError::TooLarge);
+        }
+        verifier.update(&buf[..n]);
+        dest.write_all(&buf[..n])?;
+        on_progress((received as f64 / size.max(1) as f64).min(1.0) as f32);
+    }
+    verifier.finalize().map_err(|_| UpdateError::Signature)
+}
+
+fn release_key() -> Result<PublicKey, UpdateError> {
+    PublicKey::decode(RELEASE_KEY).map_err(|_| UpdateError::Signature)
+}
+
+/// Where downloaded updates wait to be installed.
+fn updates_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("muxr").join("updates"))
+}
+
+/// Downloads `release` and verifies its signature. Returns the verified file.
+pub fn download(
+    release: &Release,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(f32),
+) -> Result<PathBuf, UpdateError> {
+    let key = release_key()?;
+    let dir = updates_dir().ok_or(UpdateError::Unsupported)?;
+    std::fs::create_dir_all(&dir)?;
+    let agent = agent();
+    let signature_text = agent
+        .get(&release.signature_url)
+        .call()
+        .map_err(network)?
+        .body_mut()
+        .with_config()
+        .limit(MAX_SIGNATURE_BYTES)
+        .read_to_string()
+        .map_err(network)?;
+    let comment = trusted_comment(release.version, &release.asset);
+    let signature = checked_signature(&signature_text, &key, &comment)?;
+    let mut response = agent.get(&release.url).call().map_err(network)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    download_signed(
+        response.body_mut().as_reader(),
+        tmp.as_file_mut(),
+        &key,
+        &signature,
+        release.size,
+        cancel,
+        &mut on_progress,
+    )?;
+    let target = dir.join(&release.asset);
+    tmp.persist(&target).map_err(|e| UpdateError::Io(e.error))?;
+    Ok(target)
+}
+
+/// What the user still has to do after [`install`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Installed {
+    /// The installer is running; Muxr should close so it can replace files.
+    QuitForInstaller,
+    /// The system's package installer or disk image is open.
+    FinishInInstaller,
+    /// The new version is in place and starts on the next launch.
+    Restart,
+}
+
+/// Hands a verified update to the system, or replaces the portable binary.
+pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError> {
+    match release.kind {
+        InstallKind::WindowsSetup => {
+            spawn_detached(&file.to_string_lossy(), ["/SILENT", "/CLOSEAPPLICATIONS"])?;
+            Ok(Installed::QuitForInstaller)
+        }
+        InstallKind::MacDmg => {
+            spawn_detached("open", [file])?;
+            Ok(Installed::FinishInInstaller)
+        }
+        InstallKind::Deb => {
+            spawn_detached("xdg-open", [file])?;
+            Ok(Installed::FinishInInstaller)
+        }
+        InstallKind::LinuxPortable => {
+            let exe = std::env::current_exe()?;
+            replace_from_archive(file, &exe)?;
+            Ok(Installed::Restart)
+        }
+    }
+}
+
+/// Takes the `muxr` program out of a verified `.tar.gz` and swaps it in for
+/// `exe` in one step (a running program can be replaced on Linux).
+fn replace_from_archive(archive: &Path, exe: &Path) -> Result<(), UpdateError> {
+    let dir = exe.parent().ok_or(UpdateError::Unsupported)?;
+    let gz = flate2::read::GzDecoder::new(std::fs::File::open(archive)?);
+    let mut entries = tar::Archive::new(gz);
+    for entry in entries.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        if path.file_name().and_then(|n| n.to_str()) != Some("muxr")
+            || !entry.header().entry_type().is_file()
+        {
+            continue;
+        }
+        if entry.size() > MAX_BINARY_BYTES {
+            return Err(UpdateError::TooLarge);
+        }
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        std::io::copy(&mut (&mut entry).take(MAX_BINARY_BYTES), tmp.as_file_mut())?;
+        crate::ffmpeg_setup::persist_executable(tmp, exe)
+            .map_err(|e| UpdateError::Io(std::io::Error::other(e.to_string())))?;
+        return Ok(());
+    }
+    Err(UpdateError::BadRelease)
+}
+
+/// Starts the (updated) program again; the caller then closes this one.
+pub fn relaunch() -> Result<(), UpdateError> {
+    let exe = std::env::current_exe()?;
+    spawn_detached(&exe.to_string_lossy(), std::iter::empty::<&str>())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A throwaway key pair used only by these tests (not the release key).
+    const TEST_KEY: &str = include_str!("../packaging/test-fixtures/test-key.pub");
+    const TEST_PAYLOAD: &[u8] = include_bytes!("../packaging/test-fixtures/payload.bin");
+    const TEST_SIGNATURE: &str = include_str!("../packaging/test-fixtures/payload.bin.minisig");
+    /// The trusted comment the fixture was signed with.
+    const TEST_COMMENT: &str = "muxr 9.9.9 muxr-9.9.9-linux-x86_64.tar.gz";
+
+    fn v(text: &str) -> Version {
+        Version::parse(text).expect("version")
+    }
+
+    #[test]
+    fn versions_parse_and_order() {
+        assert!(v("0.0.2") > v("0.0.1"));
+        assert!(v("v0.10.0") > v("0.9.9"));
+        assert!(v("1.0.0") > v("0.99.99"));
+        assert_eq!(v("v1.2.3").to_string(), "1.2.3");
+        for bad in ["1.2", "1.2.3.4", "1.2.3-beta", "x.y.z", ""] {
+            assert_eq!(Version::parse(bad), None, "{bad}");
+        }
+        assert_eq!(Version::current().to_string(), VERSION);
+    }
+
+    fn api_json(tag: &str, names: &[&str]) -> String {
+        let assets: Vec<String> = names
+            .iter()
+            .map(|n| {
+                format!(
+                    r#"{{"name":"{n}","size":1000,"browser_download_url":"{DOWNLOAD_PREFIX}{tag}/{n}"}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"tag_name":"{tag}","html_url":"{RELEASES_PAGE}/tag/{tag}","draft":false,"prerelease":false,"assets":[{}]}}"#,
+            assets.join(",")
+        )
+    }
+
+    #[test]
+    fn only_newer_well_formed_releases_are_offered() {
+        let kind = InstallKind::LinuxPortable;
+        let name = kind.asset_name(v("0.0.2"));
+        let sig = format!("{name}.minisig");
+        let json = api_json("v0.0.2", &[&name, &sig]);
+        let release = newer_release(&json, v("0.0.1"), kind)
+            .expect("parse")
+            .expect("newer");
+        assert_eq!(release.version, v("0.0.2"));
+        assert_eq!(release.url, format!("{DOWNLOAD_PREFIX}v0.0.2/{name}"));
+        // Same or older: nothing to offer.
+        assert_eq!(newer_release(&json, v("0.0.2"), kind).expect("parse"), None);
+        assert_eq!(newer_release(&json, v("0.1.0"), kind).expect("parse"), None);
+        // No signature published: refused.
+        let unsigned = api_json("v0.0.2", &[&name]);
+        assert!(newer_release(&unsigned, v("0.0.1"), kind).is_err());
+    }
+
+    #[test]
+    fn files_from_elsewhere_are_refused() {
+        let kind = InstallKind::Deb;
+        let name = kind.asset_name(v("0.0.2"));
+        let json = api_json("v0.0.2", &[&name, &format!("{name}.minisig")])
+            .replace("github.com/sudo-py-dev/muxr", "evil.example/muxr");
+        assert!(newer_release(&json, v("0.0.1"), kind).is_err());
+    }
+
+    #[test]
+    fn signed_file_verifies_and_tampering_is_caught() {
+        let key = PublicKey::decode(TEST_KEY).expect("key");
+        let cancel = AtomicBool::new(false);
+        let signature = checked_signature(TEST_SIGNATURE, &key, TEST_COMMENT).expect("signature");
+        let size = TEST_PAYLOAD.len() as u64;
+        let mut out = Vec::new();
+        download_signed(
+            TEST_PAYLOAD,
+            &mut out,
+            &key,
+            &signature,
+            size,
+            &cancel,
+            &mut |_| {},
+        )
+        .expect("valid");
+        assert_eq!(out, TEST_PAYLOAD);
+
+        let mut tampered = TEST_PAYLOAD.to_vec();
+        tampered[0] ^= 1;
+        let result = download_signed(
+            tampered.as_slice(),
+            &mut Vec::new(),
+            &key,
+            &signature,
+            size,
+            &cancel,
+            &mut |_| {},
+        );
+        assert!(matches!(result, Err(UpdateError::Signature)));
+    }
+
+    #[test]
+    fn signature_for_another_file_or_version_is_refused() {
+        let key = PublicKey::decode(TEST_KEY).expect("key");
+        let other = "muxr 9.9.8 muxr-9.9.8-linux-x86_64.tar.gz";
+        assert!(matches!(
+            checked_signature(TEST_SIGNATURE, &key, other),
+            Err(UpdateError::Signature)
+        ));
+        // A signature from a different key is refused even with the right comment.
+        let release = release_key().expect("release key");
+        assert!(checked_signature(TEST_SIGNATURE, &release, TEST_COMMENT).is_err());
+    }
+
+    fn archive_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, *data)
+                .expect("append");
+        }
+        builder.into_inner().expect("tar").finish().expect("gzip")
+    }
+
+    #[test]
+    fn portable_update_replaces_the_program() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = dir.path().join("muxr");
+        std::fs::write(&exe, b"old program").expect("old");
+        let archive = dir.path().join("update.tar.gz");
+        let data = archive_with(&[("README.md", b"readme"), ("muxr", b"new program")]);
+        std::fs::write(&archive, data).expect("archive");
+        replace_from_archive(&archive, &exe).expect("replace");
+        assert_eq!(std::fs::read(&exe).expect("read"), b"new program");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&exe).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        // An archive without the program changes nothing.
+        let empty = dir.path().join("empty.tar.gz");
+        std::fs::write(&empty, archive_with(&[("other", b"x")])).expect("archive");
+        assert!(replace_from_archive(&empty, &exe).is_err());
+        assert_eq!(std::fs::read(&exe).expect("read"), b"new program");
+    }
+
+    #[test]
+    fn release_key_is_valid() {
+        release_key().expect("the bundled release key decodes");
+    }
+}

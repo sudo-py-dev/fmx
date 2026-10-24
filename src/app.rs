@@ -30,6 +30,7 @@ use crate::process::spawn_detached;
 use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::theme::{self, MOTION, ThemeChoice};
+use crate::update;
 use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
 use crate::ytdlp_setup;
 
@@ -140,6 +141,34 @@ impl Helper {
     }
 }
 
+/// Where Muxr is with its own updates.
+enum UpdateState {
+    Idle,
+    Checking {
+        /// Started from Settings, so the result is always shown.
+        manual: bool,
+        rx: mpsc::Receiver<Result<Option<update::Release>, String>>,
+    },
+    UpToDate,
+    Available(update::Release),
+    Downloading {
+        release: update::Release,
+        /// Progress as `f32` bits.
+        progress: Arc<AtomicU32>,
+        cancel: Arc<AtomicBool>,
+        rx: mpsc::Receiver<Result<PathBuf, String>>,
+    },
+    Installed(update::Release, update::Installed),
+    Failed(String),
+}
+
+/// Seconds since 1970, for spacing out update checks.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// A running download of one of Muxr's own helper programs.
 struct HelperInstall {
     helper: Helper,
@@ -199,6 +228,9 @@ pub struct MuxrApp {
     was_busy: bool,
     shutdown_at: Option<Instant>,
     notifier: Notifier,
+    update: UpdateState,
+    /// The update banner was closed for this session.
+    update_dismissed: bool,
 }
 
 impl MuxrApp {
@@ -245,8 +277,15 @@ impl MuxrApp {
             was_busy: false,
             shutdown_at: None,
             notifier: Arc::new(move || ctx.request_repaint()),
+            update: UpdateState::Idle,
+            update_dismissed: false,
             settings,
         };
+        let due = now_secs().saturating_sub(app.settings.last_update_check)
+            >= update::CHECK_INTERVAL_SECS;
+        if app.settings.check_updates && due {
+            app.start_update_check(&cc.egui_ctx, false);
+        }
         if !open_files.is_empty() {
             app.add_files(open_files);
             app.in_editor = !app.files.is_empty();
@@ -2304,6 +2343,8 @@ impl MuxrApp {
                                 },
                             );
                         });
+                        settings_section(ui, tr("settings.section_updates"), false);
+                        self.update_settings(ui);
                         settings_section(ui, tr("settings.section_programs"), false);
                         ui.label(RichText::new(tr("settings.ffmpeg")).strong());
                         ui.add_space(2.0);
@@ -2389,6 +2430,301 @@ impl MuxrApp {
         .clicked()
         {
             self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
+        }
+    }
+
+    // ── Updates ─────────────────────────────────────────────────────────
+
+    fn start_update_check(&mut self, ctx: &egui::Context, manual: bool) {
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(update::check().map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.settings.last_update_check = now_secs();
+        self.update_dismissed = false;
+        self.update = UpdateState::Checking { manual, rx };
+    }
+
+    fn start_update_download(&mut self, release: update::Release, ctx: &egui::Context) {
+        let progress = Arc::new(AtomicU32::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (thread_release, thread_progress, thread_cancel, ctx) = (
+            release.clone(),
+            Arc::clone(&progress),
+            Arc::clone(&cancel),
+            ctx.clone(),
+        );
+        std::thread::spawn(move || {
+            let result = update::download(&thread_release, &thread_cancel, |p| {
+                thread_progress.store(p.to_bits(), Ordering::Relaxed);
+                ctx.request_repaint();
+            })
+            .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        self.update = UpdateState::Downloading {
+            release,
+            progress,
+            cancel,
+            rx,
+        };
+    }
+
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let next = match &self.update {
+            UpdateState::Checking { manual, rx } => match rx.try_recv() {
+                Ok(Ok(Some(release))) => {
+                    let skipped = self.settings.skipped_version.as_deref()
+                        == Some(release.version.to_string().as_str());
+                    if skipped && !manual {
+                        UpdateState::Idle
+                    } else {
+                        UpdateState::Available(release)
+                    }
+                }
+                Ok(Ok(None)) if *manual => UpdateState::UpToDate,
+                Ok(Err(message)) if *manual => UpdateState::Failed(message),
+                Ok(result) => {
+                    if let Err(message) = result {
+                        tracing::info!(%message, "update check failed");
+                    }
+                    UpdateState::Idle
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => UpdateState::Idle,
+            },
+            UpdateState::Downloading { release, rx, .. } => match rx.try_recv() {
+                Ok(Ok(file)) => match update::install(release, &file) {
+                    Ok(outcome) => {
+                        if outcome == update::Installed::QuitForInstaller {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        UpdateState::Installed(release.clone(), outcome)
+                    }
+                    Err(e) => UpdateState::Failed(e.to_string()),
+                },
+                Ok(Err(message)) => UpdateState::Failed(message),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => UpdateState::Idle,
+            },
+            _ => return,
+        };
+        self.update_dismissed = false;
+        self.update = next;
+    }
+
+    /// A strip above the main view while an update is available or underway.
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let shown = matches!(
+            self.update,
+            UpdateState::Available(_)
+                | UpdateState::Downloading { .. }
+                | UpdateState::Installed(..)
+                | UpdateState::Failed(_)
+        );
+        if !shown || self.update_dismissed {
+            return;
+        }
+        let p = theme::palette(ui);
+        let failed = matches!(self.update, UpdateState::Failed(_));
+        let tint = if failed { p.danger } else { p.accent };
+        let mut action = None;
+        egui::Frame::new()
+            .fill(p.surface.lerp_to_gamma(tint, 0.10))
+            .stroke(Stroke::new(1.0, tint.gamma_multiply(0.6)))
+            .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+            .inner_margin(Margin::symmetric(14, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        // Downloads can only be cancelled, not hidden.
+                        let closable = !matches!(self.update, UpdateState::Downloading { .. });
+                        if closable
+                            && widgets::button(
+                                ui,
+                                Some(icons::X),
+                                "",
+                                Kind::Ghost,
+                                Size::Small,
+                                true,
+                            )
+                            .on_hover_text(tr("update.hide"))
+                            .clicked()
+                        {
+                            action = Some(UpdateAction::Dismiss);
+                        }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let icon = if failed {
+                                    icons::WARNING
+                                } else {
+                                    icons::DOWNLOAD
+                                };
+                                ui.label(RichText::new(icon).size(18.0).color(tint));
+                                if let Some(a) = self.update_banner_contents(ui) {
+                                    action = Some(a);
+                                }
+                            });
+                        });
+                    });
+                });
+            });
+        ui.add_space(10.0);
+        match action {
+            Some(UpdateAction::Download(release)) => {
+                self.start_update_download(release, ui.ctx());
+            }
+            Some(UpdateAction::Retry) => self.start_update_check(ui.ctx(), true),
+            Some(UpdateAction::Skip(version)) => {
+                self.settings.skipped_version = Some(version);
+                self.update = UpdateState::Idle;
+            }
+            Some(UpdateAction::Restart) => match update::relaunch() {
+                Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                Err(e) => self.update = UpdateState::Failed(e.to_string()),
+            },
+            Some(UpdateAction::Dismiss) => self.update_dismissed = true,
+            None => {}
+        }
+    }
+
+    fn update_banner_contents(&self, ui: &mut egui::Ui) -> Option<UpdateAction> {
+        let small = |ui: &mut egui::Ui, icon: Option<&str>, text: &str, kind| {
+            widgets::button(ui, icon, text, kind, Size::Small, true).clicked()
+        };
+        let mut action = None;
+        match &self.update {
+            UpdateState::Available(release) => {
+                ui.label(
+                    RichText::new(trf(
+                        "update.available",
+                        &[("version", &release.version), ("current", &update::VERSION)],
+                    ))
+                    .strong(),
+                );
+                if small(
+                    ui,
+                    Some(icons::DOWNLOAD),
+                    tr("update.install"),
+                    Kind::Primary,
+                ) {
+                    action = Some(UpdateAction::Download(release.clone()));
+                }
+                if small(
+                    ui,
+                    Some(icons::ARROW_SQUARE_OUT),
+                    tr("update.whats_new"),
+                    Kind::Ghost,
+                ) {
+                    open_url(&release.page);
+                }
+                if small(ui, None, tr("update.skip"), Kind::Ghost) {
+                    action = Some(UpdateAction::Skip(release.version.to_string()));
+                }
+            }
+            UpdateState::Downloading {
+                release,
+                progress,
+                cancel,
+                ..
+            } => {
+                ui.label(trf("update.downloading", &[("version", &release.version)]));
+                let fraction = f32::from_bits(progress.load(Ordering::Relaxed));
+                widgets::progress(
+                    ui,
+                    Id::unique("update_download"),
+                    fraction,
+                    format!("{:.0}%", fraction * 100.0),
+                    PROGRESS_WIDTH,
+                );
+                if small(ui, Some(icons::X), tr("action.cancel"), Kind::Ghost) {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                return None;
+            }
+            UpdateState::Installed(release, outcome) => {
+                let key = match outcome {
+                    update::Installed::Restart => "update.restart",
+                    update::Installed::FinishInInstaller => "update.finish_in_installer",
+                    update::Installed::QuitForInstaller => "update.installer_running",
+                };
+                ui.label(trf(key, &[("version", &release.version)]));
+                if *outcome == update::Installed::Restart
+                    && small(
+                        ui,
+                        Some(icons::ARROW_CLOCKWISE),
+                        tr("update.restart_now"),
+                        Kind::Primary,
+                    )
+                {
+                    action = Some(UpdateAction::Restart);
+                }
+            }
+            UpdateState::Failed(message) => {
+                ui.label(trf("update.failed", &[("error", message)]));
+                if small(
+                    ui,
+                    Some(icons::ARROW_CLOCKWISE),
+                    tr("update.try_again"),
+                    Kind::Secondary,
+                ) {
+                    action = Some(UpdateAction::Retry);
+                }
+            }
+            _ => return None,
+        }
+        action
+    }
+
+    /// The Updates section of Settings.
+    fn update_settings(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let mut check_now = false;
+        settings_grid(ui, "settings_updates", |ui| {
+            row(ui, tr("update.version_label"), |ui| {
+                ui.label(RichText::new(format!("Muxr {}", update::VERSION)).strong());
+            });
+            row(ui, tr("update.automatic_label"), |ui| {
+                ui.checkbox(&mut self.settings.check_updates, tr("update.automatic"));
+            });
+            row(ui, "", |ui| {
+                let checking = matches!(self.update, UpdateState::Checking { .. });
+                check_now = widgets::button(
+                    ui,
+                    Some(icons::ARROW_CLOCKWISE),
+                    tr("update.check_now"),
+                    Kind::Secondary,
+                    Size::Small,
+                    !checking && !matches!(self.update, UpdateState::Downloading { .. }),
+                )
+                .clicked();
+                let (text, color) = match &self.update {
+                    UpdateState::Checking { .. } => (tr("update.checking").to_owned(), p.text_weak),
+                    UpdateState::UpToDate => (tr("update.up_to_date").to_owned(), p.success),
+                    UpdateState::Available(r) | UpdateState::Downloading { release: r, .. } => (
+                        trf("update.available_short", &[("version", &r.version)]),
+                        p.accent,
+                    ),
+                    UpdateState::Failed(message) => {
+                        (trf("update.failed", &[("error", message)]), p.danger)
+                    }
+                    _ => (String::new(), p.text_weak),
+                };
+                ui.label(RichText::new(text).small().color(color));
+            });
+        });
+        ui.label(
+            RichText::new(tr("update.safety_hint"))
+                .small()
+                .color(p.text_weak),
+        );
+        if check_now {
+            self.start_update_check(ui.ctx(), true);
         }
     }
 
@@ -2631,6 +2967,15 @@ impl MuxrApp {
             self.media_info = None;
         }
     }
+}
+
+/// What the update banner asked for.
+enum UpdateAction {
+    Download(update::Release),
+    Retry,
+    Skip(String),
+    Restart,
+    Dismiss,
 }
 
 enum FileAction {
@@ -3293,6 +3638,13 @@ fn open_path(path: &Path) {
     }
 }
 
+/// Opens a web page in the default browser.
+fn open_url(url: &str) {
+    if let Err(e) = spawn_detached(opener(), [url]) {
+        tracing::warn!(error = %e, "could not open web page");
+    }
+}
+
 /// Opens the folder containing `path` in the system file manager.
 fn reveal(path: &Path) {
     let dir = if path.is_dir() {
@@ -3350,6 +3702,7 @@ impl eframe::App for MuxrApp {
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
         self.check_after_done(&ctx);
         self.poll_installs();
+        self.poll_update(&ctx);
         self.poll_details();
         let p = theme::palette(ui);
 
@@ -3401,6 +3754,7 @@ impl eframe::App for MuxrApp {
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
+                    self.update_banner(ui);
                     if self.in_editor {
                         centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                     } else {

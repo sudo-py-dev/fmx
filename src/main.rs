@@ -27,6 +27,7 @@ mod queue;
 mod settings;
 mod sheet;
 mod theme;
+mod update;
 mod widgets;
 mod ytdlp_setup;
 
@@ -36,6 +37,20 @@ use tracing_subscriber::EnvFilter;
 const APP_ID: &str = "muxr";
 const INITIAL_SIZE: [f32; 2] = [1120.0, 760.0];
 const MIN_SIZE: [f32; 2] = [760.0, 520.0];
+
+/// The app icon for the window and taskbar (from `packaging/make-icons.py`).
+fn window_icon() -> egui::IconData {
+    let png = include_bytes!("../packaging/icons/muxr-256.png");
+    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .expect("bundled icon is a valid PNG")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
+}
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
@@ -55,7 +70,8 @@ fn main() -> eframe::Result {
             .with_app_id(APP_ID)
             .with_inner_size(INITIAL_SIZE)
             .with_min_inner_size(MIN_SIZE)
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(window_icon()),
         ..Default::default()
     };
     eframe::run_native(
