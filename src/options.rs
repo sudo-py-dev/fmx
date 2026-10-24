@@ -1,8 +1,10 @@
 //! User-tunable conversion options shared by all tools.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{AudioFormat, ImageFormat};
+use crate::catalog::{AudioFormat, ImageFormat, VideoEncoder, VideoFormat};
 use crate::i18n::tr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,10 +45,11 @@ pub enum Resolution {
     P720,
     P480,
     P360,
+    P240,
 }
 
 impl Resolution {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Original,
         Self::P2160,
         Self::P1440,
@@ -54,6 +57,7 @@ impl Resolution {
         Self::P720,
         Self::P480,
         Self::P360,
+        Self::P240,
     ];
 
     pub fn max_height(self) -> Option<u32> {
@@ -65,6 +69,7 @@ impl Resolution {
             Self::P720 => Some(720),
             Self::P480 => Some(480),
             Self::P360 => Some(360),
+            Self::P240 => Some(240),
         }
     }
 
@@ -113,6 +118,223 @@ impl Rotation {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HwAccel {
+    Off,
+    Nvenc,
+    Qsv,
+    Vaapi,
+}
+
+impl HwAccel {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Nvenc, Self::Qsv, Self::Vaapi];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => tr("hw.off"),
+            Self::Nvenc => "NVIDIA NVENC",
+            Self::Qsv => "Intel Quick Sync",
+            Self::Vaapi => "VA-API (Intel/AMD)",
+        }
+    }
+
+    /// ffmpeg's encoder-name suffix for this backend.
+    pub fn suffix(self) -> Option<&'static str> {
+        match self {
+            Self::Off => None,
+            Self::Nvenc => Some("nvenc"),
+            Self::Qsv => Some("qsv"),
+            Self::Vaapi => Some("vaapi"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Channels {
+    Original,
+    Mono,
+    Stereo,
+}
+
+impl Channels {
+    pub const ALL: [Self; 3] = [Self::Original, Self::Mono, Self::Stereo];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Original => tr("channels.original"),
+            Self::Mono => tr("channels.mono"),
+            Self::Stereo => tr("channels.stereo"),
+        }
+    }
+
+    pub fn count(self) -> Option<u32> {
+        match self {
+            Self::Original => None,
+            Self::Mono => Some(1),
+            Self::Stereo => Some(2),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    Center,
+}
+
+impl Corner {
+    pub const ALL: [Self; 5] = [
+        Self::TopLeft,
+        Self::TopRight,
+        Self::BottomLeft,
+        Self::BottomRight,
+        Self::Center,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TopLeft => tr("corner.top_left"),
+            Self::TopRight => tr("corner.top_right"),
+            Self::BottomLeft => tr("corner.bottom_left"),
+            Self::BottomRight => tr("corner.bottom_right"),
+            Self::Center => tr("corner.center"),
+        }
+    }
+
+    /// `overlay` filter position with a fixed margin.
+    pub fn overlay_position(self) -> &'static str {
+        match self {
+            Self::TopLeft => "16:16",
+            Self::TopRight => "W-w-16:16",
+            Self::BottomLeft => "16:H-h-16",
+            Self::BottomRight => "W-w-16:H-h-16",
+            Self::Center => "(W-w)/2:(H-h)/2",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MixLayout {
+    SideBySide,
+    TopBottom,
+    PictureInPicture,
+}
+
+impl MixLayout {
+    pub const ALL: [Self; 3] = [Self::SideBySide, Self::TopBottom, Self::PictureInPicture];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SideBySide => tr("mix.side_by_side"),
+            Self::TopBottom => tr("mix.top_bottom"),
+            Self::PictureInPicture => tr("mix.pip"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadKind {
+    Video,
+    AudioMp3,
+}
+
+impl DownloadKind {
+    pub const ALL: [Self; 2] = [Self::Video, Self::AudioMp3];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Video => tr("download.video"),
+            Self::AudioMp3 => tr("download.audio"),
+        }
+    }
+}
+
+/// A pixel rectangle inside the video frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Default for Rect {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            w: 320,
+            h: 180,
+        }
+    }
+}
+
+/// Advanced video encoder settings ("Output settings").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoSettings {
+    pub encoder: VideoEncoder,
+    pub hw: HwAccel,
+    /// Fixed bitrate; `None` uses constant quality from [`Quality`].
+    pub bitrate_kbps: Option<u32>,
+    pub fps: Option<u32>,
+}
+
+impl Default for VideoSettings {
+    fn default() -> Self {
+        Self {
+            encoder: VideoEncoder::Auto,
+            hw: HwAccel::Off,
+            bitrate_kbps: None,
+            fps: None,
+        }
+    }
+}
+
+/// Advanced audio settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    pub bitrate_kbps: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub channels: Channels,
+    pub volume_db: f32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            bitrate_kbps: None,
+            sample_rate: None,
+            channels: Channels::Original,
+            volume_db: 0.0,
+        }
+    }
+}
+
+/// Per-task edits ("Clip / Option"): reset after each batch is queued.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Edit {
+    /// Clip window as typed by the user (`ss`, `mm:ss` or `hh:mm:ss[.fff]`).
+    pub trim_start: String,
+    pub trim_end: String,
+    pub crop: Option<Rect>,
+    pub rotation: Option<Rotation>,
+    pub subtitle: Option<PathBuf>,
+    pub watermark: Option<PathBuf>,
+    pub watermark_corner: Option<Corner>,
+}
+
+impl Edit {
+    pub fn has_trim(&self) -> bool {
+        !self.trim_start.trim().is_empty() || !self.trim_end.trim().is_empty()
+    }
+}
+
 pub const MIN_SPEED: f32 = 0.25;
 pub const MAX_SPEED: f32 = 4.0;
 pub const MIN_TARGET_MB: u32 = 1;
@@ -121,15 +343,26 @@ pub const MIN_FRAME_INTERVAL_S: f32 = 0.1;
 pub const MAX_FRAME_INTERVAL_S: f32 = 3600.0;
 pub const MIN_IMAGE_SIDE: u32 = 16;
 pub const MAX_IMAGE_SIDE: u32 = 16_384;
+pub const MAX_VIDEO_KBPS: u32 = 200_000;
+pub const MAX_AUDIO_KBPS: u32 = 640;
+pub const MAX_VOLUME_DB: f32 = 30.0;
+pub const MIN_SPLIT_SECS: f32 = 1.0;
+pub const MAX_SPLIT_PARTS: u32 = 999;
+pub const MIN_PDF_DPI: u32 = 36;
+pub const MAX_PDF_DPI: u32 = 1200;
+pub const MAX_CSO_LEVEL: u32 = 9;
+pub const MAX_RECORD_FPS: u32 = 120;
+pub const SAMPLE_RATES: [u32; 6] = [8_000, 22_050, 32_000, 44_100, 48_000, 96_000];
+pub const FRAME_RATES: [u32; 8] = [10, 15, 24, 25, 30, 50, 60, 120];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Options {
     pub quality: Quality,
     pub resolution: Resolution,
-    /// Trim window as typed by the user (`ss`, `mm:ss` or `hh:mm:ss[.fff]`).
-    pub trim_start: String,
-    pub trim_end: String,
+    pub video: VideoSettings,
+    pub audio: AudioSettings,
+    pub edit: Edit,
     /// Cut on keyframes without re-encoding (instant, slightly imprecise).
     pub stream_copy: bool,
     pub target_size_mb: u32,
@@ -141,6 +374,23 @@ pub struct Options {
     /// Longest image side after resizing; `None` keeps the original size.
     pub image_max_side: Option<u32>,
     pub grayscale: bool,
+    pub image_rotation: Option<Rotation>,
+    pub split_by_parts: bool,
+    pub split_secs: f32,
+    pub split_parts: u32,
+    pub delogo: Rect,
+    pub mix_layout: MixLayout,
+    pub pdf_dpi: u32,
+    pub pdf_image_format: ImageFormat,
+    /// DVD title number; 0 lets ffmpeg pick the main title.
+    pub dvd_title: u32,
+    pub disc_video_format: VideoFormat,
+    pub cd_audio_format: AudioFormat,
+    pub iso_label: String,
+    pub cso_level: u32,
+    pub record_fps: u32,
+    pub record_audio: bool,
+    pub download_kind: DownloadKind,
 }
 
 impl Default for Options {
@@ -148,8 +398,9 @@ impl Default for Options {
         Self {
             quality: Quality::Medium,
             resolution: Resolution::Original,
-            trim_start: "0:00".to_owned(),
-            trim_end: String::new(),
+            video: VideoSettings::default(),
+            audio: AudioSettings::default(),
+            edit: Edit::default(),
             stream_copy: true,
             target_size_mb: 25,
             frame_interval_s: 1.0,
@@ -159,6 +410,22 @@ impl Default for Options {
             join_audio_format: AudioFormat::Mp3,
             image_max_side: None,
             grayscale: false,
+            image_rotation: None,
+            split_by_parts: false,
+            split_secs: 60.0,
+            split_parts: 2,
+            delogo: Rect::default(),
+            mix_layout: MixLayout::SideBySide,
+            pdf_dpi: 150,
+            pdf_image_format: ImageFormat::Png,
+            dvd_title: 0,
+            disc_video_format: VideoFormat::Mp4,
+            cd_audio_format: AudioFormat::Mp3,
+            iso_label: "DISC".to_owned(),
+            cso_level: 9,
+            record_fps: 30,
+            record_audio: true,
+            download_kind: DownloadKind::Video,
         }
     }
 }
@@ -214,5 +481,13 @@ mod tests {
     fn resolution_never_reports_original_height() {
         assert_eq!(Resolution::Original.max_height(), None);
         assert_eq!(Resolution::P720.max_height(), Some(720));
+    }
+
+    #[test]
+    fn old_settings_files_still_load() {
+        let opts: Options =
+            serde_json::from_str(r#"{"quality":"High","trim_start":"1"}"#).expect("parse");
+        assert_eq!(opts.quality, Quality::High);
+        assert_eq!(opts.video, VideoSettings::default());
     }
 }

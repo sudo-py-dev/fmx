@@ -4,6 +4,10 @@
 
 mod app;
 mod catalog;
+mod cso;
+mod docs;
+mod exec;
+mod externals;
 mod ffmpeg;
 mod i18n;
 mod imaging;
@@ -11,6 +15,7 @@ mod jobs;
 mod options;
 mod plan;
 mod probe;
+mod process;
 mod queue;
 mod settings;
 
@@ -27,7 +32,9 @@ fn main() -> eframe::Result {
             EnvFilter::try_from_env("MUXR_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
         )
         .init();
-    i18n::init(std::env::var("MUXR_LANG").ok().as_deref());
+    if let Ok(lang) = std::env::var("MUXR_LANG") {
+        i18n::set_language(Some(&lang));
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

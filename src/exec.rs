@@ -1,0 +1,689 @@
+//! Executes one job on the calling (worker) thread.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+
+use crate::catalog::Tool;
+use crate::cso;
+use crate::docs::{self, OfficeTarget};
+use crate::externals::{External, Toolbox};
+use crate::ffmpeg;
+use crate::imaging;
+use crate::jobs::{JobError, JobSpec};
+use crate::plan::{self, CD_DEMUXER, DVD_DEMUXER, Input, PlanError};
+use crate::process::{self, StopMode, Watch};
+
+/// Runs a job to completion, reporting progress in `0.0..=1.0`.
+pub fn execute(
+    spec: &JobSpec,
+    toolbox: &Toolbox,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(f32),
+) -> Result<(), JobError> {
+    if let Some(missing) = toolbox.missing(spec.tool.requires()) {
+        return Err(JobError::Missing(missing));
+    }
+    let result = run_tool(spec, toolbox, cancel, &mut on_progress);
+    match &result {
+        Ok(()) => on_progress(1.0),
+        // Downloads write into a folder the user owns; never delete it.
+        Err(_) if spec.tool != Tool::Download => remove_partial(&spec.output),
+        Err(_) => {}
+    }
+    result
+}
+
+fn need(toolbox: &Toolbox, ext: External) -> Result<&Path, JobError> {
+    toolbox.get(ext).ok_or(JobError::Missing(ext))
+}
+
+fn first_input(spec: &JobSpec) -> Result<&Path, JobError> {
+    spec.inputs
+        .first()
+        .map(PathBuf::as_path)
+        .ok_or(JobError::Plan(PlanError::WrongInputCount {
+            needed: 1,
+            got: 0,
+        }))
+}
+
+/// Runs an external program that reports no progress.
+fn run_plain(program: &Path, args: &[OsString], cancel: &AtomicBool) -> Result<(), JobError> {
+    process::run(program, args, StopMode::Kill, cancel, |_| {}).map_err(JobError::Run)
+}
+
+fn run_tool(
+    spec: &JobSpec,
+    toolbox: &Toolbox,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<(), JobError> {
+    let opts = &spec.options;
+    let out = spec.output.as_path();
+    let ffmpeg_path = toolbox.get(External::Ffmpeg);
+    match spec.tool {
+        Tool::ToImage(format) => {
+            imaging::convert(first_input(spec)?, out, format, opts, ffmpeg_path)
+                .map_err(JobError::Image)
+        }
+        Tool::ImagesToPdf => {
+            imaging::images_to_pdf(&spec.inputs, out, opts, ffmpeg_path, on_progress)
+                .map_err(JobError::Image)
+        }
+        Tool::IsoToCso => {
+            cso::compress(first_input(spec)?, out, opts.cso_level, cancel, on_progress)
+                .map_err(JobError::Cso)
+        }
+        Tool::CsoToIso => {
+            cso::decompress(first_input(spec)?, out, cancel, on_progress).map_err(JobError::Cso)
+        }
+        Tool::PdfToImages => {
+            std::fs::create_dir_all(out).map_err(JobError::Io)?;
+            let args =
+                docs::pdf_to_images(first_input(spec)?, out, opts.pdf_dpi, opts.pdf_image_format);
+            run_plain(need(toolbox, External::Pdftoppm)?, &args, cancel)
+        }
+        Tool::PdfToText => run_plain(
+            need(toolbox, External::Pdftotext)?,
+            &docs::pdf_to_text(first_input(spec)?, out),
+            cancel,
+        ),
+        Tool::PdfToHtml => run_plain(
+            need(toolbox, External::Pdftohtml)?,
+            &docs::pdf_to_html(first_input(spec)?, out),
+            cancel,
+        ),
+        Tool::PdfMerge => run_plain(
+            need(toolbox, External::Pdfunite)?,
+            &docs::pdf_merge(&spec.inputs, out),
+            cancel,
+        ),
+        Tool::PdfSplit => {
+            std::fs::create_dir_all(out).map_err(JobError::Io)?;
+            run_plain(
+                need(toolbox, External::Pdfseparate)?,
+                &docs::pdf_split(first_input(spec)?, out),
+                cancel,
+            )
+        }
+        Tool::PdfCompress => run_plain(
+            need(toolbox, External::Ghostscript)?,
+            &docs::pdf_compress(first_input(spec)?, out, opts.quality),
+            cancel,
+        ),
+        Tool::OfficeToPdf => office(spec, toolbox, cancel, OfficeTarget::Pdf),
+        Tool::PdfToWord => office(spec, toolbox, cancel, OfficeTarget::Docx),
+        Tool::ToEbook(_) => run_plain(
+            need(toolbox, External::EbookConvert)?,
+            &docs::ebook_convert(first_input(spec)?, out),
+            cancel,
+        ),
+        Tool::FolderToIso => {
+            let folder = first_input(spec)?;
+            let is_dvd = folder.join("VIDEO_TS").is_dir();
+            let args = docs::folder_to_iso(folder, out, &opts.iso_label, is_dvd);
+            process::run_watching(
+                need(toolbox, External::Xorriso)?,
+                &args,
+                StopMode::Kill,
+                Watch::Stderr,
+                cancel,
+                |line| {
+                    if let Some(p) = docs::xorriso_progress(line) {
+                        on_progress(p);
+                    }
+                },
+            )
+            .map_err(JobError::Run)
+        }
+        Tool::Download => {
+            let url = spec
+                .url
+                .as_deref()
+                .filter(|u| docs::is_web_url(u))
+                .ok_or(JobError::BadUrl)?;
+            let ffmpeg = need(toolbox, External::Ffmpeg)?;
+            std::fs::create_dir_all(out).map_err(JobError::Io)?;
+            let args = docs::download(url, out, ffmpeg, opts.download_kind);
+            process::run(
+                need(toolbox, External::YtDlp)?,
+                &args,
+                StopMode::Kill,
+                cancel,
+                |line| {
+                    if let Some(p) = docs::download_progress(line) {
+                        on_progress(p);
+                    }
+                },
+            )
+            .map_err(JobError::Run)
+        }
+        Tool::Record => {
+            let ffmpeg = need(toolbox, External::Ffmpeg)?;
+            let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_owned());
+            let plan = plan::record(out, opts, &display);
+            ffmpeg::run(ffmpeg, &plan, cancel, on_progress).map_err(JobError::Run)?;
+            if out.is_file() {
+                Ok(())
+            } else {
+                Err(JobError::NoOutput)
+            }
+        }
+        Tool::CdToAudio => rip_cd(spec, need(toolbox, External::Ffmpeg)?, cancel, on_progress),
+        tool => {
+            let ffmpeg = need(toolbox, External::Ffmpeg)?;
+            let demuxer = (tool == Tool::DvdToVideo).then_some(DVD_DEMUXER);
+            let inputs = spec
+                .inputs
+                .iter()
+                .map(|path| {
+                    let probe_path = if demuxer.is_some() {
+                        plan::dvd_root(path)
+                    } else {
+                        path.clone()
+                    };
+                    let info =
+                        ffmpeg::probe(ffmpeg, &probe_path, demuxer).map_err(JobError::Run)?;
+                    Ok(Input {
+                        path: path.clone(),
+                        info,
+                    })
+                })
+                .collect::<Result<Vec<_>, JobError>>()?;
+            let plan = plan::build(tool, &inputs, out, opts)?;
+            if matches!(tool, Tool::ExtractFrames | Tool::Split) {
+                std::fs::create_dir_all(out).map_err(JobError::Io)?;
+            }
+            ffmpeg::run(ffmpeg, &plan, cancel, on_progress).map_err(JobError::Run)
+        }
+    }
+}
+
+/// LibreOffice writes `<stem>.<ext>` into an output folder; convert into a
+/// private folder beside the destination, then move the result into place.
+fn office(
+    spec: &JobSpec,
+    toolbox: &Toolbox,
+    cancel: &AtomicBool,
+    target: OfficeTarget,
+) -> Result<(), JobError> {
+    let input = first_input(spec)?;
+    let soffice = need(toolbox, External::Soffice)?;
+    let parent = spec.output.parent().unwrap_or(Path::new("."));
+    let staging = tempfile::tempdir_in(parent).map_err(JobError::Io)?;
+    let profile = tempfile::tempdir().map_err(JobError::Io)?;
+    let args = docs::office_convert(input, staging.path(), profile.path(), target);
+    run_plain(soffice, &args, cancel)?;
+    let ext = if target == OfficeTarget::Pdf {
+        "pdf"
+    } else {
+        "docx"
+    };
+    let stem = input.file_stem().ok_or(JobError::NoOutput)?;
+    let produced = staging.path().join(stem).with_extension(ext);
+    if !produced.is_file() {
+        return Err(JobError::NoOutput);
+    }
+    std::fs::rename(&produced, &spec.output).map_err(JobError::Io)
+}
+
+/// Rips each track of an audio CD into its own file.
+fn rip_cd(
+    spec: &JobSpec,
+    ffmpeg: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<(), JobError> {
+    let device = first_input(spec)?;
+    let info = ffmpeg::probe(ffmpeg, device, Some(CD_DEMUXER)).map_err(JobError::Run)?;
+    if info.chapters.is_empty() {
+        return Err(PlanError::NoTracks.into());
+    }
+    std::fs::create_dir_all(&spec.output).map_err(JobError::Io)?;
+    let total: f64 = info.chapters.iter().map(|(s, e)| e - s).sum();
+    let mut done = 0.0;
+    let ext = spec.options.cd_audio_format.ext();
+    for (n, &track) in info.chapters.iter().enumerate() {
+        let output = spec.output.join(format!("Track {:02}.{ext}", n + 1));
+        let plan = plan::cd_track(device, track, &output, &spec.options);
+        let length = track.1 - track.0;
+        ffmpeg::run(ffmpeg, &plan, cancel, |p| {
+            on_progress(((done + f64::from(p) * length) / total) as f32);
+        })
+        .map_err(JobError::Run)?;
+        done += length;
+    }
+    Ok(())
+}
+
+/// Deletes a half-written output so failed jobs leave nothing behind.
+fn remove_partial(output: &Path) {
+    let removed = if output.is_dir() {
+        std::fs::remove_dir_all(output)
+    } else {
+        std::fs::remove_file(output)
+    };
+    if let Err(e) = removed
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %output.display(), error = %e, "could not remove partial output");
+    }
+}
+
+/// End-to-end runs against real programs. Skipped unless `MUXR_FFMPEG` points
+/// at ffmpeg: `MUXR_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture`.
+/// Document/ISO tools run when their programs are on `PATH`.
+#[cfg(test)]
+mod e2e {
+    use super::*;
+    use crate::catalog::{AudioFormat, ImageFormat, VideoFormat};
+    use crate::jobs::{Selection, plan_jobs};
+    use crate::options::{Corner, Options, Rect};
+    use std::collections::HashSet;
+    use std::process::Command;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    fn toolbox() -> Option<Toolbox> {
+        std::env::var_os("MUXR_FFMPEG").map(|p| Toolbox::detect(Some(Path::new(&p))))
+    }
+
+    fn generate(ffmpeg: &Path, out: &Path, extra: &[impl AsRef<std::ffi::OsStr>]) {
+        let status = Command::new(ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(extra)
+            .arg(out)
+            .status()
+            .expect("run ffmpeg");
+        assert!(status.success(), "could not generate {}", out.display());
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        video: PathBuf,
+        video2: PathBuf,
+        audio: PathBuf,
+        logo: PathBuf,
+        subs: PathBuf,
+        images: Vec<PathBuf>,
+    }
+
+    fn fixture(ffmpeg: &Path) -> Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let video = root.join("clip.mp4");
+        let video2 = root.join("other.mkv");
+        let audio = root.join("tone.wav");
+        let av = |src: &str, hz: &str| -> Vec<String> {
+            let tone = format!("sine=frequency={hz}");
+            [
+                "-f",
+                "lavfi",
+                "-i",
+                src,
+                "-f",
+                "lavfi",
+                "-i",
+                tone.as_str(),
+                "-t",
+                "3",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        };
+        generate(ffmpeg, &video, &av("testsrc=size=640x360:rate=25", "440"));
+        generate(ffmpeg, &video2, &av("testsrc2=size=320x240:rate=30", "660"));
+        generate(
+            ffmpeg,
+            &audio,
+            &["-f", "lavfi", "-i", "sine=frequency=330:duration=2"],
+        );
+        let logo = root.join("logo.png");
+        image::RgbaImage::from_pixel(64, 32, image::Rgba([255, 0, 0, 160]))
+            .save(&logo)
+            .expect("logo");
+        // A name with characters that need filtergraph escaping.
+        let subs = root.join("it's: subs, [1].srt");
+        std::fs::write(&subs, "1\n00:00:00,000 --> 00:00:02,000\nHello\n").expect("subs");
+        let images = (0..2)
+            .map(|i| {
+                let p = root.join(format!("page{i}.png"));
+                image::RgbImage::from_pixel(200, 120, image::Rgb([20, 80 * i as u8, 200]))
+                    .save(&p)
+                    .expect("img");
+                p
+            })
+            .collect();
+        Fixture {
+            _dir: dir,
+            root,
+            video,
+            video2,
+            audio,
+            logo,
+            subs,
+            images,
+        }
+    }
+
+    /// Plans and runs one selection; returns the outputs or a failure label.
+    fn run(
+        toolbox: &Toolbox,
+        tool: Tool,
+        files: &[PathBuf],
+        opts: &Options,
+        out_dir: &Path,
+        claimed: &mut HashSet<PathBuf>,
+    ) -> Result<Vec<PathBuf>, String> {
+        let sel = Selection {
+            tool,
+            files,
+            url: "",
+            output_dir: Some(out_dir),
+            options: opts,
+        };
+        let specs = plan_jobs(&sel, claimed).map_err(|e| e.to_string())?;
+        let mut outputs = Vec::new();
+        for spec in specs {
+            let started = Instant::now();
+            let mut last = 0.0f32;
+            let result = execute(&spec, toolbox, &AtomicBool::new(false), |p| last = p);
+            eprintln!(
+                "{:<28} {:>6.2}s {:?}",
+                format!("{tool:?}"),
+                started.elapsed().as_secs_f32(),
+                result.as_ref().err().map(ToString::to_string)
+            );
+            result.map_err(|e| e.to_string())?;
+            if last < 1.0 {
+                return Err("progress did not reach 100%".into());
+            }
+            outputs.push(spec.output);
+        }
+        Ok(outputs)
+    }
+
+    fn produced_media(toolbox: &Toolbox, path: &Path) -> bool {
+        if path.is_dir() {
+            return std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_some());
+        }
+        let ffmpeg = toolbox.get(External::Ffmpeg).expect("ffmpeg");
+        ffmpeg::probe(ffmpeg, path, None).is_ok_and(|i| i.has_audio || i.has_video)
+    }
+
+    #[test]
+    fn every_media_tool_produces_output() {
+        let Some(tb) = toolbox() else {
+            eprintln!("MUXR_FFMPEG not set; skipping");
+            return;
+        };
+        let fx = fixture(tb.get(External::Ffmpeg).expect("ffmpeg"));
+        let out_dir = fx.root.join("out");
+        std::fs::create_dir(&out_dir).expect("out dir");
+
+        let mut opts = Options::default();
+        opts.edit.trim_start = "0:01".into();
+        opts.edit.trim_end = "0:02".into();
+        opts.target_size_mb = 1;
+        opts.delogo = Rect {
+            x: 10,
+            y: 10,
+            w: 100,
+            h: 40,
+        };
+        let mut edited = Options::default();
+        edited.edit.crop = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 320,
+            h: 240,
+        });
+        edited.edit.subtitle = Some(fx.subs.clone());
+        edited.edit.watermark = Some(fx.logo.clone());
+        edited.edit.watermark_corner = Some(Corner::TopLeft);
+        edited.video.fps = Some(15);
+        edited.audio.volume_db = -3.0;
+
+        let split_opts = Options {
+            split_by_parts: true,
+            split_parts: 2,
+            ..Options::default()
+        };
+        let mut louder = Options::default();
+        louder.audio.volume_db = 6.0;
+        let mut cases: Vec<(Tool, Vec<PathBuf>, &Options)> = VideoFormat::ALL
+            .into_iter()
+            .map(|f| (Tool::ToVideo(f), vec![fx.video.clone()], &opts))
+            .chain(
+                AudioFormat::ALL
+                    .into_iter()
+                    .filter(|f| tb.has_encoder(f.required_encoder()))
+                    .map(|f| (Tool::ToAudio(f), vec![fx.video.clone()], &opts)),
+            )
+            .collect();
+        cases.extend([
+            (
+                Tool::ToVideo(VideoFormat::Mp4),
+                vec![fx.video.clone()],
+                &edited,
+            ),
+            (
+                Tool::ToVideo(VideoFormat::Gif),
+                vec![fx.video.clone()],
+                &edited,
+            ),
+            (
+                Tool::JoinVideo,
+                vec![fx.video.clone(), fx.video2.clone()],
+                &opts,
+            ),
+            (
+                Tool::JoinAudio,
+                vec![fx.audio.clone(), fx.video.clone()],
+                &opts,
+            ),
+            (
+                Tool::AudioMix,
+                vec![fx.audio.clone(), fx.video.clone()],
+                &opts,
+            ),
+            (
+                Tool::VideoMix,
+                vec![fx.video.clone(), fx.video2.clone()],
+                &opts,
+            ),
+            (Tool::Mux, vec![fx.video2.clone(), fx.audio.clone()], &opts),
+            (Tool::Trim, vec![fx.video.clone()], &opts),
+            (Tool::Split, vec![fx.video.clone()], &split_opts),
+            (Tool::Compress, vec![fx.video.clone()], &opts),
+            (Tool::RemoveAudio, vec![fx.video.clone()], &opts),
+            (Tool::Delogo, vec![fx.video.clone()], &opts),
+            (Tool::ExtractFrames, vec![fx.video.clone()], &opts),
+            (Tool::Rotate, vec![fx.video2.clone()], &opts),
+            (Tool::Speed, vec![fx.video.clone()], &opts),
+            (Tool::Volume, vec![fx.audio.clone()], &louder),
+            (Tool::Normalize, vec![fx.audio.clone()], &opts),
+            (Tool::Repair, vec![fx.video.clone()], &opts),
+        ]);
+        let mut vaapi = Options::default();
+        vaapi.video.hw = crate::options::HwAccel::Vaapi;
+        if Path::new("/dev/dri/renderD128").exists() && tb.has_encoder("h264_vaapi") {
+            cases.push((
+                Tool::ToVideo(VideoFormat::Mp4),
+                vec![fx.video.clone()],
+                &vaapi,
+            ));
+        }
+        let mut claimed = HashSet::new();
+        let mut failures = Vec::new();
+        for (tool, files, options) in cases {
+            match run(&tb, tool, &files, options, &out_dir, &mut claimed) {
+                Ok(outputs) if outputs.iter().all(|o| produced_media(&tb, o)) => {}
+                Ok(_) => failures.push(format!("{tool:?}: output is not valid media")),
+                Err(e) => failures.push(format!("{tool:?}: {e}")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "failed tools:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn document_image_and_disc_tools() {
+        let Some(tb) = toolbox() else {
+            return;
+        };
+        let fx = fixture(tb.get(External::Ffmpeg).expect("ffmpeg"));
+        let out = fx.root.join("docs");
+        std::fs::create_dir(&out).expect("dir");
+        let opts = Options::default();
+        let mut claimed = HashSet::new();
+        let mut failures = Vec::new();
+        let mut check = |tool: Tool, files: Vec<PathBuf>| -> Option<PathBuf> {
+            if let Some(missing) = tb.missing(tool.requires()) {
+                eprintln!("{tool:?}: skipped, {} not installed", missing.name());
+                return None;
+            }
+            match run(&tb, tool, &files, &opts, &out, &mut claimed) {
+                Ok(outputs) => {
+                    let o = outputs.into_iter().next()?;
+                    let ok = if o.is_dir() {
+                        std::fs::read_dir(&o).is_ok_and(|mut d| d.next().is_some())
+                    } else {
+                        std::fs::metadata(&o).is_ok_and(|m| m.len() > 0)
+                    };
+                    if !ok {
+                        failures.push(format!("{tool:?}: empty output"));
+                    }
+                    ok.then_some(o)
+                }
+                Err(e) => {
+                    failures.push(format!("{tool:?}: {e}"));
+                    None
+                }
+            }
+        };
+        for format in ImageFormat::ALL {
+            check(Tool::ToImage(format), vec![fx.images[0].clone()]);
+        }
+        let pdf = check(Tool::ImagesToPdf, fx.images.clone()).expect("pdf");
+        for tool in [
+            Tool::PdfToImages,
+            Tool::PdfToText,
+            Tool::PdfToHtml,
+            Tool::PdfSplit,
+            Tool::PdfCompress,
+        ] {
+            check(tool, vec![pdf.clone()]);
+        }
+        check(Tool::PdfMerge, vec![pdf.clone(), pdf.clone()]);
+        let disc = fx.root.join("disc");
+        std::fs::create_dir(&disc).expect("disc");
+        std::fs::copy(&fx.video, disc.join("clip.mp4")).expect("copy");
+        if let Some(iso) = check(Tool::FolderToIso, vec![disc]) {
+            if let Some(cso) = check(Tool::IsoToCso, vec![iso.clone()]) {
+                if let Some(back) = check(Tool::CsoToIso, vec![cso]) {
+                    assert_eq!(
+                        std::fs::read(&back).expect("back"),
+                        std::fs::read(&iso).expect("iso")
+                    );
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "failed tools:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn cancelling_stops_ffmpeg_and_removes_output() {
+        let Some(tb) = toolbox() else {
+            return;
+        };
+        let ffmpeg = tb.get(External::Ffmpeg).expect("ffmpeg");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let video = dir.path().join("long.mp4");
+        generate(
+            ffmpeg,
+            &video,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=1280x720:rate=30",
+                "-t",
+                "60",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+        );
+        let spec = JobSpec {
+            tool: Tool::ToVideo(VideoFormat::Webm),
+            inputs: vec![video],
+            url: None,
+            output: dir.path().join("long.webm"),
+            options: Options::default(),
+        };
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let result = execute(&spec, &tb, &cancel, |p| {
+            if p > 0.0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        });
+        assert!(
+            result.as_ref().is_err_and(JobError::is_cancelled),
+            "{result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(!spec.output.exists(), "partial output left behind");
+    }
+
+    #[test]
+    fn screen_recording_stops_gracefully() {
+        let Some(tb) = toolbox() else {
+            return;
+        };
+        if std::env::var_os("DISPLAY").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spec = JobSpec {
+            tool: Tool::Record,
+            inputs: Vec::new(),
+            url: None,
+            output: dir.path().join("rec.mkv"),
+            options: Options {
+                record_audio: false,
+                record_fps: 10,
+                ..Options::default()
+            },
+        };
+        let cancel = AtomicBool::new(false);
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_secs(2));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            execute(&spec, &tb, &cancel, |_| {})
+        });
+        assert!(result.is_ok(), "{result:?}");
+        let info = ffmpeg::probe(
+            tb.get(External::Ffmpeg).expect("ffmpeg"),
+            &spec.output,
+            None,
+        )
+        .expect("probe");
+        assert!(info.has_video);
+    }
+}

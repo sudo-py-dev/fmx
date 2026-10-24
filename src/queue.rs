@@ -7,7 +7,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::jobs::{self, JobError, JobSpec};
+use crate::exec;
+use crate::externals::Toolbox;
+use crate::jobs::{JobError, JobSpec};
 
 pub type JobId = u64;
 
@@ -96,6 +98,11 @@ impl Queue {
             .map(|j| &j.spec.output)
     }
 
+    /// Whether every job has finished (and at least one ran), for after-done actions.
+    pub fn is_idle(&self) -> bool {
+        self.jobs.iter().all(|j| j.state.is_finished())
+    }
+
     pub fn counts(&self) -> Counts {
         self.jobs.iter().fold(Counts::default(), |mut c, job| {
             match job.state {
@@ -108,7 +115,7 @@ impl Queue {
         })
     }
 
-    /// Cancels a job: queued ones immediately, running ones once ffmpeg is stopped.
+    /// Cancels a job: queued ones immediately, running ones once their process stops.
     pub fn cancel(&mut self, id: JobId) {
         if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
             match job.state {
@@ -147,7 +154,7 @@ impl Queue {
 
     /// Applies worker events and starts queued jobs up to `max_parallel`.
     /// Call once per frame; cheap when nothing changed.
-    pub fn pump(&mut self, max_parallel: usize, ffmpeg: Option<&PathBuf>, notify: &Notifier) {
+    pub fn pump(&mut self, max_parallel: usize, toolbox: &Toolbox, notify: &Notifier) {
         while let Ok(event) = self.rx.try_recv() {
             self.apply(event);
         }
@@ -165,7 +172,7 @@ impl Queue {
             .map(|j| j.id)
             .collect();
         for id in ids {
-            self.start(id, ffmpeg.cloned(), notify.clone());
+            self.start(id, toolbox.clone(), notify.clone());
         }
     }
 
@@ -191,7 +198,7 @@ impl Queue {
         };
     }
 
-    fn start(&mut self, id: JobId, ffmpeg: Option<PathBuf>, notify: Notifier) {
+    fn start(&mut self, id: JobId, toolbox: Toolbox, notify: Notifier) {
         let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) else {
             return;
         };
@@ -205,7 +212,7 @@ impl Queue {
             .spawn(move || {
                 let progress_tx = tx.clone();
                 let progress_notify = Arc::clone(&notify);
-                let result = jobs::execute(&spec, ffmpeg.as_deref(), &cancel, move |p| {
+                let result = exec::execute(&spec, &toolbox, &cancel, move |p| {
                     let _ = progress_tx.send(Event::Progress(id, p));
                     progress_notify();
                 });
@@ -220,7 +227,7 @@ impl Queue {
 }
 
 impl Drop for Queue {
-    /// Stops every ffmpeg child before the app exits so none are orphaned.
+    /// Stops every child process before the app exits so none are orphaned.
     fn drop(&mut self) {
         self.cancel_all();
         for worker in self.workers.drain(..) {
@@ -241,6 +248,7 @@ mod tests {
         JobSpec {
             tool: Tool::ToImage(ImageFormat::Bmp),
             inputs: vec![input],
+            url: None,
             output: dir.join(format!("{name}.bmp")),
             options: Options::default(),
         }
@@ -250,7 +258,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while queue.counts().queued + queue.counts().running > 0 {
             assert!(Instant::now() < deadline, "queue did not finish");
-            queue.pump(2, None, notify);
+            queue.pump(2, &Toolbox::default(), notify);
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -263,7 +271,7 @@ mod tests {
             queue.push(spec(dir.path(), name));
         }
         let notify: Notifier = Arc::new(|| {});
-        queue.pump(2, None, &notify);
+        queue.pump(2, &Toolbox::default(), &notify);
         assert_eq!(queue.counts().queued, 3, "paused queue must not start");
         queue.is_running = true;
         run_until_idle(&mut queue, &notify);
@@ -277,6 +285,7 @@ mod tests {
         queue.push(JobSpec {
             tool: Tool::Trim,
             inputs: vec![PathBuf::from("/nope.mp4")],
+            url: None,
             output: PathBuf::from("/nope_trim.mp4"),
             options: Options::default(),
         });

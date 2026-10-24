@@ -21,6 +21,10 @@ pub struct Settings {
     pub auto_start: bool,
     pub options: Options,
     pub last_tool: Tool,
+    /// UI language code; `None` follows the system locale.
+    pub language: Option<String>,
+    /// Device path for audio-CD ripping.
+    pub cd_device: String,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -29,6 +33,10 @@ fn default_parallel_jobs() -> usize {
     std::thread::available_parallelism()
         .map_or(2, |n| n.get() / 2)
         .clamp(1, MAX_PARALLEL_JOBS)
+}
+
+fn default_cd_device() -> &'static str {
+    if cfg!(windows) { "D:" } else { "/dev/cdrom" }
 }
 
 impl Default for Settings {
@@ -40,6 +48,8 @@ impl Default for Settings {
             auto_start: true,
             options: Options::default(),
             last_tool: Tool::ToVideo(VideoFormat::Mp4),
+            language: None,
+            cd_device: default_cd_device().to_owned(),
         }
     }
 }

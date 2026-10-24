@@ -1,30 +1,53 @@
 # Muxr
 
-A lightweight, fast media converter written in Rust.
-It is a single ~13 MB native binary with an egui GUI (OpenGL/glow, no web engine).
+A lightweight, fast all-in-one converter written in Rust. It is a single ~14 MB native binary with an egui GUI (OpenGL/glow, no web engine),
+available in English, Spanish, French and German.
 
 ## Tools
 
-| Category  | Tools |
-|-----------|-------|
-| Video     | MP4 (H.264), MP4 (H.265), MKV, WebM (VP9), MOV, AVI, FLV, WMV, MPG, TS, OGV, 3GP, GIF |
-| Audio     | MP3, AAC, M4A, FLAC, WAV, OGG, Opus, WMA, AIFF, AC3 (also extracts audio from video) |
-| Image     | PNG, JPG, WebP, BMP, TIFF, GIF, ICO, TGA, QOI: native, no ffmpeg needed |
-| Document  | Images → PDF (native) |
-| Utilities | Join videos, join audio, mux video+audio, trim/cut (lossless fast mode), compress to target size, remove audio, extract frames, rotate/flip, change speed, normalize loudness |
+| Category | Tools |
+|---|---|
+| Video | MP4 (H.264), MP4 (H.265), MKV, WebM, MOV, AVI, FLV, WMV, MPG, VOB, TS, OGV, 3GP, SWF, GIF, animated WebP |
+| Audio | MP3, AAC, M4A, M4R ringtone, FLAC, WAV, OGG, Opus, WMA, AIFF, AC3, MP2, WavPack, MKA, MMF, AMR (also extracts audio from video) |
+| Image | PNG, JPG, WebP, BMP, TIFF, GIF, ICO, TGA, QOI (native; HEIC/AVIF inputs decoded through ffmpeg) |
+| Document | Images → PDF, PDF → images / TXT / HTML / Word, Office → PDF, merge / split / compress PDF, eBook → EPUB / MOBI / AZW3 / FB2 / PDF / TXT |
+| ROM / DVD / CD / ISO | DVD → video, music CD → audio tracks, folder → ISO, ISO ↔ CSO (native) |
+| Utilities | Join video, join audio, mux, mix audio, combine two videos (side by side / stacked / picture-in-picture), trim, split, compress to size, remove audio, remove logo, extract frames, rotate/flip, speed, volume, loudness normalization, repair, video downloader, screen recorder |
 
-Other features: batch queue, parallel jobs, per-job progress and cancel, drag & drop, collision-free
-output names, partial outputs deleted on failure, and settings that persist between runs.
+**Video conversions** also have:
+
+- **Output settings:** codec (H.264 / H.265 / AV1 / VP9), NVENC / Quick Sync / VA-API hardware
+  encoding, bitrate, frame rate, audio bitrate, sample rate, channels and volume.
+- **Edit panel:** clip, crop, rotate, burned-in subtitles and an image watermark.
+
+Audio conversions get the same output settings and clipping.
+
+**Queue:** jobs run in parallel with progress, cancel and retry. You can save and load task lists,
+and choose an action for when everything is done (open the output folder or shut down after a
+60-second countdown). Drag & drop and recursive folder adding work everywhere. Output names never
+overwrite existing files, and failed jobs leave no partial files behind.
 
 ## Requirements
 
-Media tools use an external **ffmpeg** binary. Muxr looks for it in this order:
+The image, Images → PDF and ISO ↔ CSO tools are built in. Everything else uses helper programs,
+which Muxr finds next to its executable or on `PATH`. A tool whose helper is missing is greyed out
+and says what to install.
 
-1. the path set in **Settings**
-2. next to the `muxr` executable
-3. `PATH`
+| Helper | Used for | Debian/Ubuntu package |
+|---|---|---|
+| ffmpeg | all video/audio tools, DVD/CD ripping, screen recording | `ffmpeg` |
+| Poppler | PDF → images/TXT/HTML, merge and split PDF | `poppler-utils` |
+| Ghostscript | compress PDF | `ghostscript` |
+| LibreOffice | Office → PDF, PDF → Word | `libreoffice` |
+| Calibre | eBook conversions | `calibre` |
+| xorriso | folder → ISO | `xorriso` |
+| yt-dlp | video downloader | `yt-dlp` |
 
-The image and PDF tools work without ffmpeg.
+You can point Muxr at a specific ffmpeg in **Settings**. Formats your ffmpeg build cannot encode,
+such as AMR without `libopencore_amrnb`, are greyed out too.
+
+On Wayland the screen recorder can only capture X11 (XWayland) windows, because ffmpeg has no
+Wayland capture. Log in to an X11 session to record the whole desktop.
 
 ## Build and run
 
@@ -38,7 +61,7 @@ cargo run --release
 cargo test
 ```
 
-End-to-end tests run every media tool against a real ffmpeg when you set `MUXR_FFMPEG`:
+End-to-end tests run every tool against the real helper programs when `MUXR_FFMPEG` is set:
 
 ```bash
 MUXR_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture
@@ -46,11 +69,12 @@ MUXR_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture
 
 ## Configuration
 
-- `MUXR_LANG=xx` overrides the UI language (add `locales/xx.json` and register it in `src/i18n.rs`).
-- `MUXR_LOG=debug` prints the ffmpeg command lines.
+- `MUXR_LANG=es|fr|de|en` overrides the UI language; it can also be changed in **Settings**.
+  To add a language, add `locales/xx.json` and register it in `src/i18n.rs`.
+- `MUXR_LOG=debug` prints every command line Muxr runs.
 
-## Not included
+## Not covered
 
-DVD/CD ripping, PDF → image/text, and office-document conversion are not
-implemented. They need heavy native libraries (libdvdread, pdfium, LibreOffice), which would go
-against the "lite" goal.
+- Copy-protected (CSS) DVDs: ffmpeg's DVD reader does not decrypt them.
+- Blu-ray ripping.
+- A built-in media player. Muxr opens finished files in your default player instead.

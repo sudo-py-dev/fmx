@@ -1,95 +1,142 @@
-//! Job specs, output naming, and executing a job on a worker thread.
+//! Job specs, their errors, and turning a selection into jobs with
+//! collision-free output names.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
-use crate::catalog::{AudioFormat, InputArity, Tool, VideoFormat};
-use crate::ffmpeg::{self, RunError};
+use serde::{Deserialize, Serialize};
+
+use crate::catalog::{InputArity, Tool};
+use crate::cso::CsoError;
+use crate::docs;
+use crate::externals::External;
 use crate::i18n::{tr, trf};
-use crate::imaging::{self, ImageError};
+use crate::imaging::ImageError;
 use crate::options::Options;
-use crate::plan::{self, Input, PlanError};
+use crate::plan::{self, PlanError};
+use crate::process::RunError;
 
 /// Everything a worker needs to run one job; immutable once queued.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobSpec {
     pub tool: Tool,
     pub inputs: Vec<PathBuf>,
-    /// Final file, or the destination directory for frame extraction.
+    /// Source address for the downloader.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Final file, or the destination directory for multi-file tools.
     pub output: PathBuf,
     pub options: Options,
 }
 
 #[derive(Debug)]
 pub enum JobError {
-    FfmpegMissing,
+    Missing(External),
     Plan(PlanError),
     Run(RunError),
     Image(ImageError),
+    Cso(CsoError),
     Io(std::io::Error),
+    BadUrl,
+    NoOutput,
 }
 
 impl JobError {
     pub fn is_cancelled(&self) -> bool {
-        matches!(self, Self::Run(RunError::Cancelled))
+        matches!(
+            self,
+            Self::Run(RunError::Cancelled) | Self::Cso(CsoError::Cancelled)
+        )
     }
 }
 
 impl fmt::Display for JobError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FfmpegMissing => f.write_str(tr("error.ffmpeg_missing")),
+            Self::Missing(ext) => {
+                f.write_str(&trf("error.missing_program", &[("program", &ext.name())]))
+            }
             Self::Plan(e) => e.fmt(f),
             Self::Run(e) => e.fmt(f),
             Self::Image(e) => e.fmt(f),
+            Self::Cso(e) => e.fmt(f),
             Self::Io(e) => f.write_str(&trf("error.io", &[("error", e)])),
+            Self::BadUrl => f.write_str(tr("error.bad_url")),
+            Self::NoOutput => f.write_str(tr("error.no_output")),
         }
     }
 }
 
 impl std::error::Error for JobError {}
 
-/// File extension a tool produces for a given first input (`None` = directory).
-pub fn output_ext(tool: Tool, first_input: &Path, opts: &Options) -> Option<&'static str> {
-    Some(match tool {
+impl From<PlanError> for JobError {
+    fn from(e: PlanError) -> Self {
+        Self::Plan(e)
+    }
+}
+
+/// Whether a tool writes one file (with this extension) or a folder of files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    File(&'static str),
+    Dir,
+    /// The tool names its own files inside the output folder (downloads).
+    Into,
+}
+
+pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> OutputKind {
+    let first = first_input.unwrap_or(Path::new(""));
+    OutputKind::File(match tool {
         Tool::ToVideo(f) => f.ext(),
         Tool::ToAudio(f) => f.ext(),
         Tool::ToImage(f) => f.ext(),
-        Tool::ImagesToPdf => "pdf",
-        Tool::JoinVideo | Tool::Compress => "mp4",
-        Tool::JoinAudio => opts.join_audio_format.ext(),
-        Tool::Mux => "mkv",
-        Tool::ExtractFrames => return None,
-        Tool::Rotate | Tool::Speed => plan::same_format(first_input).ext(),
+        Tool::ToEbook(f) => f.ext(),
+        Tool::ImagesToPdf | Tool::PdfMerge | Tool::PdfCompress | Tool::OfficeToPdf => "pdf",
+        Tool::PdfToText => "txt",
+        Tool::PdfToHtml => "html",
+        Tool::PdfToWord => "docx",
+        Tool::JoinVideo | Tool::Compress | Tool::VideoMix => "mp4",
+        Tool::JoinAudio | Tool::AudioMix => opts.join_audio_format.ext(),
+        Tool::Mux | Tool::Repair | Tool::Record => "mkv",
+        Tool::DvdToVideo => opts.disc_video_format.ext(),
+        Tool::FolderToIso | Tool::CsoToIso => "iso",
+        Tool::IsoToCso => "cso",
+        Tool::Rotate | Tool::Speed | Tool::Delogo => plan::same_format(first).ext(),
         // Copy-only tools keep the source container (Matroska holds anything else).
-        Tool::Trim | Tool::RemoveAudio | Tool::Normalize => {
-            static_ext(first_input).unwrap_or("mkv")
+        Tool::Trim | Tool::RemoveAudio | Tool::Normalize | Tool::Volume => {
+            plan::copy_container_ext(first)
         }
+        Tool::ExtractFrames
+        | Tool::Split
+        | Tool::PdfToImages
+        | Tool::PdfSplit
+        | Tool::CdToAudio => {
+            return OutputKind::Dir;
+        }
+        Tool::Download => return OutputKind::Into,
     })
-}
-
-/// Returns the input's extension as a `'static` string when it's one we know.
-fn static_ext(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    let audio = AudioFormat::ALL.into_iter().map(AudioFormat::ext);
-    let video = VideoFormat::ALL.into_iter().map(VideoFormat::ext);
-    audio.chain(video).find(|known| *known == ext)
 }
 
 fn suffix(tool: Tool) -> &'static str {
     match tool {
-        Tool::ToVideo(_) | Tool::ToAudio(_) | Tool::ToImage(_) | Tool::ImagesToPdf => "",
-        Tool::JoinVideo | Tool::JoinAudio => "_joined",
+        Tool::JoinVideo | Tool::JoinAudio | Tool::PdfMerge => "_joined",
         Tool::Mux => "_muxed",
+        Tool::AudioMix | Tool::VideoMix => "_mix",
         Tool::Trim => "_trim",
-        Tool::Compress => "_small",
+        Tool::Split => "_parts",
+        Tool::Compress | Tool::PdfCompress => "_small",
         Tool::RemoveAudio => "_noaudio",
+        Tool::Delogo => "_delogo",
         Tool::ExtractFrames => "_frames",
+        Tool::PdfToImages | Tool::PdfSplit => "_pages",
+        Tool::CdToAudio => "_tracks",
         Tool::Rotate => "_rotated",
         Tool::Speed => "_speed",
+        Tool::Volume => "_volume",
         Tool::Normalize => "_normalized",
+        Tool::Repair => "_fixed",
+        _ => "",
     }
 }
 
@@ -122,120 +169,120 @@ pub fn allocate_output(
     path
 }
 
-/// Groups selected files into job specs according to the tool's arity.
+/// Where tools without a source file (downloads, recordings) save by default.
+fn default_dir(sub: &str) -> PathBuf {
+    let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let preferred = home.join(sub);
+    if preferred.is_dir() { preferred } else { home }
+}
+
+/// What the user selected for one batch.
+pub struct Selection<'a> {
+    pub tool: Tool,
+    pub files: &'a [PathBuf],
+    pub url: &'a str,
+    pub output_dir: Option<&'a Path>,
+    pub options: &'a Options,
+}
+
+/// Groups the selection into job specs according to the tool's arity.
 pub fn plan_jobs(
-    tool: Tool,
-    files: &[PathBuf],
-    output_dir: Option<&Path>,
-    opts: &Options,
+    sel: &Selection<'_>,
     claimed: &mut HashSet<PathBuf>,
-) -> Result<Vec<JobSpec>, PlanError> {
+) -> Result<Vec<JobSpec>, JobError> {
+    let tool = sel.tool;
+    let spec = |inputs: Vec<PathBuf>, url: Option<String>, output: PathBuf| JobSpec {
+        tool,
+        inputs,
+        url,
+        output,
+        options: sel.options.clone(),
+    };
+    match tool {
+        Tool::Download => {
+            if !docs::is_web_url(sel.url) {
+                return Err(JobError::BadUrl);
+            }
+            let dir = sel
+                .output_dir
+                .map_or_else(|| default_dir("Downloads"), Path::to_path_buf);
+            return Ok(vec![spec(Vec::new(), Some(sel.url.trim().to_owned()), dir)]);
+        }
+        Tool::Record => {
+            let dir = sel
+                .output_dir
+                .map_or_else(|| default_dir("Videos"), Path::to_path_buf);
+            let output = allocate_output(
+                &dir,
+                "screen_recording",
+                "",
+                Some("mkv"),
+                claimed,
+                Path::exists,
+            );
+            return Ok(vec![spec(Vec::new(), None, output)]);
+        }
+        _ => {}
+    }
+    // Absolute paths can never be mistaken for command-line options.
+    let files: Vec<PathBuf> = sel
+        .files
+        .iter()
+        .map(|f| std::path::absolute(f).unwrap_or_else(|_| f.clone()))
+        .collect();
+    let count_error = |needed| PlanError::WrongInputCount {
+        needed,
+        got: files.len(),
+    };
     let groups: Vec<Vec<PathBuf>> = match tool.arity() {
+        InputArity::EachFile if files.is_empty() => return Err(count_error(1).into()),
         InputArity::EachFile => files.iter().map(|f| vec![f.clone()]).collect(),
-        InputArity::AllAtLeast(n) | InputArity::Exactly(n) if files.len() < n => {
-            return Err(PlanError::WrongInputCount {
-                needed: n,
-                got: files.len(),
-            });
-        }
-        InputArity::Exactly(n) if files.len() != n => {
-            return Err(PlanError::WrongInputCount {
-                needed: n,
-                got: files.len(),
-            });
-        }
-        _ => vec![files.to_vec()],
+        InputArity::AllAtLeast(n) if files.len() < n => return Err(count_error(n).into()),
+        InputArity::Exactly(n) if files.len() != n => return Err(count_error(n).into()),
+        _ => vec![files.clone()],
     };
     Ok(groups
         .into_iter()
         .filter_map(|inputs| {
             let first = inputs.first()?;
-            let dir = output_dir
+            let dir = sel
+                .output_dir
                 .map(Path::to_path_buf)
                 .or_else(|| first.parent().map(Path::to_path_buf))?;
-            let stem = first.file_stem()?.to_string_lossy().into_owned();
-            let ext = output_ext(tool, first, opts);
+            let stem = match first.file_stem() {
+                Some(s) => s.to_string_lossy().into_owned(),
+                // Devices and roots such as `/dev/cdrom` or `/` have no usable stem.
+                None => "disc".to_owned(),
+            };
+            let ext = match output_kind(tool, Some(first), sel.options) {
+                OutputKind::File(ext) => Some(ext),
+                OutputKind::Dir | OutputKind::Into => None,
+            };
             let output = allocate_output(&dir, &stem, suffix(tool), ext, claimed, Path::exists);
-            Some(JobSpec {
-                tool,
-                inputs,
-                output,
-                options: opts.clone(),
-            })
+            Some(spec(inputs, None, output))
         })
         .collect())
-}
-
-/// Runs a job to completion on the calling thread.
-pub fn execute(
-    spec: &JobSpec,
-    ffmpeg_path: Option<&Path>,
-    cancel: &AtomicBool,
-    mut on_progress: impl FnMut(f32),
-) -> Result<(), JobError> {
-    match spec.tool {
-        Tool::ToImage(format) => {
-            let input = spec
-                .inputs
-                .first()
-                .ok_or(JobError::Plan(PlanError::WrongInputCount {
-                    needed: 1,
-                    got: 0,
-                }))?;
-            imaging::convert(input, &spec.output, format, &spec.options)
-                .map_err(JobError::Image)?;
-            on_progress(1.0);
-            Ok(())
-        }
-        Tool::ImagesToPdf => {
-            imaging::images_to_pdf(&spec.inputs, &spec.output, &spec.options, on_progress)
-                .map_err(JobError::Image)
-        }
-        tool => {
-            let ffmpeg = ffmpeg_path.ok_or(JobError::FfmpegMissing)?;
-            let inputs = spec
-                .inputs
-                .iter()
-                .map(|path| {
-                    let info = ffmpeg::probe(ffmpeg, path).map_err(JobError::Run)?;
-                    Ok(Input {
-                        path: path.clone(),
-                        info,
-                    })
-                })
-                .collect::<Result<Vec<_>, JobError>>()?;
-            let plan =
-                plan::build(tool, &inputs, &spec.output, &spec.options).map_err(JobError::Plan)?;
-            if tool == Tool::ExtractFrames {
-                std::fs::create_dir_all(&spec.output).map_err(JobError::Io)?;
-            }
-            let result = ffmpeg::run(ffmpeg, &plan, cancel, on_progress).map_err(JobError::Run);
-            if result.is_err() {
-                remove_partial(&spec.output);
-            }
-            result
-        }
-    }
-}
-
-/// Deletes a half-written output so failed jobs leave nothing behind.
-fn remove_partial(output: &Path) {
-    let removed = if output.is_dir() {
-        std::fs::remove_dir_all(output)
-    } else {
-        std::fs::remove_file(output)
-    };
-    if let Err(e) = removed
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %output.display(), error = %e, "could not remove partial output");
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::ImageFormat;
+    use crate::catalog::{AudioFormat, ImageFormat};
+
+    fn select<'a>(
+        tool: Tool,
+        files: &'a [PathBuf],
+        out: Option<&'a Path>,
+        opts: &'a Options,
+    ) -> Selection<'a> {
+        Selection {
+            tool,
+            files,
+            url: "",
+            output_dir: out,
+            options: opts,
+        }
+    }
 
     #[test]
     fn allocation_skips_existing_and_claimed_names() {
@@ -264,11 +311,14 @@ mod tests {
     #[test]
     fn each_file_tools_make_one_job_per_file() {
         let files = vec![PathBuf::from("/a/x.mkv"), PathBuf::from("/a/y.avi")];
+        let opts = Options::default();
         let jobs = plan_jobs(
-            Tool::ToAudio(AudioFormat::Flac),
-            &files,
-            Some(Path::new("/o")),
-            &Options::default(),
+            &select(
+                Tool::ToAudio(AudioFormat::Flac),
+                &files,
+                Some(Path::new("/o")),
+                &opts,
+            ),
             &mut HashSet::new(),
         )
         .expect("jobs");
@@ -279,11 +329,14 @@ mod tests {
     #[test]
     fn same_stem_inputs_get_distinct_outputs() {
         let files = vec![PathBuf::from("/a/x.png"), PathBuf::from("/b/x.bmp")];
+        let opts = Options::default();
         let jobs = plan_jobs(
-            Tool::ToImage(ImageFormat::Webp),
-            &files,
-            Some(Path::new("/nonexistent-out")),
-            &Options::default(),
+            &select(
+                Tool::ToImage(ImageFormat::Webp),
+                &files,
+                Some(Path::new("/nonexistent-out")),
+                &opts,
+            ),
             &mut HashSet::new(),
         )
         .expect("jobs");
@@ -293,219 +346,87 @@ mod tests {
     #[test]
     fn join_makes_one_job_and_checks_count() {
         let files = vec![PathBuf::from("/a/1.mp4"), PathBuf::from("/a/2.mp4")];
+        let opts = Options::default();
         let jobs = plan_jobs(
-            Tool::JoinVideo,
-            &files,
-            None,
-            &Options::default(),
+            &select(Tool::JoinVideo, &files, None, &opts),
             &mut HashSet::new(),
         )
         .expect("jobs");
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].output, PathBuf::from("/a/1_joined.mp4"));
         let err = plan_jobs(
-            Tool::Mux,
-            &files[..1],
-            None,
-            &Options::default(),
+            &select(Tool::Mux, &files[..1], None, &opts),
             &mut HashSet::new(),
         );
-        assert_eq!(
-            err.err(),
-            Some(PlanError::WrongInputCount { needed: 2, got: 1 })
-        );
+        assert!(matches!(
+            err,
+            Err(JobError::Plan(PlanError::WrongInputCount {
+                needed: 2,
+                got: 1
+            }))
+        ));
     }
 
     #[test]
-    fn keep_format_tools_keep_known_extensions() {
+    fn downloads_require_web_urls() {
+        let opts = Options::default();
+        let mut sel = select(Tool::Download, &[], Some(Path::new("/dl")), &opts);
+        sel.url = "ytsearch:x";
+        assert!(matches!(
+            plan_jobs(&sel, &mut HashSet::new()),
+            Err(JobError::BadUrl)
+        ));
+        sel.url = " https://example.com/v ";
+        let jobs = plan_jobs(&sel, &mut HashSet::new()).expect("jobs");
+        assert_eq!(jobs[0].url.as_deref(), Some("https://example.com/v"));
+        assert_eq!(jobs[0].output, PathBuf::from("/dl"));
+    }
+
+    #[test]
+    fn device_inputs_get_a_fallback_stem() {
+        let files = vec![PathBuf::from("/")];
+        let opts = Options::default();
+        let jobs = plan_jobs(
+            &select(Tool::CdToAudio, &files, Some(Path::new("/o")), &opts),
+            &mut HashSet::new(),
+        )
+        .expect("jobs");
+        assert_eq!(jobs[0].output, PathBuf::from("/o/disc_tracks"));
+    }
+
+    #[test]
+    fn output_kinds() {
         let opts = Options::default();
         assert_eq!(
-            output_ext(Tool::Trim, Path::new("a.webm"), &opts),
-            Some("webm")
+            output_kind(Tool::Trim, Some(Path::new("a.webm")), &opts),
+            OutputKind::File("webm")
         );
         assert_eq!(
-            output_ext(Tool::Normalize, Path::new("a.flac"), &opts),
-            Some("flac")
+            output_kind(Tool::Normalize, Some(Path::new("a.flac")), &opts),
+            OutputKind::File("flac")
         );
         assert_eq!(
-            output_ext(Tool::Trim, Path::new("a.weird"), &opts),
-            Some("mkv")
+            output_kind(Tool::Trim, Some(Path::new("a.weird")), &opts),
+            OutputKind::File("mkv")
         );
         assert_eq!(
-            output_ext(Tool::ExtractFrames, Path::new("a.mp4"), &opts),
-            None
+            output_kind(Tool::ExtractFrames, Some(Path::new("a.mp4")), &opts),
+            OutputKind::Dir
         );
-    }
-}
-
-/// End-to-end runs against a real ffmpeg. Skipped unless `MUXR_FFMPEG` points
-/// at a binary: `MUXR_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture`.
-#[cfg(test)]
-mod e2e {
-    use super::*;
-    use crate::catalog::{AudioFormat, VideoFormat};
-    use std::process::Command;
-
-    fn ffmpeg() -> Option<PathBuf> {
-        std::env::var_os("MUXR_FFMPEG").map(PathBuf::from)
-    }
-
-    fn generate(ffmpeg: &Path, out: &Path, extra: &[impl AsRef<std::ffi::OsStr>]) {
-        let status = Command::new(ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-y"])
-            .args(extra)
-            .arg(out)
-            .status()
-            .expect("run ffmpeg");
-        assert!(status.success(), "could not generate {}", out.display());
-    }
-
-    fn av_source(video: &str, tone_hz: u32) -> Vec<String> {
-        [
-            "-f",
-            "lavfi",
-            "-i",
-            video,
-            "-f",
-            "lavfi",
-            "-i",
-            &format!("sine=frequency={tone_hz}"),
-            "-t",
-            "3",
-            "-pix_fmt",
-            "yuv420p",
-        ]
-        .map(str::to_owned)
-        .to_vec()
+        assert_eq!(output_kind(Tool::Download, None, &opts), OutputKind::Into);
     }
 
     #[test]
-    fn every_media_tool_produces_output() {
-        let Some(ffmpeg) = ffmpeg() else {
-            eprintln!("MUXR_FFMPEG not set; skipping");
-            return;
-        };
-        let dir = tempfile::tempdir().expect("tempdir");
-        let video = dir.path().join("clip.mp4");
-        let video2 = dir.path().join("other.mkv");
-        let audio = dir.path().join("tone.wav");
-        generate(
-            &ffmpeg,
-            &video,
-            &av_source("testsrc=size=640x360:rate=25", 440),
-        );
-        generate(
-            &ffmpeg,
-            &video2,
-            &av_source("testsrc2=size=320x240:rate=30", 660),
-        );
-        generate(
-            &ffmpeg,
-            &audio,
-            &["-f", "lavfi", "-i", "sine=frequency=330:duration=2"],
-        );
-
-        let opts = Options {
-            trim_start: "0:01".into(),
-            trim_end: "0:02".into(),
-            target_size_mb: 1,
-            ..Options::default()
-        };
-        let mut cases: Vec<(Tool, Vec<PathBuf>)> = VideoFormat::ALL
-            .into_iter()
-            .map(|f| (Tool::ToVideo(f), vec![video.clone()]))
-            .chain(
-                AudioFormat::ALL
-                    .into_iter()
-                    .map(|f| (Tool::ToAudio(f), vec![video.clone()])),
-            )
-            .collect();
-        cases.extend([
-            (Tool::JoinVideo, vec![video.clone(), video2.clone()]),
-            (Tool::JoinAudio, vec![audio.clone(), video.clone()]),
-            (Tool::Mux, vec![video2.clone(), audio.clone()]),
-            (Tool::Trim, vec![video.clone()]),
-            (Tool::Compress, vec![video.clone()]),
-            (Tool::RemoveAudio, vec![video.clone()]),
-            (Tool::ExtractFrames, vec![video.clone()]),
-            (Tool::Rotate, vec![video2.clone()]),
-            (Tool::Speed, vec![video.clone()]),
-            (Tool::Normalize, vec![audio.clone()]),
-        ]);
-
-        let out_dir = dir.path().join("out");
-        std::fs::create_dir(&out_dir).expect("out dir");
-        let mut claimed = HashSet::new();
-        let mut failures = Vec::new();
-        for (tool, files) in cases {
-            let specs =
-                plan_jobs(tool, &files, Some(&out_dir), &opts, &mut claimed).expect("plan jobs");
-            for spec in specs {
-                let started = std::time::Instant::now();
-                let mut last = 0.0f32;
-                let result = execute(&spec, Some(&ffmpeg), &AtomicBool::new(false), |p| last = p);
-                let produced = if spec.output.is_dir() {
-                    std::fs::read_dir(&spec.output).is_ok_and(|mut d| d.next().is_some())
-                } else {
-                    // The output must decode as media with at least one stream.
-                    ffmpeg::probe(&ffmpeg, &spec.output)
-                        .is_ok_and(|info| info.has_audio || info.has_video)
-                };
-                eprintln!(
-                    "{:<24} {:>6.2}s progress={last:.2} {:?}",
-                    format!("{tool:?}"),
-                    started.elapsed().as_secs_f32(),
-                    result.as_ref().err().map(ToString::to_string),
-                );
-                if result.is_err() || !produced || last < 1.0 {
-                    failures.push(format!("{tool:?}"));
-                }
-            }
-        }
-        assert!(failures.is_empty(), "failed tools: {failures:?}");
-    }
-
-    #[test]
-    fn cancelling_stops_ffmpeg_and_removes_output() {
-        let Some(ffmpeg) = ffmpeg() else {
-            return;
-        };
-        let dir = tempfile::tempdir().expect("tempdir");
-        let video = dir.path().join("long.mp4");
-        generate(
-            &ffmpeg,
-            &video,
-            &[
-                "-f",
-                "lavfi",
-                "-i",
-                "testsrc=size=1280x720:rate=30",
-                "-t",
-                "60",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
-            ],
-        );
-        let spec = JobSpec {
-            tool: Tool::ToVideo(VideoFormat::Webm),
-            inputs: vec![video],
-            output: dir.path().join("long.webm"),
-            options: Options::default(),
-        };
-        let cancel = AtomicBool::new(false);
-        let started = std::time::Instant::now();
-        let result = execute(&spec, Some(&ffmpeg), &cancel, |p| {
-            if p > 0.0 {
-                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        assert!(
-            result.as_ref().is_err_and(JobError::is_cancelled),
-            "{result:?}"
-        );
-        assert!(started.elapsed() < std::time::Duration::from_secs(30));
-        assert!(!spec.output.exists(), "partial output left behind");
+    fn specs_round_trip_through_json() {
+        let files = vec![PathBuf::from("/a/x.mkv")];
+        let opts = Options::default();
+        let jobs = plan_jobs(
+            &select(Tool::Trim, &files, None, &opts),
+            &mut HashSet::new(),
+        )
+        .expect("jobs");
+        let text = serde_json::to_string(&jobs).expect("serialize");
+        let back: Vec<JobSpec> = serde_json::from_str(&text).expect("parse");
+        assert_eq!(back[0].output, jobs[0].output);
     }
 }

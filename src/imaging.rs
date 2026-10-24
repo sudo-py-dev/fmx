@@ -10,7 +10,7 @@ use image::{DynamicImage, ImageReader, RgbImage};
 
 use crate::catalog::ImageFormat;
 use crate::i18n::trf;
-use crate::options::{self, Options};
+use crate::options::{self, Options, Rotation};
 
 /// ICO stores at most 256×256 pixels per image.
 const ICO_MAX_SIDE: u32 = 256;
@@ -48,20 +48,45 @@ impl From<image::ImageError> for ImageError {
     }
 }
 
-/// Whether the `image` crate can decode this file (judged by extension).
-pub fn is_supported_image(path: &Path) -> bool {
-    image::ImageFormat::from_path(path).is_ok_and(|f| f.reading_enabled())
-}
+/// Cap on a frame decoded through ffmpeg (formats the image crate lacks, e.g. HEIC).
+const MAX_FFMPEG_DECODE_BYTES: u64 = 512 << 20;
 
-fn open(path: &Path) -> Result<DynamicImage, ImageError> {
+fn open(path: &Path, ffmpeg: Option<&Path>) -> Result<DynamicImage, ImageError> {
     let mut reader = ImageReader::open(path)?.with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_BYTES);
     reader.limits(limits);
-    Ok(reader.decode()?)
+    match (reader.decode(), ffmpeg) {
+        (Err(image::ImageError::Unsupported(_)), Some(ffmpeg)) => decode_with_ffmpeg(ffmpeg, path),
+        (result, _) => Ok(result?),
+    }
 }
 
-/// Applies resize/grayscale options. Never upscales.
+/// Lets ffmpeg decode the first frame to PNG in memory.
+fn decode_with_ffmpeg(ffmpeg: &Path, path: &Path) -> Result<DynamicImage, ImageError> {
+    let mut url = std::ffi::OsString::from("file:");
+    url.push(path.as_os_str());
+    let mut child = crate::process::command(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(url)
+        .args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(crate::process::KillOnDrop)?;
+    let mut png = Vec::new();
+    if let Some(stdout) = child.0.stdout.take() {
+        use std::io::Read;
+        stdout.take(MAX_FFMPEG_DECODE_BYTES).read_to_end(&mut png)?;
+    }
+    let _ = child.0.wait();
+    Ok(image::load_from_memory_with_format(
+        &png,
+        image::ImageFormat::Png,
+    )?)
+}
+
+/// Applies resize/rotation/grayscale options. Never upscales.
 fn transform(img: DynamicImage, opts: &Options, hard_cap: Option<u32>) -> DynamicImage {
     let user_cap = opts
         .image_max_side
@@ -75,6 +100,14 @@ fn transform(img: DynamicImage, opts: &Options, hard_cap: Option<u32>) -> Dynami
             img.resize(side, side, FilterType::Lanczos3)
         }
         _ => img,
+    };
+    let img = match opts.image_rotation {
+        Some(Rotation::Clockwise) => img.rotate90(),
+        Some(Rotation::CounterClockwise) => img.rotate270(),
+        Some(Rotation::UpsideDown) => img.rotate180(),
+        Some(Rotation::FlipHorizontal) => img.fliph(),
+        Some(Rotation::FlipVertical) => img.flipv(),
+        None => img,
     };
     if opts.grayscale { img.grayscale() } else { img }
 }
@@ -109,9 +142,10 @@ pub fn convert(
     output: &Path,
     format: ImageFormat,
     opts: &Options,
+    ffmpeg: Option<&Path>,
 ) -> Result<(), ImageError> {
     let hard_cap = (format == ImageFormat::Ico).then_some(ICO_MAX_SIDE);
-    let img = transform(open(input)?, opts, hard_cap);
+    let img = transform(open(input, ffmpeg)?, opts, hard_cap);
     let dir = output.parent().unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     {
@@ -140,11 +174,12 @@ pub fn images_to_pdf(
     inputs: &[impl AsRef<Path>],
     output: &Path,
     opts: &Options,
+    ffmpeg: Option<&Path>,
     mut on_progress: impl FnMut(f32),
 ) -> Result<(), ImageError> {
     let mut pages = Vec::with_capacity(inputs.len());
     for (i, path) in inputs.iter().enumerate() {
-        let img = transform(open(path.as_ref())?, opts, None);
+        let img = transform(open(path.as_ref(), ffmpeg)?, opts, None);
         let mut jpeg = Vec::new();
         encode_jpeg(&img, jpeg_quality(opts), &mut jpeg)?;
         pages.push(Page {
@@ -273,7 +308,7 @@ mod tests {
         let src = sample(dir.path(), "in.png", 40, 30);
         for format in ImageFormat::ALL {
             let out = dir.path().join(format!("out.{}", format.ext()));
-            convert(&src, &out, format, &Options::default())
+            convert(&src, &out, format, &Options::default(), None)
                 .unwrap_or_else(|e| panic!("{format:?}: {e}"));
             let decoded = image::open(&out).unwrap_or_else(|e| panic!("{format:?} reopen: {e}"));
             assert_eq!((decoded.width(), decoded.height()), (40, 30), "{format:?}");
@@ -290,6 +325,16 @@ mod tests {
         assert_eq!((img.width(), img.height()), (20, 10));
         let small = transform(DynamicImage::new_rgb8(10, 5), &opts, None);
         assert_eq!((small.width(), small.height()), (10, 5));
+    }
+
+    #[test]
+    fn rotation_swaps_dimensions() {
+        let opts = Options {
+            image_rotation: Some(Rotation::Clockwise),
+            ..Options::default()
+        };
+        let img = transform(DynamicImage::new_rgb8(80, 40), &opts, None);
+        assert_eq!((img.width(), img.height()), (40, 80));
     }
 
     #[test]
@@ -319,7 +364,7 @@ mod tests {
         let b = sample(dir.path(), "b.png", 10, 40);
         let out = dir.path().join("out.pdf");
         let mut last = 0.0;
-        images_to_pdf(&[a, b], &out, &Options::default(), |p| last = p).expect("pdf");
+        images_to_pdf(&[a, b], &out, &Options::default(), None, |p| last = p).expect("pdf");
         assert_eq!(last, 1.0);
 
         let bytes = std::fs::read(&out).expect("read pdf");

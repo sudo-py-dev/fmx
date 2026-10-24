@@ -6,36 +6,33 @@
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Embedded locale files: (language code, JSON source).
-const LOCALES: &[(&str, &str)] = &[("en", include_str!("../locales/en.json"))];
-const FALLBACK: &str = "en";
+/// Embedded locale files: (language code, JSON source). English comes first
+/// and is the fallback for missing keys.
+const LOCALES: &[(&str, &str)] = &[
+    ("en", include_str!("../locales/en.json")),
+    ("es", include_str!("../locales/es.json")),
+    ("fr", include_str!("../locales/fr.json")),
+    ("de", include_str!("../locales/de.json")),
+];
+const FALLBACK: usize = 0;
 
-struct Catalog {
-    active: HashMap<String, String>,
-    fallback: HashMap<String, String>,
-}
-
-static CATALOG: OnceLock<Catalog> = OnceLock::new();
+static CATALOGS: OnceLock<Vec<HashMap<String, String>>> = OnceLock::new();
+static ACTIVE: AtomicUsize = AtomicUsize::new(FALLBACK);
 
 fn parse(src: &str) -> HashMap<String, String> {
     // The files are compiled in, so a parse failure is a build-time bug caught by tests.
     serde_json::from_str(src).unwrap_or_default()
 }
 
-fn source_for(lang: &str) -> Option<&'static str> {
-    LOCALES
-        .iter()
-        .find(|(code, _)| *code == lang)
-        .map(|(_, src)| *src)
+fn catalogs() -> &'static [HashMap<String, String>] {
+    CATALOGS.get_or_init(|| LOCALES.iter().map(|(_, src)| parse(src)).collect())
 }
 
 /// Extracts the language code from a POSIX locale such as `de_DE.UTF-8`.
 fn language_code(locale: &str) -> &str {
-    locale
-        .split(['_', '.', '@', '-'])
-        .next()
-        .unwrap_or(FALLBACK)
+    locale.split(['_', '.', '@', '-']).next().unwrap_or("en")
 }
 
 fn system_language() -> String {
@@ -44,36 +41,40 @@ fn system_language() -> String {
         .filter_map(|var| std::env::var(var).ok())
         .find(|v| !v.is_empty())
         .map(|v| language_code(&v).to_owned())
-        .unwrap_or_else(|| FALLBACK.to_owned())
+        .unwrap_or_else(|| "en".to_owned())
 }
 
-/// Selects the locale. Call once at startup; later calls are ignored.
-pub fn init(lang_override: Option<&str>) {
-    let lang = lang_override.map_or_else(system_language, str::to_owned);
-    let fallback_src = source_for(FALLBACK).unwrap_or("{}");
-    let active_src = source_for(&lang).unwrap_or(fallback_src);
-    let _ = CATALOG.set(Catalog {
-        active: parse(active_src),
-        fallback: parse(fallback_src),
-    });
+/// Available languages as (code, native name).
+pub fn languages() -> Vec<(&'static str, &'static str)> {
+    LOCALES
+        .iter()
+        .zip(catalogs())
+        .map(|((code, _), map)| {
+            (
+                *code,
+                map.get("language.name").map_or(*code, String::as_str),
+            )
+        })
+        .collect()
 }
 
-fn catalog() -> &'static Catalog {
-    CATALOG.get_or_init(|| {
-        let src = source_for(FALLBACK).unwrap_or("{}");
-        Catalog {
-            active: parse(src),
-            fallback: parse(src),
-        }
-    })
+/// Switches the UI language; `None` follows the system locale. Unknown
+/// codes fall back to English.
+pub fn set_language(code: Option<&str>) {
+    let wanted = code.map_or_else(system_language, str::to_owned);
+    let index = LOCALES
+        .iter()
+        .position(|(c, _)| *c == wanted)
+        .unwrap_or(FALLBACK);
+    ACTIVE.store(index, Ordering::Relaxed);
 }
 
 /// Translates `key`.
 pub fn tr(key: &'static str) -> &'static str {
-    let cat = catalog();
-    cat.active
+    let all = catalogs();
+    all[ACTIVE.load(Ordering::Relaxed)]
         .get(key)
-        .or_else(|| cat.fallback.get(key))
+        .or_else(|| all[FALLBACK].get(key))
         .map_or(key, String::as_str)
 }
 
@@ -97,6 +98,30 @@ mod tests {
         }
     }
 
+    /// Translations may lag behind, but must not invent keys or drop placeholders.
+    #[test]
+    fn translations_match_english_keys_and_placeholders() {
+        let en = &catalogs()[FALLBACK];
+        let placeholders = |text: &str| {
+            let mut found: Vec<String> = text
+                .split('{')
+                .skip(1)
+                .filter_map(|p| p.split_once('}'))
+                .map(|(n, _)| n.to_owned())
+                .collect();
+            found.sort();
+            found
+        };
+        for ((code, _), map) in LOCALES.iter().zip(catalogs()).skip(1) {
+            for (key, text) in map {
+                let english = en
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{code}: unknown key {key}"));
+                assert_eq!(placeholders(text), placeholders(english), "{code}: {key}");
+            }
+        }
+    }
+
     #[test]
     fn language_code_handles_posix_forms() {
         assert_eq!(language_code("de_DE.UTF-8"), "de");
@@ -113,7 +138,7 @@ mod tests {
     /// Every `tr("…")`/`trf("…")` key used in the sources must exist in English.
     #[test]
     fn all_used_keys_exist() {
-        let en = parse(source_for(FALLBACK).expect("en locale"));
+        let en = &catalogs()[FALLBACK];
         let mut missing = HashSet::new();
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
         for entry in std::fs::read_dir(dir).expect("src dir") {

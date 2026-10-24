@@ -9,6 +9,8 @@ pub struct MediaInfo {
     pub has_audio: bool,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// `(start, end)` seconds of each chapter; audio-CD tracks appear as chapters.
+    pub chapters: Vec<(f64, f64)>,
 }
 
 /// Parses ffmpeg's banner output (stderr of `ffmpeg -i <file>`).
@@ -21,6 +23,8 @@ pub fn parse_ffmpeg_info(stderr: &str) -> MediaInfo {
             }
         } else if line.starts_with("Stream #") {
             parse_stream_line(line, &mut info);
+        } else if line.starts_with("Chapter #") {
+            info.chapters.extend(parse_chapter(line));
         }
     }
     info
@@ -37,6 +41,15 @@ fn parse_stream_line(line: &str, info: &mut MediaInfo) {
             info.height = Some(h);
         }
     }
+}
+
+/// Parses `Chapter #0:1: start 245.200000, end 480.000000`.
+fn parse_chapter(line: &str) -> Option<(f64, f64)> {
+    let (_, times) = line.split_once("start ")?;
+    let (start, end) = times.split_once(", end ")?;
+    let start: f64 = start.trim().parse().ok()?;
+    let end: f64 = end.trim().parse().ok()?;
+    (end > start).then_some((start, end))
 }
 
 fn parse_frame_size(token: &str) -> Option<(u32, u32)> {
@@ -83,6 +96,15 @@ At least one output file must be specified";
         let info = parse_ffmpeg_info(text);
         assert!(info.has_audio && !info.has_video);
         assert_eq!(info.width, None);
+    }
+
+    #[test]
+    fn chapters_become_tracks() {
+        let text = "    Chapter #0:0: start 0.000000, end 245.200000\n    Chapter #0:1: start 245.200000, end 480.000000";
+        assert_eq!(
+            parse_ffmpeg_info(text).chapters,
+            vec![(0.0, 245.2), (245.2, 480.0)]
+        );
     }
 
     #[test]
