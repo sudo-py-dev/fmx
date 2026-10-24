@@ -10,6 +10,7 @@ use eframe::egui::{
     Modifiers, RichText, ScrollArea, Slider, Stroke, TextEdit,
 };
 
+use crate::art;
 use crate::catalog::{
     AudioFormat, Category, ImageFormat, InputArity, InputKind, Tool, VideoFormat,
 };
@@ -31,7 +32,7 @@ use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
 const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
 const SIDEBAR_WIDTH: f32 = 230.0;
-const QUEUE_HEIGHT: f32 = 230.0;
+const QUEUE_HEIGHT: f32 = 180.0;
 const PROGRESS_WIDTH: f32 = 220.0;
 const DROP_ZONE_HEIGHT: f32 = 90.0;
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
@@ -73,6 +74,11 @@ pub struct MuxrApp {
     show_settings: bool,
     media_info: Option<(String, String)>,
     preview: Option<Preview>,
+    /// The category shown in the tool grid.
+    category: Category,
+    /// Whether the selected tool's editor is open (otherwise the tool grid shows).
+    in_editor: bool,
+    search: String,
     after_done: AfterDone,
     was_busy: bool,
     shutdown_at: Option<Instant>,
@@ -109,6 +115,9 @@ impl MuxrApp {
             show_settings: false,
             media_info: None,
             preview: None,
+            category: settings.last_tool.category(),
+            in_editor: false,
+            search: String::new(),
             after_done: AfterDone::Nothing,
             was_busy: false,
             shutdown_at: None,
@@ -117,6 +126,7 @@ impl MuxrApp {
         };
         if !open_files.is_empty() {
             app.add_files(open_files);
+            app.in_editor = !app.files.is_empty();
         }
         app
     }
@@ -127,6 +137,14 @@ impl MuxrApp {
         }
         self.tool = tool;
         self.settings.last_tool = tool;
+        self.category = tool.category();
+        self.in_editor = true;
+    }
+
+    fn open_category(&mut self, category: Category) {
+        self.category = category;
+        self.in_editor = false;
+        self.search.clear();
     }
 
     /// Why a tool can't run here, if it can't.
@@ -272,6 +290,9 @@ impl MuxrApp {
         });
         if !dropped.is_empty() {
             self.add_files(dropped);
+            if !self.files.is_empty() {
+                self.in_editor = true;
+            }
         }
         if ctx.input_mut(|i| i.consume_shortcut(&ADD_FILES)) {
             self.pick_files();
@@ -417,13 +438,16 @@ impl MuxrApp {
     // ── Toolbar ─────────────────────────────────────────────────────────
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        use art::hue;
         let counts = self.queue.counts();
         ui.horizontal_wrapped(|ui| {
+            widgets::icon_tile(ui, art::LOGO, 30.0, true);
             ui.label(RichText::new(tr("app.name")).heading().strong());
-            ui.add_space(8.0);
-            let (icon, label, hint, kind) = if self.queue.is_running {
+            ui.add_space(10.0);
+            let (icon, tint, label, hint, kind) = if self.queue.is_running {
                 (
                     icons::PAUSE,
+                    hue::AMBER,
                     tr("action.pause"),
                     tr("hint.pause"),
                     Kind::Secondary,
@@ -431,12 +455,13 @@ impl MuxrApp {
             } else {
                 (
                     icons::PLAY,
+                    hue::GREEN,
                     tr("action.start"),
                     tr("hint.start"),
                     Kind::Primary,
                 )
             };
-            if widgets::button(ui, Some(icon), label, kind, Size::Regular, true)
+            if widgets::button_tinted(ui, Some(icon), Some(tint), label, kind, Size::Regular, true)
                 .on_hover_text(hint)
                 .clicked()
             {
@@ -456,67 +481,57 @@ impl MuxrApp {
             {
                 self.queue.cancel_all();
             }
-            if widgets::button(
+            let tool = |ui: &mut egui::Ui, icon, tint, text, enabled| {
+                widgets::button_tinted(
+                    ui,
+                    Some(icon),
+                    Some(tint),
+                    text,
+                    Kind::Ghost,
+                    Size::Regular,
+                    enabled,
+                )
+                .clicked()
+            };
+            if tool(
                 ui,
-                Some(icons::ARROW_CLOCKWISE),
+                icons::ARROW_CLOCKWISE,
+                hue::AMBER,
                 tr("action.retry"),
-                Kind::Secondary,
-                Size::Regular,
                 counts.failed > 0,
-            )
-            .clicked()
-            {
+            ) {
                 self.queue.retry_failed();
             }
-            let finished = counts.done + counts.failed > 0;
-            if widgets::button(
+            if tool(
                 ui,
-                Some(icons::BROOM),
+                icons::BROOM,
+                hue::VIOLET,
                 tr("action.clear_finished"),
-                Kind::Secondary,
-                Size::Regular,
-                finished,
-            )
-            .clicked()
-            {
+                counts.done + counts.failed > 0,
+            ) {
                 self.queue.clear_finished();
             }
             ui.separator();
-            if widgets::button(
+            if tool(
                 ui,
-                Some(icons::FLOPPY_DISK),
+                icons::FLOPPY_DISK,
+                hue::BLUE,
                 tr("action.save_list"),
-                Kind::Ghost,
-                Size::Regular,
                 true,
-            )
-            .clicked()
-            {
+            ) {
                 self.save_task_list();
             }
-            if widgets::button(
+            if tool(
                 ui,
-                Some(icons::FOLDER_OPEN),
+                icons::FOLDER_OPEN,
+                hue::SKY,
                 tr("action.load_list"),
-                Kind::Ghost,
-                Size::Regular,
                 true,
-            )
-            .clicked()
-            {
+            ) {
                 self.load_task_list();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if widgets::button(
-                    ui,
-                    Some(icons::GEAR),
-                    tr("action.settings"),
-                    Kind::Ghost,
-                    Size::Regular,
-                    true,
-                )
-                .clicked()
-                {
+                if tool(ui, icons::GEAR, hue::SLATE, tr("action.settings"), true) {
                     self.show_settings = !self.show_settings;
                 }
             });
@@ -576,49 +591,128 @@ impl MuxrApp {
     // ── Sidebar ─────────────────────────────────────────────────────────
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(tr("sidebar.title"))
+                .small()
+                .strong()
+                .color(theme::palette(ui).text_weak),
+        );
         ui.add_space(4.0);
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
                 for category in Category::ALL {
-                    let tools = category.tools();
-                    let header = RichText::new(category.label()).strong();
-                    egui::CollapsingHeader::new(header)
-                        .id_salt(category.label())
-                        .default_open(category == Category::Video || tools.contains(&self.tool))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            for tool in tools {
-                                let reason = self.unavailable_reason(tool);
-                                let hover = match &reason {
-                                    Some(r) => {
-                                        format!("{}\n\n{} {r}", tool.description(), icons::WARNING)
-                                    }
-                                    None => tool.description().to_owned(),
-                                };
-                                if widgets::nav_item(
-                                    ui,
-                                    tool.label(),
-                                    self.tool == tool,
-                                    reason.is_some(),
-                                )
-                                .on_hover_text(hover)
-                                .clicked()
-                                {
-                                    self.select_tool(tool);
-                                }
-                            }
-                        });
+                    let selected = self.category == category && self.search.is_empty();
+                    let count = category.tools().len();
+                    if widgets::nav_item(
+                        ui,
+                        Some(art::category(category)),
+                        category.label(),
+                        selected,
+                        false,
+                        Some(count),
+                    )
+                    .clicked()
+                    {
+                        self.open_category(category);
+                    }
                 }
             });
+    }
+
+    // ── Tool grid ───────────────────────────────────────────────────────
+
+    fn tool_grid(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let searching = !self.search.trim().is_empty();
+        ui.horizontal(|ui| {
+            if searching {
+                ui.label(RichText::new(tr("grid.results")).heading().strong());
+            } else {
+                widgets::icon_tile(ui, art::category(self.category), 40.0, true);
+                ui.add_space(4.0);
+                ui.label(RichText::new(self.category.label()).heading().strong());
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.search)
+                        .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
+                        .desired_width(240.0),
+                );
+            });
+        });
+        ui.add_space(12.0);
+        let needle = self.search.trim().to_lowercase();
+        let tools: Vec<Tool> = if searching {
+            Category::ALL
+                .into_iter()
+                .flat_map(Category::tools)
+                .filter(|t| {
+                    t.label().to_lowercase().contains(&needle)
+                        || t.description().to_lowercase().contains(&needle)
+                })
+                .collect()
+        } else {
+            self.category.tools()
+        };
+        if tools.is_empty() {
+            widgets::empty_state(ui, icons::MAGNIFYING_GLASS, tr("grid.no_results"), 160.0);
+            return;
+        }
+        let mut picked = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            for tool in tools {
+                let reason = self.unavailable_reason(tool);
+                let subtitle = if searching {
+                    tool.category().label().to_owned()
+                } else {
+                    card_detail(tool)
+                };
+                let hover = match &reason {
+                    Some(r) => format!("{}\n\n{} {r}", tool.description(), icons::WARNING),
+                    None => tool.description().to_owned(),
+                };
+                if widgets::tool_card(
+                    ui,
+                    art::tool(tool),
+                    tool.label(),
+                    &subtitle,
+                    reason.is_some(),
+                )
+                .on_hover_text(hover)
+                .clicked()
+                {
+                    picked = Some(tool);
+                }
+            }
+        });
+        if let Some(tool) = picked {
+            self.select_tool(tool);
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new(tr("grid.hint")).color(p.text_weak));
     }
 
     // ── Task editor ─────────────────────────────────────────────────────
 
     fn task_editor(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
-        ui.label(RichText::new(self.tool_title()).heading().strong());
-        ui.label(RichText::new(self.tool.description()).color(p.text_weak));
+        let back = icons::label(icons::CARET_LEFT, self.tool.category().label());
+        if widgets::button(ui, None, &back, Kind::Ghost, Size::Small, true).clicked() {
+            self.in_editor = false;
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            widgets::icon_tile(ui, art::tool(self.tool), 52.0, true);
+            ui.add_space(6.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(self.tool_title()).heading().strong());
+                ui.label(RichText::new(self.tool.description()).color(p.text_weak));
+            });
+        });
         if let Some(reason) = self.unavailable_reason(self.tool) {
             ui.add_space(4.0);
             widgets::chip(ui, icons::WARNING, &reason, p.warning);
@@ -1700,6 +1794,20 @@ fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
+/// The second line on a tool card: the file extension or a device's screen box.
+fn card_detail(tool: Tool) -> String {
+    match tool {
+        Tool::ToVideo(f) => format!(".{}", f.ext()),
+        Tool::ToAudio(f) => format!(".{}", f.ext()),
+        Tool::ToImage(f) => format!(".{}", f.ext()),
+        Tool::ToDevice(d) => {
+            let p = d.profile();
+            format!("{}×{} · H.264", p.max_width, p.max_height)
+        }
+        _ => String::new(),
+    }
+}
+
 /// Gives a loaded job an output name that doesn't overwrite anything.
 fn fresh_output(spec: &JobSpec, claimed: &mut HashSet<PathBuf>) -> PathBuf {
     if spec.tool == Tool::Download {
@@ -2121,19 +2229,26 @@ impl eframe::App for MuxrApp {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, CornerRadius::ZERO, p.panel);
             let p = theme::palette(ui);
+            let mut in_editor = self.in_editor;
             egui::Panel::bottom("editor_actions")
                 .frame(
                     egui::Frame::new()
                         .fill(p.panel)
                         .inner_margin(Margin::symmetric(18, 10)),
                 )
-                .show(ui, |ui| self.action_bar(ui));
+                .show_collapsible(ui, &mut in_editor, |ui| self.action_bar(ui));
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     ScrollArea::vertical()
                         .auto_shrink([false; 2])
-                        .show(ui, |ui| self.task_editor(ui));
+                        .show(ui, |ui| {
+                            if self.in_editor {
+                                self.task_editor(ui);
+                            } else {
+                                self.tool_grid(ui);
+                            }
+                        });
                 });
         });
         self.settings_window(&ctx);

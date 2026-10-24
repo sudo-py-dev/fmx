@@ -1,4 +1,4 @@
-Phosphor.ttf is the regular weight of Phosphor Icons (https://phosphoricons.com),
+Phosphor.ttf (regular) and Phosphor-Fill.ttf (fill) are weights of Phosphor Icons (https://phosphoricons.com),
 distributed under the MIT License:
 
 MIT License

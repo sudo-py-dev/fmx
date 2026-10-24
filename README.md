@@ -26,7 +26,8 @@ available in English, Spanish, French and German.
 
 Audio conversions get the same output settings and clipping.
 
-**Interface:** a light and a dark theme that follow the system setting (or can be chosen in
+**Interface:** colorful category navigation. Pick a category in the sidebar, then a tool
+from a grid of colored cards (or search across all tools). Muxr has a light and a dark theme that follow the system setting (or can be chosen in
 Settings), with smooth hover and press animations, gliding progress bars that show the time left,
 status chips, and toast notifications. "Reduce motion" in Settings turns the animations off.
 

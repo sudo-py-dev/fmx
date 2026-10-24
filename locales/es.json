@@ -114,7 +114,7 @@
   "error.spawn": "No se pudo iniciar {program}: {error}",
   "error.io": "Error de archivo: {error}",
   "error.image": "Error de imagen: {error}",
-  "category.rom": "Unidad ROM / DVD / CD / ISO",
+  "category.rom": "DVD / CD / ISO",
   "desc.to_ebook": "Convierte libros electrónicos (EPUB, MOBI, AZW3, FB2, PDF, DOCX…) con Calibre.",
   "desc.pdf_to_images": "Convierte cada página del PDF en una imagen.",
   "desc.pdf_to_text": "Extrae el texto de un PDF conservando su diseño.",
@@ -302,5 +302,10 @@
   "option.hw_decode": "Decodificación por hardware",
   "option.hw_decode_on": "Decodificar en la GPU si es posible",
   "settings.notify": "Avisar cuando termine la cola",
-  "settings.name_tag": "Etiqueta del nombre de archivo"
+  "settings.name_tag": "Etiqueta del nombre de archivo",
+  "sidebar.title": "CATEGORÍAS",
+  "grid.results": "Resultados de búsqueda",
+  "grid.search": "Buscar herramientas…",
+  "grid.no_results": "Ninguna herramienta coincide con la búsqueda.",
+  "grid.hint": "Elige una herramienta para añadir archivos y ajustar opciones. También puedes soltar archivos en la ventana."
 }

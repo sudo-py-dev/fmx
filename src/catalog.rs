@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::externals::External;
 use crate::i18n::tr;
-use crate::icons;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -28,17 +27,16 @@ impl Category {
         Self::Utilities,
     ];
 
-    pub fn label(self) -> String {
-        let (icon, key) = match self {
-            Self::Video => (icons::FILM_STRIP, "category.video"),
-            Self::Devices => (icons::DEVICE_MOBILE, "category.devices"),
-            Self::Audio => (icons::MUSIC_NOTES, "category.audio"),
-            Self::Image => (icons::IMAGE, "category.image"),
-            Self::Document => (icons::FILE_TEXT, "category.document"),
-            Self::Rom => (icons::DISC, "category.rom"),
-            Self::Utilities => (icons::WRENCH, "category.utilities"),
-        };
-        icons::label(icon, tr(key))
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Video => tr("category.video"),
+            Self::Devices => tr("category.devices"),
+            Self::Audio => tr("category.audio"),
+            Self::Image => tr("category.image"),
+            Self::Document => tr("category.document"),
+            Self::Rom => tr("category.rom"),
+            Self::Utilities => tr("category.utilities"),
+        }
     }
 
     pub fn tools(self) -> Vec<Tool> {
@@ -861,6 +859,14 @@ impl Tool {
         }
     }
 
+    /// The sidebar category the tool belongs to.
+    pub fn category(self) -> Category {
+        Category::ALL
+            .into_iter()
+            .find(|c| c.tools().contains(&self))
+            .unwrap_or(Category::Utilities)
+    }
+
     /// External programs the tool cannot run without.
     pub fn requires(self) -> &'static [External] {
         match self {
@@ -904,6 +910,13 @@ impl Tool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_tool_knows_its_category() {
+        for c in Category::ALL {
+            assert!(c.tools().iter().all(|t| t.category() == c), "{c:?}");
+        }
+    }
 
     #[test]
     fn every_category_has_tools() {

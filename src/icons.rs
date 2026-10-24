@@ -9,30 +9,34 @@ use eframe::egui;
 
 const FONT_NAME: &str = "phosphor";
 const FONT: &[u8] = include_bytes!("../assets/fonts/Phosphor.ttf");
+const FILL_NAME: &str = "phosphor-fill";
+const FILL_FONT: &[u8] = include_bytes!("../assets/fonts/Phosphor-Fill.ttf");
+
+/// The filled icon weight, used for colorful tiles.
+pub fn fill(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(FILL_NAME.into()))
+}
 
 pub const ARROW_CLOCKWISE: &str = "\u{E036}";
 pub const ARROW_RIGHT: &str = "\u{E06C}";
 pub const ARROW_SQUARE_OUT: &str = "\u{E5DE}";
 pub const BROOM: &str = "\u{EC54}";
 pub const CARET_DOWN: &str = "\u{E136}";
+pub const CARET_LEFT: &str = "\u{E138}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
-pub const DEVICE_MOBILE: &str = "\u{E1E0}";
 pub const DISC: &str = "\u{E564}";
 pub const EYE: &str = "\u{E220}";
 pub const DOWNLOAD: &str = "\u{E20C}";
 pub const FILE_PLUS: &str = "\u{E236}";
-pub const FILE_TEXT: &str = "\u{E23A}";
-pub const FILM_STRIP: &str = "\u{E792}";
 pub const FLOPPY_DISK: &str = "\u{E248}";
 pub const FOLDER: &str = "\u{E25A}";
 pub const FOLDER_OPEN: &str = "\u{E256}";
 pub const FOLDER_PLUS: &str = "\u{E258}";
 pub const GEAR: &str = "\u{E270}";
-pub const IMAGE: &str = "\u{E2CA}";
 pub const INFO: &str = "\u{E2CE}";
 pub const LIST_PLUS: &str = "\u{E2F8}";
-pub const MUSIC_NOTES: &str = "\u{E340}";
+pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const PAUSE: &str = "\u{E39E}";
 pub const PLAY: &str = "\u{E3D0}";
 pub const RECORD: &str = "\u{E3EE}";
@@ -40,7 +44,6 @@ pub const SCISSORS: &str = "\u{EAE0}";
 pub const SLIDERS: &str = "\u{E432}";
 pub const STOP: &str = "\u{E46C}";
 pub const WARNING: &str = "\u{E4E0}";
-pub const WRENCH: &str = "\u{E5D4}";
 pub const X: &str = "\u{E4F6}";
 pub const X_CIRCLE: &str = "\u{E4F8}";
 
@@ -56,6 +59,14 @@ pub fn install(ctx: &egui::Context) {
         // Second, so the text font still wins for ordinary characters.
         keys.insert(keys.len().min(1), FONT_NAME.to_owned());
     }
+    fonts.font_data.insert(
+        FILL_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(FILL_FONT)),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(FILL_NAME.into()),
+        vec![FILL_NAME.to_owned()],
+    );
     ctx.set_fonts(fonts);
 }
 
@@ -79,24 +90,21 @@ mod tests {
             ARROW_SQUARE_OUT,
             BROOM,
             CARET_DOWN,
+            CARET_LEFT,
             CARET_UP,
             CHECK_CIRCLE,
-            DEVICE_MOBILE,
             DISC,
             EYE,
             DOWNLOAD,
             FILE_PLUS,
-            FILE_TEXT,
-            FILM_STRIP,
             FLOPPY_DISK,
             FOLDER,
             FOLDER_OPEN,
             FOLDER_PLUS,
             GEAR,
-            IMAGE,
             INFO,
             LIST_PLUS,
-            MUSIC_NOTES,
+            MAGNIFYING_GLASS,
             PAUSE,
             PLAY,
             RECORD,
@@ -104,7 +112,6 @@ mod tests {
             SLIDERS,
             STOP,
             WARNING,
-            WRENCH,
             X,
             X_CIRCLE,
         ];
@@ -119,6 +126,27 @@ mod tests {
                 assert!(
                     fonts.has_glyph(&font, c),
                     "missing glyph U+{:04X}",
+                    c as u32
+                );
+            }
+        });
+    }
+
+    /// Every colorful tile glyph must exist in the filled font.
+    #[test]
+    fn all_art_glyphs_exist_in_fill_font() {
+        let ctx = egui::Context::default();
+        install(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        let font = fill(20.0);
+        ctx.fonts_mut(|fonts| {
+            for glyph in crate::art::glyph::ALL {
+                let c = glyph.chars().next().expect("glyph");
+                assert!(
+                    fonts.has_glyph(&font, c),
+                    "missing filled glyph U+{:04X}",
                     c as u32
                 );
             }

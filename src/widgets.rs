@@ -4,15 +4,17 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Rect, Response, Sense, Stroke,
-    StrokeKind, TextStyle, Vec2, WidgetInfo,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense,
+    Stroke, StrokeKind, TextStyle, Vec2, WidgetInfo,
 };
 
+use crate::art::Art;
 use crate::theme::{
     self, BUTTON_HEIGHT, MOTION, Palette, RADIUS, SMALL_BUTTON_HEIGHT, VALUE_MOTION,
 };
 
 const FOCUS_RING: f32 = 2.0;
+const ICON_GAP: f32 = 7.0;
 const DISABLED_OPACITY: f32 = 0.45;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,28 +88,54 @@ pub fn button(
     size: Size,
     enabled: bool,
 ) -> Response {
+    button_tinted(ui, icon, None, text, kind, size, enabled)
+}
+
+/// Like [`button`], with the icon drawn in its own color.
+pub fn button_tinted(
+    ui: &mut egui::Ui,
+    icon: Option<&str>,
+    tint: Option<Color32>,
+    text: &str,
+    kind: Kind,
+    size: Size,
+    enabled: bool,
+) -> Response {
     let p = theme::palette(ui);
-    let font = TextStyle::Button.resolve(ui.style());
+    let base = TextStyle::Button.resolve(ui.style());
     let font = if size == Size::Small {
-        FontId::new(font.size - 1.5, font.family)
+        FontId::new(base.size - 1.5, base.family.clone())
     } else {
-        font
+        base
     };
     let (fills, text_color, border) = colors(kind, &p);
-
-    let label = match icon {
-        Some(icon) if !text.is_empty() => format!("{icon}  {text}"),
-        Some(icon) => icon.to_owned(),
-        None => text.to_owned(),
+    let icon_galley = icon.map(|i| {
+        ui.painter().layout_no_wrap(
+            i.to_owned(),
+            FontId::new(font.size + 1.5, font.family.clone()),
+            text_color,
+        )
+    });
+    let text_galley = (!text.is_empty()).then(|| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font, text_color)
+    });
+    let gap = if icon_galley.is_some() && text_galley.is_some() {
+        ICON_GAP
+    } else {
+        0.0
     };
-    let galley = ui.painter().layout_no_wrap(label, font, text_color);
+    let content_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x)
+        + gap
+        + text_galley.as_ref().map_or(0.0, |g| g.size().x);
+
     let height = if size == Size::Small {
         SMALL_BUTTON_HEIGHT
     } else {
         BUTTON_HEIGHT
     };
     let pad = if size == Size::Small { 9.0 } else { 14.0 };
-    let width = (galley.size().x + pad * 2.0).max(height);
+    let width = (content_w + pad * 2.0).max(height);
     let sense = if enabled {
         Sense::click()
     } else {
@@ -148,12 +176,24 @@ pub fn button(
                 StrokeKind::Outside,
             );
         }
-        let text_pos = rect.center() - galley.size() / 2.0;
-        painter.galley_with_override_text_color(
-            text_pos,
-            galley,
-            text_color.gamma_multiply(opacity),
-        );
+        let mut x = rect.center().x - content_w / 2.0;
+        if let Some(g) = icon_galley {
+            let color = tint.filter(|_| kind != Kind::Primary).unwrap_or(text_color);
+            let w = g.size().x;
+            painter.galley_with_override_text_color(
+                Pos2::new(x, rect.center().y - g.size().y / 2.0),
+                g,
+                color.gamma_multiply(opacity),
+            );
+            x += w + gap;
+        }
+        if let Some(g) = text_galley {
+            painter.galley_with_override_text_color(
+                Pos2::new(x, rect.center().y - g.size().y / 2.0),
+                g,
+                text_color.gamma_multiply(opacity),
+            );
+        }
     }
     if enabled {
         response.on_hover_cursor(CursorIcon::PointingHand)
@@ -162,45 +202,218 @@ pub fn button(
     }
 }
 
-/// A full-width sidebar entry with an animated highlight and accent bar.
-pub fn nav_item(ui: &mut egui::Ui, text: &str, selected: bool, dimmed: bool) -> Response {
+/// Fill and glyph colors for a tile in the current theme.
+fn tile_colors(art: Art, solid: bool, dark: bool) -> (Color32, Color32) {
+    if solid {
+        (art.hue, Color32::WHITE)
+    } else if dark {
+        (
+            art.hue.gamma_multiply(0.22),
+            mix(art.hue, Color32::WHITE, 0.3),
+        )
+    } else {
+        (
+            art.hue.gamma_multiply(0.14),
+            mix(art.hue, Color32::BLACK, 0.12),
+        )
+    }
+}
+
+/// Paints a rounded tile with a filled icon into `rect`.
+pub fn paint_tile(painter: &egui::Painter, rect: Rect, art: Art, solid: bool, dark: bool) {
+    let (fill, fg) = tile_colors(art, solid, dark);
+    let radius = (rect.height() * 0.28).round().clamp(4.0, 14.0) as u8;
+    painter.rect_filled(rect, CornerRadius::same(radius), fill);
+    if solid {
+        // A soft top highlight gives the solid tile some depth.
+        let top = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
+        painter.rect_filled(
+            top,
+            CornerRadius {
+                nw: radius,
+                ne: radius,
+                sw: 0,
+                se: 0,
+            },
+            Color32::from_white_alpha(22),
+        );
+    }
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        art.glyph,
+        crate::icons::fill(rect.height() * 0.58),
+        fg,
+    );
+}
+
+/// A standalone icon tile.
+pub fn icon_tile(ui: &mut egui::Ui, art: Art, size: f32, solid: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        paint_tile(ui.painter(), rect, art, solid, ui.visuals().dark_mode);
+    }
+    response
+}
+
+/// A full-width sidebar entry with an icon tile, animated highlight and accent bar.
+pub fn nav_item(
+    ui: &mut egui::Ui,
+    art: Option<Art>,
+    text: &str,
+    selected: bool,
+    dimmed: bool,
+    badge: Option<usize>,
+) -> Response {
     let p = theme::palette(ui);
     let font = TextStyle::Body.resolve(ui.style());
     let color = if dimmed { p.text_weak } else { p.text };
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
-    let width = ui.available_width().max(galley.size().x + 24.0);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+    let height = if art.is_some() { 38.0 } else { 30.0 };
+    let width = ui.available_width();
+    let reserved =
+        10.0 + if art.is_some() { 36.0 } else { 0.0 } + if badge.is_some() { 44.0 } else { 12.0 };
+    let galley = elided(ui, text, font, color, width - reserved);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(egui::Role::Tab, true, selected, text));
     if ui.is_rect_visible(rect) {
         let id = response.id;
         let hover = animate(ui, id.with("hover"), response.hovered(), MOTION);
         let active = animate(ui, id.with("selected"), selected, MOTION * 1.5);
+        let tint = art.map_or(p.accent, |a| a.hue);
         let fill = mix(
             mix(Color32::TRANSPARENT, p.control_hover, hover),
-            p.accent.gamma_multiply(0.22),
+            tint.gamma_multiply(0.18),
             active,
         );
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(6), fill);
+        painter.rect_filled(rect, CornerRadius::same(8), fill);
         if active > 0.0 {
-            let bar_height = rect.height() * 0.55 * active;
             let bar = Rect::from_center_size(
                 rect.left_center() + Vec2::new(2.0, 0.0),
-                Vec2::new(3.0, bar_height),
+                Vec2::new(3.0, rect.height() * 0.55 * active),
             );
-            painter.rect_filled(bar, CornerRadius::same(2), p.accent);
+            painter.rect_filled(bar, CornerRadius::same(2), tint);
         }
-        let text_color = mix(
-            color,
-            if ui.visuals().dark_mode {
-                Color32::WHITE
-            } else {
-                p.accent_pressed
-            },
-            active * 0.6,
+        let mut x = rect.left() + 10.0 + 2.0 * hover;
+        if let Some(art) = art {
+            let tile = Rect::from_min_size(Pos2::new(x, rect.center().y - 13.0), Vec2::splat(26.0));
+            paint_tile(painter, tile, art, active > 0.5, ui.visuals().dark_mode);
+            x += 26.0 + 10.0;
+        }
+        let text_color = mix(color, p.text, active);
+        painter.galley_with_override_text_color(
+            Pos2::new(x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            text_color,
         );
-        let pos = rect.left_center() + Vec2::new(12.0 + 2.0 * hover, -galley.size().y / 2.0);
-        painter.galley_with_override_text_color(pos, galley, text_color);
+        if let Some(count) = badge {
+            let label = ui.painter().layout_no_wrap(
+                count.to_string(),
+                FontId::proportional(11.5),
+                p.text_weak,
+            );
+            let pill = Rect::from_center_size(
+                rect.right_center() - Vec2::new(10.0 + label.size().x / 2.0 + 6.0, 0.0),
+                label.size() + Vec2::new(12.0, 4.0),
+            );
+            painter.rect_filled(pill, CornerRadius::same(255), p.control);
+            painter.galley_with_override_text_color(
+                pill.center() - label.size() / 2.0,
+                label,
+                p.text_weak,
+            );
+        }
+    }
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Lays out one line of text, ending in "…" if it doesn't fit.
+fn elided(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(font, color),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: max_width.max(20.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    ui.painter().layout_job(job)
+}
+
+pub const CARD_SIZE: Vec2 = Vec2::new(172.0, 104.0);
+
+/// A colorful tool card for the tool grid; lifts and glows in its hue on hover.
+pub fn tool_card(
+    ui: &mut egui::Ui,
+    art: Art,
+    title: &str,
+    subtitle: &str,
+    unavailable: bool,
+) -> Response {
+    let p = theme::palette(ui);
+    let (rect, response) = ui.allocate_exact_size(CARD_SIZE, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
+    if ui.is_rect_visible(rect) {
+        let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
+        let press = animate(
+            ui,
+            response.id.with("press"),
+            response.is_pointer_button_down_on(),
+            MOTION * 0.5,
+        );
+        let card = rect
+            .translate(Vec2::new(0.0, -2.0 * hover + press))
+            .shrink(2.0);
+        let painter = ui.painter();
+        if hover > 0.0 {
+            painter.rect_filled(
+                card.translate(Vec2::new(0.0, 4.0)),
+                CornerRadius::same(14),
+                Color32::from_black_alpha((40.0 * hover) as u8),
+            );
+        }
+        let border = mix(p.border, art.hue, hover * 0.8);
+        painter.rect(
+            card,
+            CornerRadius::same(14),
+            p.surface,
+            Stroke::new(1.0 + hover * 0.5, border),
+            StrokeKind::Inside,
+        );
+        let opacity = if unavailable { DISABLED_OPACITY } else { 1.0 };
+        let tile = Rect::from_min_size(card.min + Vec2::new(14.0, 12.0), Vec2::splat(38.0));
+        let dimmed = Art {
+            hue: art.hue.gamma_multiply(opacity),
+            ..art
+        };
+        paint_tile(painter, tile, dimmed, true, ui.visuals().dark_mode);
+        let text_x = card.min.x + 14.0;
+        let title_g = elided(
+            ui,
+            title,
+            FontId::proportional(15.0),
+            p.text,
+            card.width() - 28.0,
+        );
+        painter.galley(Pos2::new(text_x, tile.max.y + 9.0), title_g, p.text);
+        if !subtitle.is_empty() {
+            let sub = elided(
+                ui,
+                subtitle,
+                FontId::proportional(12.0),
+                p.text_weak,
+                card.width() - 28.0,
+            );
+            painter.galley(Pos2::new(text_x, tile.max.y + 29.0), sub, p.text_weak);
+        }
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
 }

@@ -115,7 +115,7 @@
   "error.spawn": "Could not start {program}: {error}",
   "error.io": "File error: {error}",
   "error.image": "Image error: {error}",
-  "category.rom": "ROM Device / DVD / CD / ISO",
+  "category.rom": "DVD / CD / ISO",
   "desc.to_ebook": "Convert eBooks (EPUB, MOBI, AZW3, FB2, PDF, DOCX…) with Calibre.",
   "desc.pdf_to_images": "Render every PDF page as an image.",
   "desc.pdf_to_text": "Extract the text of a PDF, keeping its layout.",
@@ -303,5 +303,10 @@
   "option.hw_decode": "Hardware decoding",
   "option.hw_decode_on": "Decode on the GPU when possible",
   "settings.notify": "Notify when the queue finishes",
-  "settings.name_tag": "File name tag"
+  "settings.name_tag": "File name tag",
+  "sidebar.title": "CATEGORIES",
+  "grid.results": "Search results",
+  "grid.search": "Search tools…",
+  "grid.no_results": "No tool matches your search.",
+  "grid.hint": "Pick a tool to add files and set options. You can also drop files anywhere in the window."
 }

@@ -114,7 +114,7 @@
   "error.spawn": "{program} konnte nicht gestartet werden: {error}",
   "error.io": "Dateifehler: {error}",
   "error.image": "Bildfehler: {error}",
-  "category.rom": "ROM-Laufwerk / DVD / CD / ISO",
+  "category.rom": "DVD / CD / ISO",
   "desc.to_ebook": "Wandelt E-Books (EPUB, MOBI, AZW3, FB2, PDF, DOCX…) mit Calibre um.",
   "desc.pdf_to_images": "Rendert jede PDF-Seite als Bild.",
   "desc.pdf_to_text": "Extrahiert den Text einer PDF unter Beibehaltung des Layouts.",
@@ -302,5 +302,10 @@
   "option.hw_decode": "Hardware-Dekodierung",
   "option.hw_decode_on": "Wenn möglich auf der GPU dekodieren",
   "settings.notify": "Benachrichtigen, wenn die Warteschlange fertig ist",
-  "settings.name_tag": "Dateinamen-Zusatz"
+  "settings.name_tag": "Dateinamen-Zusatz",
+  "sidebar.title": "KATEGORIEN",
+  "grid.results": "Suchergebnisse",
+  "grid.search": "Werkzeuge suchen…",
+  "grid.no_results": "Kein Werkzeug passt zur Suche.",
+  "grid.hint": "Wählen Sie ein Werkzeug, um Dateien hinzuzufügen und Optionen festzulegen. Dateien können auch ins Fenster gezogen werden."
 }

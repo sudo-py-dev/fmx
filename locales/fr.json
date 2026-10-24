@@ -114,7 +114,7 @@
   "error.spawn": "Impossible de lancer {program} : {error}",
   "error.io": "Erreur de fichier : {error}",
   "error.image": "Erreur d’image : {error}",
-  "category.rom": "Lecteur ROM / DVD / CD / ISO",
+  "category.rom": "DVD / CD / ISO",
   "desc.to_ebook": "Convertit des livres numériques (EPUB, MOBI, AZW3, FB2, PDF, DOCX…) avec Calibre.",
   "desc.pdf_to_images": "Rend chaque page du PDF en image.",
   "desc.pdf_to_text": "Extrait le texte d’un PDF en conservant la mise en page.",
@@ -302,5 +302,10 @@
   "option.hw_decode": "Décodage matériel",
   "option.hw_decode_on": "Décoder sur le GPU si possible",
   "settings.notify": "Notifier à la fin de la file",
-  "settings.name_tag": "Suffixe du nom de fichier"
+  "settings.name_tag": "Suffixe du nom de fichier",
+  "sidebar.title": "CATÉGORIES",
+  "grid.results": "Résultats de recherche",
+  "grid.search": "Rechercher un outil…",
+  "grid.no_results": "Aucun outil ne correspond à votre recherche.",
+  "grid.hint": "Choisissez un outil pour ajouter des fichiers et régler les options. Vous pouvez aussi déposer des fichiers dans la fenêtre."
 }
