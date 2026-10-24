@@ -62,6 +62,13 @@ pub struct Counts {
     pub failed: usize,
 }
 
+impl Job {
+    /// Time since the job started running, if it has.
+    pub fn elapsed(&self) -> Option<std::time::Duration> {
+        self.started.map(|s| s.elapsed())
+    }
+}
+
 impl Queue {
     pub fn new(is_running: bool) -> Self {
         let (tx, rx) = mpsc::channel();

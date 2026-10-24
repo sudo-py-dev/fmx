@@ -254,5 +254,13 @@
   "tool.ebook_azw3": "eBook → AZW3",
   "tool.ebook_fb2": "eBook → FB2",
   "tool.ebook_pdf": "eBook → PDF",
-  "tool.ebook_txt": "eBook → TXT"
+  "tool.ebook_txt": "eBook → TXT",
+  "notice.all_done": "Todos los trabajos han terminado.",
+  "status.eta": "{percent} · quedan {left}",
+  "settings.theme": "Apariencia",
+  "settings.motion": "Movimiento",
+  "settings.reduce_motion": "Reducir movimiento",
+  "theme.system": "Sistema",
+  "theme.light": "Claro",
+  "theme.dark": "Oscuro"
 }

@@ -19,6 +19,8 @@ mod probe;
 mod process;
 mod queue;
 mod settings;
+mod theme;
+mod widgets;
 
 use eframe::egui;
 use tracing_subscriber::EnvFilter;

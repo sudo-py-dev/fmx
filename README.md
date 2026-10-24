@@ -22,6 +22,10 @@ available in English, Spanish, French and German.
 
 Audio conversions get the same output settings and clipping.
 
+**Interface:** a light and a dark theme that follow the system setting (or can be chosen in
+Settings), with smooth hover and press animations, gliding progress bars that show the time left,
+status chips, and toast notifications. "Reduce motion" in Settings turns the animations off.
+
 **Queue:** jobs run in parallel with progress, cancel and retry. You can save and load task lists,
 and choose an action for when everything is done (open the output folder or shut down after a
 60-second countdown). Drag & drop and recursive folder adding work everywhere. Output names never

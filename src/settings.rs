@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::{Tool, VideoFormat};
 use crate::options::Options;
+use crate::theme::ThemeChoice;
 
 pub const STORAGE_KEY: &str = "muxr.settings.v1";
 pub const MAX_PARALLEL_JOBS: usize = 16;
@@ -25,6 +26,9 @@ pub struct Settings {
     pub language: Option<String>,
     /// Device path for audio-CD ripping.
     pub cd_device: String,
+    pub theme: ThemeChoice,
+    /// Turns off transitions and smooth scrolling.
+    pub reduce_motion: bool,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -50,6 +54,8 @@ impl Default for Settings {
             last_tool: Tool::ToVideo(VideoFormat::Mp4),
             language: None,
             cd_device: default_cd_device().to_owned(),
+            theme: ThemeChoice::System,
+            reduce_motion: false,
         }
     }
 }

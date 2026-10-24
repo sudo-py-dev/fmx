@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, Button, Color32, ComboBox, DragValue, Key, KeyboardShortcut, Layout, Modifiers,
-    ProgressBar, RichText, ScrollArea, Slider, TextEdit,
+    self, Align, ComboBox, CornerRadius, DragValue, Id, Key, KeyboardShortcut, Layout, Margin,
+    Modifiers, RichText, ScrollArea, Slider, Stroke, TextEdit,
 };
 
 use crate::catalog::{
@@ -22,26 +22,24 @@ use crate::options::{
     self, Channels, Corner, DownloadKind, Edit, HwAccel, MixLayout, Quality, Rect, Resolution,
     Rotation,
 };
-use crate::queue::{JobState, Notifier, Queue};
+use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
+use crate::theme::{self, MOTION, ThemeChoice};
+use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
 
 const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
-const SIDEBAR_WIDTH: f32 = 220.0;
-const QUEUE_HEIGHT: f32 = 260.0;
-const PROGRESS_WIDTH: f32 = 180.0;
-const DROP_ZONE_HEIGHT: f32 = 100.0;
+const SIDEBAR_WIDTH: f32 = 230.0;
+const QUEUE_HEIGHT: f32 = 230.0;
+const PROGRESS_WIDTH: f32 = 220.0;
+const DROP_ZONE_HEIGHT: f32 = 90.0;
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
 /// Task-list files larger than this are refused.
 const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
 /// Folder scans stop after this many files.
 const MAX_SCAN_FILES: usize = 10_000;
-const SUCCESS_COLOR: Color32 = Color32::from_rgb(60, 170, 90);
-
-enum Notice {
-    Info(String),
-    Error(String),
-}
+/// Progress below this is too early to estimate time left.
+const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
 
 /// What happens once the whole queue has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +68,7 @@ pub struct MuxrApp {
     tool: Tool,
     files: Vec<PathBuf>,
     url: String,
-    notice: Option<Notice>,
+    toasts: Toasts,
     show_settings: bool,
     media_info: Option<(String, String)>,
     after_done: AfterDone,
@@ -86,6 +84,7 @@ impl MuxrApp {
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE_KEY))
             .unwrap_or_default();
+        theme::apply(&cc.egui_ctx, settings.theme, settings.reduce_motion);
         // Clip/crop/subtitle edits belong to one batch, not to the next session.
         settings.options.edit = Edit::default();
         // MUXR_LANG (applied in main) wins unless a language was chosen in Settings.
@@ -103,7 +102,7 @@ impl MuxrApp {
             toolbox,
             files: Vec::new(),
             url: String::new(),
-            notice: None,
+            toasts: Toasts::default(),
             show_settings: false,
             media_info: None,
             after_done: AfterDone::Nothing,
@@ -120,7 +119,6 @@ impl MuxrApp {
         }
         self.tool = tool;
         self.settings.last_tool = tool;
-        self.notice = None;
     }
 
     /// Why a tool can't run here, if it can't.
@@ -157,8 +155,12 @@ impl MuxrApp {
                 self.files.push(path);
             }
         }
-        self.notice =
-            (skipped > 0).then(|| Notice::Error(trf("notice.skipped", &[("count", &skipped)])));
+        if skipped > 0 {
+            self.toasts.push(
+                ToastKind::Error,
+                trf("notice.skipped", &[("count", &skipped)]),
+            );
+        }
     }
 
     fn pick_files(&mut self) {
@@ -233,9 +235,12 @@ impl MuxrApp {
                 if self.settings.auto_start {
                     self.queue.is_running = true;
                 }
-                self.notice = Some(Notice::Info(trf("notice.queued", &[("count", &count)])));
+                self.toasts.push(
+                    ToastKind::Success,
+                    trf("notice.queued", &[("count", &count)]),
+                );
             }
-            Err(e) => self.notice = Some(Notice::Error(e.to_string())),
+            Err(e) => self.toasts.push(ToastKind::Error, e.to_string()),
         }
     }
 
@@ -268,6 +273,10 @@ impl MuxrApp {
         }
     }
 
+    fn apply_theme(&self, ctx: &egui::Context) {
+        theme::apply(ctx, self.settings.theme, self.settings.reduce_motion);
+    }
+
     // ── Task lists ──────────────────────────────────────────────────────
 
     fn save_task_list(&mut self) {
@@ -288,10 +297,15 @@ impl MuxrApp {
         let result = serde_json::to_vec_pretty(&specs)
             .map_err(std::io::Error::other)
             .and_then(|bytes| std::fs::write(&path, bytes));
-        self.notice = Some(match result {
-            Ok(()) => Notice::Info(trf("notice.list_saved", &[("count", &specs.len())])),
-            Err(e) => Notice::Error(trf("error.io", &[("error", &e)])),
-        });
+        match result {
+            Ok(()) => self.toasts.push(
+                ToastKind::Success,
+                trf("notice.list_saved", &[("count", &specs.len())]),
+            ),
+            Err(e) => self
+                .toasts
+                .push(ToastKind::Error, trf("error.io", &[("error", &e)])),
+        }
     }
 
     fn load_task_list(&mut self) {
@@ -322,9 +336,12 @@ impl MuxrApp {
                     spec.output = fresh_output(&spec, &mut claimed);
                     self.queue.push(spec);
                 }
-                self.notice = Some(Notice::Info(trf("notice.queued", &[("count", &count)])));
+                self.toasts.push(
+                    ToastKind::Success,
+                    trf("notice.queued", &[("count", &count)]),
+                );
             }
-            Err(message) => self.notice = Some(Notice::Error(message)),
+            Err(message) => self.toasts.push(ToastKind::Error, message),
         }
     }
 
@@ -336,6 +353,7 @@ impl MuxrApp {
         let just_finished = self.was_busy && !busy && self.queue.is_idle();
         self.was_busy = busy;
         if just_finished && counts.done > 0 {
+            self.toasts.push(ToastKind::Success, tr("notice.all_done"));
             match self.after_done {
                 AfterDone::Nothing => {}
                 AfterDone::OpenFolder => {
@@ -364,9 +382,19 @@ impl MuxrApp {
         egui::Window::new(tr("shutdown.title"))
             .collapsible(false)
             .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label(trf("shutdown.countdown", &[("secs", &left.as_secs())]));
-                cancel = ui.button(tr("action.cancel")).clicked();
+                ui.add_space(8.0);
+                cancel = widgets::button(
+                    ui,
+                    Some(icons::X),
+                    tr("action.cancel"),
+                    Kind::Primary,
+                    Size::Regular,
+                    true,
+                )
+                .clicked();
             });
         if cancel {
             self.shutdown_at = None;
@@ -378,105 +406,157 @@ impl MuxrApp {
     // ── Toolbar ─────────────────────────────────────────────────────────
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let counts = self.queue.counts();
         ui.horizontal_wrapped(|ui| {
-            ui.heading(RichText::new(tr("app.name")).strong());
-            ui.separator();
-            let counts = self.queue.counts();
-            let (label, hint) = if self.queue.is_running {
+            ui.label(RichText::new(tr("app.name")).heading().strong());
+            ui.add_space(8.0);
+            let (icon, label, hint, kind) = if self.queue.is_running {
                 (
-                    icons::label(icons::PAUSE, tr("action.pause")),
+                    icons::PAUSE,
+                    tr("action.pause"),
                     tr("hint.pause"),
+                    Kind::Secondary,
                 )
             } else {
                 (
-                    icons::label(icons::PLAY, tr("action.start")),
+                    icons::PLAY,
+                    tr("action.start"),
                     tr("hint.start"),
+                    Kind::Primary,
                 )
             };
-            if ui.button(label).on_hover_text(hint).clicked() {
+            if widgets::button(ui, Some(icon), label, kind, Size::Regular, true)
+                .on_hover_text(hint)
+                .clicked()
+            {
                 self.queue.is_running = !self.queue.is_running;
             }
-            if ui
-                .add_enabled(
-                    counts.running + counts.queued > 0,
-                    Button::new(icons::label(icons::STOP, tr("action.stop_all"))),
-                )
-                .on_hover_text(tr("hint.stop_all"))
-                .clicked()
+            let busy = counts.running + counts.queued > 0;
+            if widgets::button(
+                ui,
+                Some(icons::STOP),
+                tr("action.stop_all"),
+                Kind::Danger,
+                Size::Regular,
+                busy,
+            )
+            .on_hover_text(tr("hint.stop_all"))
+            .clicked()
             {
                 self.queue.cancel_all();
             }
-            if ui
-                .add_enabled(
-                    counts.failed > 0,
-                    Button::new(icons::label(icons::ARROW_CLOCKWISE, tr("action.retry"))),
-                )
-                .clicked()
+            if widgets::button(
+                ui,
+                Some(icons::ARROW_CLOCKWISE),
+                tr("action.retry"),
+                Kind::Secondary,
+                Size::Regular,
+                counts.failed > 0,
+            )
+            .clicked()
             {
                 self.queue.retry_failed();
             }
-            if ui
-                .add_enabled(
-                    counts.done + counts.failed > 0,
-                    Button::new(icons::label(icons::BROOM, tr("action.clear_finished"))),
-                )
-                .clicked()
+            let finished = counts.done + counts.failed > 0;
+            if widgets::button(
+                ui,
+                Some(icons::BROOM),
+                tr("action.clear_finished"),
+                Kind::Secondary,
+                Size::Regular,
+                finished,
+            )
+            .clicked()
             {
                 self.queue.clear_finished();
             }
             ui.separator();
-            if ui
-                .button(icons::label(icons::FLOPPY_DISK, tr("action.save_list")))
-                .clicked()
+            if widgets::button(
+                ui,
+                Some(icons::FLOPPY_DISK),
+                tr("action.save_list"),
+                Kind::Ghost,
+                Size::Regular,
+                true,
+            )
+            .clicked()
             {
                 self.save_task_list();
             }
-            if ui
-                .button(icons::label(icons::FOLDER_OPEN, tr("action.load_list")))
-                .clicked()
+            if widgets::button(
+                ui,
+                Some(icons::FOLDER_OPEN),
+                tr("action.load_list"),
+                Kind::Ghost,
+                Size::Regular,
+                true,
+            )
+            .clicked()
             {
                 self.load_task_list();
             }
-            ui.separator();
-            ui.label(tr("after.label"));
-            combo(
-                ui,
-                "after_done",
-                &mut self.after_done,
-                &AfterDone::ALL,
-                |a| a.label().to_owned(),
-            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .button(icons::label(icons::GEAR, tr("action.settings")))
-                    .clicked()
+                if widgets::button(
+                    ui,
+                    Some(icons::GEAR),
+                    tr("action.settings"),
+                    Kind::Ghost,
+                    Size::Regular,
+                    true,
+                )
+                .clicked()
                 {
                     self.show_settings = !self.show_settings;
                 }
             });
         });
-        ui.horizontal(|ui| self.output_dir_picker(ui));
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            self.output_dir_picker(ui);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                combo(
+                    ui,
+                    "after_done",
+                    &mut self.after_done,
+                    &AfterDone::ALL,
+                    |a| a.label().to_owned(),
+                );
+                ui.label(RichText::new(tr("after.label")).weak());
+            });
+        });
     }
 
     fn output_dir_picker(&mut self, ui: &mut egui::Ui) {
-        ui.label(tr("output.label"));
+        ui.label(RichText::new(tr("output.label")).weak());
         let current = self.settings.output_dir.as_ref().map_or_else(
             || tr("output.beside_source").to_owned(),
             |d| d.display().to_string(),
         );
         ui.label(RichText::new(current).monospace());
-        if ui
-            .button(icons::label(icons::FOLDER, tr("action.change")))
-            .clicked()
+        if widgets::button(
+            ui,
+            Some(icons::FOLDER),
+            tr("action.change"),
+            Kind::Ghost,
+            Size::Small,
+            true,
+        )
+        .clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
             self.settings.output_dir = Some(dir);
         }
         if self.settings.output_dir.is_some()
-            && ui
-                .button(tr("action.reset"))
-                .on_hover_text(tr("hint.output_reset"))
-                .clicked()
+            && widgets::button(
+                ui,
+                Some(icons::X),
+                tr("action.reset"),
+                Kind::Ghost,
+                Size::Small,
+                true,
+            )
+            .on_hover_text(tr("hint.output_reset"))
+            .clicked()
         {
             self.settings.output_dir = None;
         }
@@ -485,28 +565,34 @@ impl MuxrApp {
     // ── Sidebar ─────────────────────────────────────────────────────────
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 for category in Category::ALL {
-                    egui::CollapsingHeader::new(RichText::new(category.label()).strong())
-                        .default_open(matches!(category, Category::Video | Category::Utilities))
+                    let tools = category.tools();
+                    let header = RichText::new(category.label()).strong();
+                    egui::CollapsingHeader::new(header)
+                        .id_salt(category.label())
+                        .default_open(category == Category::Video || tools.contains(&self.tool))
                         .show(ui, |ui| {
-                            for tool in category.tools() {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            for tool in tools {
                                 let reason = self.unavailable_reason(tool);
-                                let text = if reason.is_some() {
-                                    RichText::new(tool.label()).weak()
-                                } else {
-                                    RichText::new(tool.label())
+                                let hover = match &reason {
+                                    Some(r) => {
+                                        format!("{}\n\n{} {r}", tool.description(), icons::WARNING)
+                                    }
+                                    None => tool.description().to_owned(),
                                 };
-                                let hover = reason.map_or_else(
-                                    || tool.description().to_owned(),
-                                    |r| format!("{}\n{} {r}", tool.description(), icons::WARNING),
-                                );
-                                if ui
-                                    .selectable_label(self.tool == tool, text)
-                                    .on_hover_text(hover)
-                                    .clicked()
+                                if widgets::nav_item(
+                                    ui,
+                                    tool.label(),
+                                    self.tool == tool,
+                                    reason.is_some(),
+                                )
+                                .on_hover_text(hover)
+                                .clicked()
                                 {
                                     self.select_tool(tool);
                                 }
@@ -519,77 +605,84 @@ impl MuxrApp {
     // ── Task editor ─────────────────────────────────────────────────────
 
     fn task_editor(&mut self, ui: &mut egui::Ui) {
-        ui.heading(self.tool_title());
-        ui.label(RichText::new(self.tool.description()).weak());
+        let p = theme::palette(ui);
+        ui.label(RichText::new(self.tool_title()).heading().strong());
+        ui.label(RichText::new(self.tool.description()).color(p.text_weak));
         if let Some(reason) = self.unavailable_reason(self.tool) {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                icons::label(icons::WARNING, &reason),
-            );
+            ui.add_space(4.0);
+            widgets::chip(ui, icons::WARNING, &reason, p.warning);
         }
-        ui.add_space(6.0);
-        match self.tool.input_kind() {
+        ui.add_space(10.0);
+        card(ui, |ui| match self.tool.input_kind() {
             InputKind::Url => self.url_input(ui),
             InputKind::Device => {
                 ui.horizontal(|ui| {
                     ui.label(tr("input.device"));
-                    ui.add(TextEdit::singleline(&mut self.settings.cd_device).desired_width(200.0));
+                    ui.add(TextEdit::singleline(&mut self.settings.cd_device).desired_width(220.0));
                 });
             }
             InputKind::Capture => {
                 ui.label(tr("input.capture"));
                 if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                    ui.add_space(4.0);
                     ui.colored_label(
-                        ui.visuals().warn_fg_color,
+                        p.warning,
                         icons::label(icons::WARNING, tr("warning.wayland_capture")),
                     );
                 }
             }
             _ => self.file_list(ui),
-        }
-        ui.add_space(6.0);
-        egui::Grid::new("options")
-            .num_columns(2)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                self.options_ui(ui);
-            });
-        if let Tool::ToVideo(format) = self.tool {
-            self.advanced_video(ui, format);
-            self.edit_panel(ui, true);
-        } else if let Tool::ToAudio(format) = self.tool {
-            self.advanced_audio(ui, !format.is_lossless());
-            self.edit_panel(ui, false);
-        }
+        });
+        ui.add_space(10.0);
+        card(ui, |ui| {
+            egui::Grid::new("options")
+                .num_columns(2)
+                .spacing([16.0, 10.0])
+                .show(ui, |ui| {
+                    self.options_ui(ui);
+                });
+            if let Tool::ToVideo(format) = self.tool {
+                ui.add_space(4.0);
+                self.advanced_video(ui, format);
+                self.edit_panel(ui, true);
+            } else if let Tool::ToAudio(format) = self.tool {
+                ui.add_space(4.0);
+                self.advanced_audio(ui, !format.is_lossless());
+                self.edit_panel(ui, false);
+            }
+        });
         ui.add_space(8.0);
+    }
+
+    /// The editor's sticky footer: the main action stays visible while options scroll.
+    fn action_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let primary = Button::new(RichText::new(self.primary_label()).strong())
-                .fill(ui.visuals().selection.bg_fill)
-                .min_size(egui::vec2(140.0, 30.0));
-            if ui
-                .add_enabled(self.can_enqueue(), primary)
-                .on_hover_text(ui.ctx().format_shortcut(&ENQUEUE))
-                .clicked()
+            let (icon, label) = self.primary_action();
+            if widgets::button(
+                ui,
+                Some(icon),
+                label,
+                Kind::Primary,
+                Size::Regular,
+                self.can_enqueue(),
+            )
+            .on_hover_text(ui.ctx().format_shortcut(&ENQUEUE))
+            .clicked()
             {
                 self.enqueue();
             }
-            match &self.notice {
-                Some(Notice::Info(text)) => {
-                    ui.label(text);
-                }
-                Some(Notice::Error(text)) => {
-                    ui.colored_label(ui.visuals().error_fg_color, text);
-                }
-                None => {}
+            let count = self.files.len();
+            if count > 0 {
+                ui.label(RichText::new(trf("files.count", &[("count", &count)])).weak());
             }
         });
     }
 
-    fn primary_label(&self) -> String {
+    fn primary_action(&self) -> (&'static str, &'static str) {
         match self.tool {
-            Tool::Record => icons::label(icons::RECORD, tr("action.start_recording")),
-            Tool::Download => icons::label(icons::DOWNLOAD, tr("action.download")),
-            _ => icons::label(icons::LIST_PLUS, tr("action.enqueue")),
+            Tool::Record => (icons::RECORD, tr("action.start_recording")),
+            Tool::Download => (icons::DOWNLOAD, tr("action.download")),
+            _ => (icons::LIST_PLUS, tr("action.enqueue")),
         }
     }
 
@@ -617,22 +710,27 @@ impl MuxrApp {
     fn file_list(&mut self, ui: &mut egui::Ui) {
         let kind = self.tool.input_kind();
         ui.horizontal_wrapped(|ui| {
-            let add_label = if kind.picks_folders() {
-                icons::label(icons::FOLDER_PLUS, tr("action.add_folders"))
+            let (icon, label) = if kind.picks_folders() {
+                (icons::FOLDER_PLUS, tr("action.add_folders"))
             } else {
-                icons::label(icons::FILE_PLUS, tr("action.add_files"))
+                (icons::FILE_PLUS, tr("action.add_files"))
             };
-            if ui
-                .button(add_label)
+            if widgets::button(ui, Some(icon), label, Kind::Secondary, Size::Regular, true)
                 .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
                 .clicked()
             {
                 self.pick_files();
             }
             if kind == InputKind::Disc
-                && ui
-                    .button(icons::label(icons::DISC, tr("action.add_iso")))
-                    .clicked()
+                && widgets::button(
+                    ui,
+                    Some(icons::DISC),
+                    tr("action.add_iso"),
+                    Kind::Secondary,
+                    Size::Regular,
+                    true,
+                )
+                .clicked()
                 && let Some(paths) = rfd::FileDialog::new()
                     .add_filter("ISO", &["iso"])
                     .pick_files()
@@ -640,75 +738,81 @@ impl MuxrApp {
                 self.add_files(paths);
             }
             if !kind.picks_folders()
-                && ui
-                    .button(icons::label(
-                        icons::FOLDER_PLUS,
-                        tr("action.add_folder_scan"),
-                    ))
-                    .clicked()
+                && widgets::button(
+                    ui,
+                    Some(icons::FOLDER_PLUS),
+                    tr("action.add_folder_scan"),
+                    Kind::Secondary,
+                    Size::Regular,
+                    true,
+                )
+                .clicked()
             {
                 self.add_folder();
             }
-            if ui
-                .add_enabled(!self.files.is_empty(), Button::new(tr("action.clear")))
-                .clicked()
+            if widgets::button(
+                ui,
+                Some(icons::BROOM),
+                tr("action.clear"),
+                Kind::Ghost,
+                Size::Regular,
+                !self.files.is_empty(),
+            )
+            .clicked()
             {
                 self.files.clear();
             }
-            let hint = match self.tool.arity() {
-                InputArity::Exactly(2) if self.tool == Tool::Mux => tr("hint.mux_order"),
-                InputArity::Exactly(2) => tr("hint.mix_order"),
-                InputArity::AllAtLeast(_) => tr("hint.order_matters"),
-                _ => tr("hint.drop_files"),
-            };
-            ui.label(RichText::new(hint).weak());
         });
+        ui.add_space(6.0);
 
+        let p = theme::palette(ui);
         let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
-        let stroke = if hovering {
-            ui.visuals().selection.stroke
-        } else {
-            ui.visuals().widgets.noninteractive.bg_stroke
-        };
+        let glow = ui
+            .ctx()
+            .animate_bool_with_time(Id::unique("drop_glow"), hovering, MOTION);
+        let stroke = Stroke::new(1.0 + glow, p.border.lerp_to_gamma(p.accent, glow));
         let ordered = !matches!(self.tool.arity(), InputArity::EachFile);
         let probeable = kind == InputKind::Media && self.toolbox.get(External::Ffmpeg).is_some();
         let mut action = None;
-        egui::Frame::group(ui.style())
+        egui::Frame::new()
+            .fill(p.sunken.lerp_to_gamma(p.accent, glow * 0.08))
             .stroke(stroke)
+            .corner_radius(CornerRadius::same(theme::RADIUS))
+            .inner_margin(Margin::same(8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if self.files.is_empty() {
-                    // A fixed height: inside the scrolling editor, "fill available" is unbounded.
-                    let size = egui::vec2(ui.available_width(), DROP_ZONE_HEIGHT);
-                    ui.add_sized(
-                        size,
-                        egui::Label::new(RichText::new(tr("files.empty")).weak()),
-                    );
+                    widgets::empty_state(ui, icons::FILE_PLUS, tr("files.empty"), DROP_ZONE_HEIGHT);
                     return;
                 }
-                ScrollArea::vertical().max_height(170.0).show(ui, |ui| {
+                ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     for (i, path) in self.files.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            if ui
-                                .small_button(icons::X)
+                            let small = |ui: &mut egui::Ui, icon, enabled| {
+                                widgets::button(
+                                    ui,
+                                    Some(icon),
+                                    "",
+                                    Kind::Ghost,
+                                    Size::Small,
+                                    enabled,
+                                )
+                            };
+                            if small(ui, icons::X, true)
                                 .on_hover_text(tr("action.remove"))
                                 .clicked()
                             {
                                 action = Some(FileAction::Remove(i));
                             }
                             if ordered {
-                                if ui
-                                    .add_enabled(i > 0, Button::new(icons::CARET_UP).small())
+                                if small(ui, icons::CARET_UP, i > 0)
                                     .on_hover_text(tr("action.move_up"))
                                     .clicked()
                                 {
                                     action = Some(FileAction::Swap(i, i - 1));
                                 }
-                                if ui
-                                    .add_enabled(
-                                        i + 1 < self.files.len(),
-                                        Button::new(icons::CARET_DOWN).small(),
-                                    )
+                                if small(ui, icons::CARET_DOWN, i + 1 < self.files.len())
                                     .on_hover_text(tr("action.move_down"))
                                     .clicked()
                                 {
@@ -716,8 +820,7 @@ impl MuxrApp {
                                 }
                             }
                             if probeable
-                                && ui
-                                    .small_button(icons::INFO)
+                                && small(ui, icons::INFO, true)
                                     .on_hover_text(tr("action.media_info"))
                                     .clicked()
                             {
@@ -737,7 +840,18 @@ impl MuxrApp {
             Some(FileAction::Info(i)) => self.show_media_info(i),
             None => {}
         }
-        ui.label(RichText::new(trf("files.count", &[("count", &self.files.len())])).weak());
+        ui.add_space(4.0);
+        let hint = match self.tool.arity() {
+            InputArity::Exactly(2) if self.tool == Tool::Mux => tr("hint.mux_order"),
+            InputArity::Exactly(2) => tr("hint.mix_order"),
+            InputArity::AllAtLeast(_) => tr("hint.order_matters"),
+            _ => tr("hint.drop_files"),
+        };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(trf("files.count", &[("count", &self.files.len())])).weak());
+            ui.label(RichText::new("·").weak());
+            ui.label(RichText::new(hint).weak());
+        });
     }
 
     fn show_media_info(&mut self, index: usize) {
@@ -1003,7 +1117,7 @@ impl MuxrApp {
             .show(ui, |ui| {
                 egui::Grid::new("adv_video_grid")
                     .num_columns(2)
-                    .spacing([12.0, 8.0])
+                    .spacing([16.0, 10.0])
                     .show(ui, |ui| {
                         let choices = format.encoder_choices();
                         if choices.len() > 1 {
@@ -1057,9 +1171,7 @@ impl MuxrApp {
         let opts = &mut self.settings.options;
         egui::CollapsingHeader::new(icons::label(icons::SLIDERS, tr("section.output_settings")))
             .id_salt("adv_audio")
-            .show(ui, |ui| {
-                audio_grid(ui, &mut opts.audio, lossy);
-            });
+            .show(ui, |ui| audio_grid(ui, &mut opts.audio, lossy));
     }
 
     fn edit_panel(&mut self, ui: &mut egui::Ui, video: bool) {
@@ -1070,7 +1182,7 @@ impl MuxrApp {
                 ui.label(RichText::new(tr("hint.edit_applies")).weak());
                 egui::Grid::new("edit_grid")
                     .num_columns(2)
-                    .spacing([12.0, 8.0])
+                    .spacing([16.0, 10.0])
                     .show(ui, |ui| {
                         trim_rows(ui, edit);
                         if !video {
@@ -1121,8 +1233,10 @@ impl MuxrApp {
 
     fn queue_panel(&mut self, ui: &mut egui::Ui) {
         let counts = self.queue.counts();
+        let p = theme::palette(ui);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.strong(tr("queue.title"));
+            ui.label(RichText::new(tr("queue.title")).strong().size(16.0));
             let total = self.queue.jobs().len();
             ui.label(
                 RichText::new(trf(
@@ -1132,12 +1246,17 @@ impl MuxrApp {
                 .weak(),
             );
             if !self.queue.is_running && counts.queued > 0 {
-                ui.colored_label(ui.visuals().warn_fg_color, tr("queue.paused"));
+                widgets::chip(ui, icons::PAUSE, tr("queue.paused"), p.warning);
             }
         });
-        ui.separator();
+        ui.add_space(4.0);
         if self.queue.jobs().is_empty() {
-            ui.centered_and_justified(|ui| ui.label(RichText::new(tr("queue.empty")).weak()));
+            widgets::empty_state(
+                ui,
+                icons::LIST_PLUS,
+                tr("queue.empty"),
+                ui.available_height().max(80.0),
+            );
             return;
         }
         let mut cancel = None;
@@ -1148,52 +1267,87 @@ impl MuxrApp {
                 egui::Grid::new("queue")
                     .striped(true)
                     .num_columns(4)
-                    .spacing([16.0, 6.0])
+                    .spacing([18.0, 8.0])
+                    .min_row_height(30.0)
                     .show(ui, |ui| {
                         for job in self.queue.jobs() {
-                            ui.label(job.spec.tool.label());
+                            ui.label(RichText::new(job.spec.tool.label()).strong());
                             ui.label(job_source(&job.spec))
                                 .on_hover_text(job.spec.output.display().to_string());
-                            status_cell(ui, job.spec.tool, &job.state);
+                            status_cell(ui, job);
                             ui.horizontal(|ui| match job.state {
                                 JobState::Queued | JobState::Running { .. } => {
                                     let label = if job.spec.tool == Tool::Record
                                         && job.state != JobState::Queued
                                     {
-                                        icons::label(icons::STOP, tr("action.stop_recording"))
+                                        tr("action.stop_recording")
                                     } else {
-                                        icons::label(icons::X, tr("action.cancel"))
+                                        tr("action.cancel")
                                     };
-                                    if ui.small_button(label).clicked() {
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::X),
+                                        label,
+                                        Kind::Ghost,
+                                        Size::Small,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
                                         cancel = Some(job.id);
                                     }
                                 }
                                 JobState::Done { .. } => {
                                     if job.spec.output.is_file()
-                                        && ui
-                                            .small_button(icons::label(
-                                                icons::ARROW_SQUARE_OUT,
-                                                tr("action.open"),
-                                            ))
-                                            .clicked()
+                                        && widgets::button(
+                                            ui,
+                                            Some(icons::ARROW_SQUARE_OUT),
+                                            tr("action.open"),
+                                            Kind::Ghost,
+                                            Size::Small,
+                                            true,
+                                        )
+                                        .clicked()
                                     {
                                         open_path(&job.spec.output);
                                     }
-                                    if ui
-                                        .small_button(icons::label(
-                                            icons::FOLDER,
-                                            tr("action.open_folder"),
-                                        ))
-                                        .clicked()
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::FOLDER),
+                                        tr("action.open_folder"),
+                                        Kind::Ghost,
+                                        Size::Small,
+                                        true,
+                                    )
+                                    .clicked()
                                     {
                                         reveal(&job.spec.output);
                                     }
-                                    if ui.small_button(tr("action.remove")).clicked() {
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::X),
+                                        "",
+                                        Kind::Ghost,
+                                        Size::Small,
+                                        true,
+                                    )
+                                    .on_hover_text(tr("action.remove"))
+                                    .clicked()
+                                    {
                                         remove = Some(job.id);
                                     }
                                 }
                                 _ => {
-                                    if ui.small_button(tr("action.remove")).clicked() {
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::X),
+                                        tr("action.remove"),
+                                        Kind::Ghost,
+                                        Size::Small,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
                                         remove = Some(job.id);
                                     }
                                 }
@@ -1214,16 +1368,36 @@ impl MuxrApp {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        egui::Window::new(tr("settings.title"))
+        let mut theme_changed = false;
+        egui::Window::new(icons::label(icons::GEAR, tr("settings.title")))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
                 egui::Grid::new("settings")
                     .num_columns(2)
-                    .spacing([12.0, 8.0])
+                    .spacing([16.0, 12.0])
                     .show(ui, |ui| {
                         row(ui, tr("settings.language"), |ui| self.language_picker(ui));
+                        row(ui, tr("settings.theme"), |ui| {
+                            let before = self.settings.theme;
+                            combo(
+                                ui,
+                                "theme",
+                                &mut self.settings.theme,
+                                &ThemeChoice::ALL,
+                                |t| t.label().to_owned(),
+                            );
+                            theme_changed |= before != self.settings.theme;
+                        });
+                        row(ui, tr("settings.motion"), |ui| {
+                            theme_changed |= ui
+                                .checkbox(
+                                    &mut self.settings.reduce_motion,
+                                    tr("settings.reduce_motion"),
+                                )
+                                .changed();
+                        });
                         row(ui, tr("settings.parallel"), |ui| {
                             ui.add(
                                 DragValue::new(&mut self.settings.parallel_jobs)
@@ -1242,6 +1416,9 @@ impl MuxrApp {
                     });
             });
         self.show_settings = open;
+        if theme_changed {
+            self.apply_theme(ctx);
+        }
     }
 
     fn language_picker(&mut self, ui: &mut egui::Ui) {
@@ -1271,36 +1448,67 @@ impl MuxrApp {
     }
 
     fn programs_list(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
         let mut seen = HashSet::new();
         for ext in External::ALL.into_iter().filter(|e| *e != External::Ffmpeg) {
             if !seen.insert(ext.name()) {
                 continue;
             }
-            let (mark, color) = if self.toolbox.get(ext).is_some() {
-                (icons::CHECK_CIRCLE, SUCCESS_COLOR)
+            if self.toolbox.get(ext).is_some() {
+                widgets::chip(ui, icons::CHECK_CIRCLE, ext.name(), p.success);
             } else {
-                (icons::X_CIRCLE, ui.visuals().weak_text_color())
-            };
-            ui.colored_label(color, format!("{mark} {}", ext.name()));
+                widgets::chip(ui, icons::X_CIRCLE, ext.name(), p.text_weak);
+            }
         }
-        if ui.button(tr("action.rescan")).clicked() {
+        if widgets::button(
+            ui,
+            Some(icons::ARROW_CLOCKWISE),
+            tr("action.rescan"),
+            Kind::Secondary,
+            Size::Small,
+            true,
+        )
+        .clicked()
+        {
             self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
         }
     }
 
     fn ffmpeg_setting(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
         match self.toolbox.get(External::Ffmpeg) {
-            Some(path) => ui.label(RichText::new(path.display().to_string()).monospace()),
-            None => ui.colored_label(ui.visuals().error_fg_color, tr("settings.ffmpeg_missing")),
-        };
+            Some(path) => {
+                ui.label(RichText::new(path.display().to_string()).monospace());
+            }
+            None => {
+                widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
+            }
+        }
         ui.horizontal(|ui| {
-            if ui.button(tr("action.browse")).clicked()
+            if widgets::button(
+                ui,
+                Some(icons::FOLDER_OPEN),
+                tr("action.browse"),
+                Kind::Secondary,
+                Size::Small,
+                true,
+            )
+            .clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_file()
             {
                 self.settings.ffmpeg_path = Some(path);
                 self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
             }
-            if self.settings.ffmpeg_path.is_some() && ui.button(tr("action.auto_detect")).clicked()
+            if self.settings.ffmpeg_path.is_some()
+                && widgets::button(
+                    ui,
+                    None,
+                    tr("action.auto_detect"),
+                    Kind::Ghost,
+                    Size::Small,
+                    true,
+                )
+                .clicked()
             {
                 self.settings.ffmpeg_path = None;
                 self.toolbox = Toolbox::detect(None);
@@ -1313,14 +1521,17 @@ impl MuxrApp {
             return;
         };
         let mut open = true;
-        egui::Window::new(trf("info.title", &[("name", title)]))
-            .open(&mut open)
-            .default_size([560.0, 360.0])
-            .show(ctx, |ui| {
-                ScrollArea::both().show(ui, |ui| {
-                    ui.label(RichText::new(text.as_str()).monospace());
-                });
+        egui::Window::new(icons::label(
+            icons::INFO,
+            &trf("info.title", &[("name", title)]),
+        ))
+        .open(&mut open)
+        .default_size([600.0, 380.0])
+        .show(ctx, |ui| {
+            ScrollArea::both().show(ui, |ui| {
+                ui.label(RichText::new(text.as_str()).monospace());
             });
+        });
         if !open {
             self.media_info = None;
         }
@@ -1331,6 +1542,20 @@ enum FileAction {
     Remove(usize),
     Swap(usize, usize),
     Info(usize),
+}
+
+/// A rounded surface that groups related controls.
+fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    let p = theme::palette(ui);
+    egui::Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+        .inner_margin(Margin::same(14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            content(ui);
+        });
 }
 
 /// Gives a loaded job an output name that doesn't overwrite anything.
@@ -1373,9 +1598,26 @@ fn file_name(path: &Path) -> String {
     )
 }
 
+/// Formats a duration as `m:ss` or `h:mm:ss`.
+fn clock(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// Estimated time left from elapsed time and progress.
+fn time_left(elapsed: Duration, progress: f32) -> Option<Duration> {
+    (MIN_PROGRESS_FOR_ETA..1.0)
+        .contains(&progress)
+        .then(|| elapsed.mul_f32((1.0 - progress) / progress))
+}
+
 /// One labelled row of a two-column options grid.
 fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
-    ui.label(label);
+    ui.label(RichText::new(label).color(theme::palette(ui).text_weak));
     ui.horizontal(content);
     ui.end_row();
 }
@@ -1411,7 +1653,7 @@ fn trim_rows(ui: &mut egui::Ui, edit: &mut Edit) {
             ui.add(
                 TextEdit::singleline(text)
                     .hint_text(tr("hint.timestamp"))
-                    .desired_width(120.0),
+                    .desired_width(140.0),
             );
         });
     }
@@ -1452,7 +1694,7 @@ fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {
 fn audio_grid(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool) {
     egui::Grid::new("adv_audio_grid")
         .num_columns(2)
-        .spacing([12.0, 8.0])
+        .spacing([16.0, 10.0])
         .show(ui, |ui| {
             if lossy {
                 row(ui, tr("option.audio_bitrate"), |ui| {
@@ -1509,14 +1751,22 @@ fn rect_editor(ui: &mut egui::Ui, rect: &mut Rect) {
         ("w", &mut rect.w),
         ("h", &mut rect.h),
     ] {
-        ui.label(label);
+        ui.label(RichText::new(label).weak());
         ui.add(DragValue::new(value).range(0..=16_384));
     }
 }
 
 /// A file picker slot showing the chosen file with a clear button.
 fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
-    if ui.button(tr("action.choose")).clicked()
+    if widgets::button(
+        ui,
+        Some(icons::FOLDER_OPEN),
+        tr("action.choose"),
+        Kind::Secondary,
+        Size::Small,
+        true,
+    )
+    .clicked()
         && let Some(path) = rfd::FileDialog::new()
             .add_filter(tr("filter.supported"), exts)
             .pick_file()
@@ -1526,8 +1776,7 @@ fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
     if let Some(path) = slot.as_ref() {
         ui.label(file_name(path))
             .on_hover_text(path.display().to_string());
-        if ui
-            .small_button(icons::X)
+        if widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Small, true)
             .on_hover_text(tr("action.remove"))
             .clicked()
         {
@@ -1552,51 +1801,59 @@ fn combo<T: PartialEq + Clone>(
         });
 }
 
-fn status_cell(ui: &mut egui::Ui, tool: Tool, state: &JobState) {
-    match state {
+fn status_cell(ui: &mut egui::Ui, job: &Job) {
+    let p = theme::palette(ui);
+    let bar_id = Id::unique(("job_progress", job.id));
+    match &job.state {
         JobState::Queued => {
-            ui.label(RichText::new(tr("status.queued")).weak());
+            widgets::chip(ui, icons::LIST_PLUS, tr("status.queued"), p.text_weak);
         }
-        JobState::Running { .. } if tool == Tool::Record => {
-            ui.add(
-                ProgressBar::new(0.0)
-                    .animate(true)
-                    .text(tr("status.recording"))
-                    .desired_width(PROGRESS_WIDTH),
+        JobState::Running { .. } if job.spec.tool == Tool::Record => {
+            let text = format!(
+                "{} {}",
+                tr("status.recording"),
+                clock(job.elapsed().unwrap_or_default())
             );
+            widgets::chip(ui, icons::RECORD, &text, p.danger);
+            ui.ctx().request_repaint_after(Duration::from_millis(500));
         }
-        JobState::Running { progress: Some(p) } => {
-            ui.add(
-                ProgressBar::new(*p)
-                    .show_percentage()
-                    .desired_width(PROGRESS_WIDTH),
-            );
+        JobState::Running {
+            progress: Some(fraction),
+        } => {
+            let percent = format!("{:.0}%", fraction * 100.0);
+            let text = match job.elapsed().and_then(|e| time_left(e, *fraction)) {
+                Some(left) => trf(
+                    "status.eta",
+                    &[("percent", &percent), ("left", &clock(left))],
+                ),
+                None => percent,
+            };
+            widgets::progress(ui, bar_id, *fraction, text, PROGRESS_WIDTH);
         }
         JobState::Running { progress: None } => {
             ui.add(
-                ProgressBar::new(0.0)
+                egui::ProgressBar::new(0.0)
                     .animate(true)
                     .text(tr("status.running"))
-                    .desired_width(PROGRESS_WIDTH),
+                    .desired_width(PROGRESS_WIDTH)
+                    .desired_height(20.0)
+                    .corner_radius(CornerRadius::same(255))
+                    .fill(p.accent),
             );
         }
         JobState::Done { elapsed } => {
-            let secs = format!("{:.1}", elapsed.as_secs_f32());
-            ui.colored_label(
-                SUCCESS_COLOR,
-                icons::label(icons::CHECK_CIRCLE, &trf("status.done", &[("secs", &secs)])),
+            let text = trf(
+                "status.done",
+                &[("secs", &format!("{:.1}", elapsed.as_secs_f32()))],
             );
+            widgets::chip(ui, icons::CHECK_CIRCLE, &text, p.success);
         }
         JobState::Failed(message) => {
             let first_line = message.lines().next().unwrap_or_default();
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                icons::label(icons::X_CIRCLE, first_line),
-            )
-            .on_hover_text(message);
+            widgets::chip(ui, icons::X_CIRCLE, first_line, p.danger).on_hover_text(message);
         }
         JobState::Cancelled => {
-            ui.label(RichText::new(tr("status.cancelled")).weak());
+            widgets::chip(ui, icons::X, tr("status.cancelled"), p.text_weak);
         }
     }
 }
@@ -1655,30 +1912,73 @@ impl eframe::App for MuxrApp {
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
         self.check_after_done(&ctx);
+        let p = theme::palette(ui);
 
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.toolbar(ui);
-            ui.add_space(4.0);
-        });
+        let bar = |fill| {
+            egui::Frame::new()
+                .fill(fill)
+                .inner_margin(Margin::symmetric(14, 10))
+        };
+        egui::Panel::top("toolbar")
+            .frame(bar(p.surface).stroke(Stroke::new(1.0, p.border)))
+            .show(ui, |ui| self.toolbar(ui));
         egui::Panel::left("tools")
             .resizable(true)
             .default_size(SIDEBAR_WIDTH)
+            .frame(bar(p.panel))
             .show(ui, |ui| self.sidebar(ui));
         egui::Panel::bottom("queue")
             .resizable(true)
             .default_size(QUEUE_HEIGHT)
+            .frame(bar(p.surface))
             .show(ui, |ui| self.queue_panel(ui));
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| self.task_editor(ui));
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, p.panel);
+            let p = theme::palette(ui);
+            egui::Panel::bottom("editor_actions")
+                .frame(
+                    egui::Frame::new()
+                        .fill(p.panel)
+                        .inner_margin(Margin::symmetric(18, 10)),
+                )
+                .show(ui, |ui| self.action_bar(ui));
+            egui::Frame::new()
+                .inner_margin(Margin::symmetric(18, 14))
+                .show(ui, |ui| {
+                    ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| self.task_editor(ui));
+                });
         });
         self.settings_window(&ctx);
         self.media_info_window(&ctx);
+        self.toasts.show(&ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, STORAGE_KEY, &self.settings);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_formats_minutes_and_hours() {
+        assert_eq!(clock(Duration::from_secs(5)), "0:05");
+        assert_eq!(clock(Duration::from_secs(125)), "2:05");
+        assert_eq!(clock(Duration::from_secs(3725)), "1:02:05");
+    }
+
+    #[test]
+    fn eta_needs_some_progress() {
+        assert_eq!(time_left(Duration::from_secs(10), 0.01), None);
+        assert_eq!(
+            time_left(Duration::from_secs(10), 0.5),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(time_left(Duration::from_secs(10), 1.0), None);
     }
 }
