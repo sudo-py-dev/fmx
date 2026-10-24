@@ -2,7 +2,7 @@
 name = "muxr"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
 license = "MIT OR Apache-2.0"
 
@@ -21,6 +21,7 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 rayon = "1.12.0"
 rfd = "0.17"
+rust_xlsxwriter = "0.96.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

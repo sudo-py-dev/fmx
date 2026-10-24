@@ -13,7 +13,7 @@ use crate::docs;
 use crate::externals::External;
 use crate::i18n::{tr, trf};
 use crate::imaging::ImageError;
-use crate::options::Options;
+use crate::options::{self, Options};
 use crate::plan::{self, PlanError};
 use crate::process::RunError;
 
@@ -89,7 +89,15 @@ pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> Ou
     let first = first_input.unwrap_or(Path::new(""));
     OutputKind::File(match tool {
         Tool::ToVideo(f) => f.ext(),
+        Tool::ToDevice(_) => "mp4",
         Tool::ToAudio(f) => f.ext(),
+        Tool::JoinImages => "png",
+        Tool::PdfToExcel => "xlsx",
+        Tool::BluRayToVideo => opts.disc_video_format.ext(),
+        Tool::DiscToIso => "iso",
+        Tool::AddSubtitles => "mkv",
+        Tool::ExtractSubtitles => "srt",
+        Tool::Crop => plan::same_format(first).ext(),
         Tool::ToImage(f) => f.ext(),
         Tool::ToEbook(f) => f.ext(),
         Tool::ImagesToPdf | Tool::PdfMerge | Tool::PdfCompress | Tool::OfficeToPdf => "pdf",
@@ -128,6 +136,9 @@ fn suffix(tool: Tool) -> &'static str {
         Tool::Compress | Tool::PdfCompress => "_small",
         Tool::RemoveAudio => "_noaudio",
         Tool::Delogo => "_delogo",
+        Tool::Crop => "_crop",
+        Tool::JoinImages => "_joined",
+        Tool::AddSubtitles => "_subs",
         Tool::ExtractFrames => "_frames",
         Tool::PdfToImages | Tool::PdfSplit => "_pages",
         Tool::CdToAudio => "_tracks",
@@ -258,7 +269,12 @@ pub fn plan_jobs(
                 OutputKind::File(ext) => Some(ext),
                 OutputKind::Dir | OutputKind::Into => None,
             };
-            let output = allocate_output(&dir, &stem, suffix(tool), ext, claimed, Path::exists);
+            let tag = format!(
+                "{}{}",
+                suffix(tool),
+                options::sanitize_name_tag(&sel.options.name_tag)
+            );
+            let output = allocate_output(&dir, &stem, &tag, ext, claimed, Path::exists);
             Some(spec(inputs, None, output))
         })
         .collect())
@@ -365,6 +381,26 @@ mod tests {
                 got: 1
             }))
         ));
+    }
+
+    #[test]
+    fn name_tag_is_appended_safely() {
+        let files = vec![PathBuf::from("/a/x.mkv")];
+        let opts = Options {
+            name_tag: "_hd/../".into(),
+            ..Options::default()
+        };
+        let jobs = plan_jobs(
+            &select(
+                Tool::ToAudio(AudioFormat::Mp3),
+                &files,
+                Some(Path::new("/o")),
+                &opts,
+            ),
+            &mut HashSet::new(),
+        )
+        .expect("jobs");
+        assert_eq!(jobs[0].output, PathBuf::from("/o/x_hd.mp3"));
     }
 
     #[test]

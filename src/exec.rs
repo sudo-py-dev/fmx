@@ -4,15 +4,17 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use crate::catalog::Tool;
+use crate::catalog::{AudioFormat, Tool};
 use crate::cso;
+use crate::disc;
 use crate::docs::{self, OfficeTarget};
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::imaging;
 use crate::jobs::{JobError, JobSpec};
-use crate::plan::{self, CD_DEMUXER, DVD_DEMUXER, Input, PlanError};
+use crate::plan::{self, BLURAY_PROTOCOL, CD_DEMUXER, DVD_DEMUXER, Input, PlanError};
 use crate::process::{self, StopMode, Watch};
+use crate::sheet;
 
 /// Runs a job to completion, reporting progress in `0.0..=1.0`.
 pub fn execute(
@@ -67,6 +69,20 @@ fn run_tool(
             imaging::convert(first_input(spec)?, out, format, opts, ffmpeg_path)
                 .map_err(JobError::Image)
         }
+        Tool::JoinImages => imaging::join(
+            &spec.inputs,
+            out,
+            opts.join_layout,
+            opts,
+            ffmpeg_path,
+            on_progress,
+        )
+        .map_err(JobError::Image),
+        Tool::DiscToIso => {
+            disc::copy_image(first_input(spec)?, out, cancel, on_progress).map_err(JobError::Cso)
+        }
+        Tool::PdfToExcel => pdf_to_excel(spec, toolbox, cancel),
+        Tool::ToAudio(AudioFormat::Ape) => to_ape(spec, toolbox, cancel, on_progress),
         Tool::ImagesToPdf => {
             imaging::images_to_pdf(&spec.inputs, out, opts, ffmpeg_path, on_progress)
                 .map_err(JobError::Image)
@@ -173,12 +189,16 @@ fn run_tool(
         Tool::CdToAudio => rip_cd(spec, need(toolbox, External::Ffmpeg)?, cancel, on_progress),
         tool => {
             let ffmpeg = need(toolbox, External::Ffmpeg)?;
-            let demuxer = (tool == Tool::DvdToVideo).then_some(DVD_DEMUXER);
+            let demuxer = match tool {
+                Tool::DvdToVideo => Some(DVD_DEMUXER),
+                Tool::BluRayToVideo => Some(BLURAY_PROTOCOL),
+                _ => None,
+            };
             let inputs = spec
                 .inputs
                 .iter()
                 .map(|path| {
-                    let probe_path = if demuxer.is_some() {
+                    let probe_path = if tool == Tool::DvdToVideo {
                         plan::dvd_root(path)
                     } else {
                         path.clone()
@@ -202,6 +222,67 @@ fn run_tool(
 
 /// LibreOffice writes `<stem>.<ext>` into an output folder; convert into a
 /// private folder beside the destination, then move the result into place.
+/// Lays out the PDF's text with Poppler, then writes one sheet per page.
+fn pdf_to_excel(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
+    let input = first_input(spec)?;
+    let parent = spec.output.parent().unwrap_or(Path::new("."));
+    let text_file = tempfile::Builder::new()
+        .suffix(".txt")
+        .tempfile_in(parent)
+        .map_err(JobError::Io)?;
+    run_plain(
+        need(toolbox, External::Pdftotext)?,
+        &docs::pdf_to_text(input, text_file.path()),
+        cancel,
+    )?;
+    let text = std::fs::read_to_string(text_file.path()).map_err(JobError::Io)?;
+    let pages = sheet::parse_pages(&text);
+    let staging = tempfile::Builder::new()
+        .suffix(".xlsx")
+        .tempfile_in(parent)
+        .map_err(JobError::Io)?;
+    sheet::write_xlsx(&pages, staging.path(), |n| {
+        crate::i18n::trf("sheet.page", &[("n", &n)])
+    })
+    .map_err(|e| JobError::Io(std::io::Error::other(e.to_string())))?;
+    staging
+        .persist(&spec.output)
+        .map_err(|e| JobError::Io(e.error))?;
+    Ok(())
+}
+
+/// Decodes to WAV with ffmpeg, then compresses with Monkey's Audio.
+fn to_ape(
+    spec: &JobSpec,
+    toolbox: &Toolbox,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(f32),
+) -> Result<(), JobError> {
+    let ffmpeg = need(toolbox, External::Ffmpeg)?;
+    let mac = need(toolbox, External::MonkeysAudio)?;
+    let input = first_input(spec)?;
+    let parent = spec.output.parent().unwrap_or(Path::new("."));
+    let wav = tempfile::Builder::new()
+        .suffix(".wav")
+        .tempfile_in(parent)
+        .map_err(JobError::Io)?;
+    let info = ffmpeg::probe(ffmpeg, input, None).map_err(JobError::Run)?;
+    let plan = plan::build(
+        Tool::ToAudio(AudioFormat::Wav),
+        &[Input {
+            path: input.to_path_buf(),
+            info,
+        }],
+        wav.path(),
+        &spec.options,
+    )?;
+    // Decoding is most of the work; compression is the last tenth.
+    ffmpeg::run(ffmpeg, &plan, cancel, |p| on_progress(p * 0.9)).map_err(JobError::Run)?;
+    let level = spec.options.quality.pick("-c4000", "-c2000", "-c1000");
+    let args: Vec<OsString> = vec![wav.path().into(), spec.output.clone().into(), level.into()];
+    run_plain(mac, &args, cancel)
+}
+
 fn office(
     spec: &JobSpec,
     toolbox: &Toolbox,
@@ -412,7 +493,8 @@ mod e2e {
             return std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_some());
         }
         let ffmpeg = toolbox.get(External::Ffmpeg).expect("ffmpeg");
-        ffmpeg::probe(ffmpeg, path, None).is_ok_and(|i| i.has_audio || i.has_video)
+        ffmpeg::probe(ffmpeg, path, None)
+            .is_ok_and(|i| i.has_audio || i.has_video || i.has_subtitles)
     }
 
     #[test]
@@ -424,6 +506,17 @@ mod e2e {
         let fx = fixture(tb.get(External::Ffmpeg).expect("ffmpeg"));
         let out_dir = fx.root.join("out");
         std::fs::create_dir(&out_dir).expect("out dir");
+        let subbed = fx.root.join("subbed.mkv");
+        let ffmpeg = tb.get(External::Ffmpeg).expect("ffmpeg");
+        let video_arg = fx.video.to_string_lossy().into_owned();
+        let subs_arg = fx.subs.to_string_lossy().into_owned();
+        generate(
+            ffmpeg,
+            &subbed,
+            &[
+                "-i", &video_arg, "-i", &subs_arg, "-map", "0", "-map", "1", "-c", "copy",
+            ],
+        );
 
         let mut opts = Options::default();
         opts.edit.trim_start = "0:01".into();
@@ -461,7 +554,10 @@ mod e2e {
             .chain(
                 AudioFormat::ALL
                     .into_iter()
-                    .filter(|f| tb.has_encoder(f.required_encoder()))
+                    .filter(|f| {
+                        tb.has_encoder(f.required_encoder())
+                            && tb.missing(Tool::ToAudio(*f).requires()).is_none()
+                    })
                     .map(|f| (Tool::ToAudio(f), vec![fx.video.clone()], &opts)),
             )
             .collect();
@@ -508,7 +604,20 @@ mod e2e {
             (Tool::Volume, vec![fx.audio.clone()], &louder),
             (Tool::Normalize, vec![fx.audio.clone()], &opts),
             (Tool::Repair, vec![fx.video.clone()], &opts),
+            (Tool::Crop, vec![fx.video.clone()], &edited),
+            (Tool::AddSubtitles, vec![fx.video.clone()], &edited),
+            (Tool::ExtractSubtitles, vec![subbed.clone()], &opts),
         ]);
+        let mut hw_decode = Options::default();
+        hw_decode.video.hw_decode = true;
+        cases.push((
+            Tool::ToVideo(VideoFormat::Mkv),
+            vec![fx.video.clone()],
+            &hw_decode,
+        ));
+        for device in crate::catalog::Device::ALL {
+            cases.push((Tool::ToDevice(device), vec![fx.video.clone()], &edited));
+        }
         let mut vaapi = Options::default();
         vaapi.video.hw = crate::options::HwAccel::Vaapi;
         if Path::new("/dev/dri/renderD128").exists() && tb.has_encoder("h264_vaapi") {
@@ -583,17 +692,25 @@ mod e2e {
             check(tool, vec![pdf.clone()]);
         }
         check(Tool::PdfMerge, vec![pdf.clone(), pdf.clone()]);
+        check(Tool::PdfToExcel, vec![pdf.clone()]);
+        check(Tool::JoinImages, fx.images.clone());
         let disc = fx.root.join("disc");
         std::fs::create_dir(&disc).expect("disc");
         std::fs::copy(&fx.video, disc.join("clip.mp4")).expect("copy");
-        if let Some(iso) = check(Tool::FolderToIso, vec![disc]) {
-            if let Some(cso) = check(Tool::IsoToCso, vec![iso.clone()]) {
-                if let Some(back) = check(Tool::CsoToIso, vec![cso]) {
-                    assert_eq!(
-                        std::fs::read(&back).expect("back"),
-                        std::fs::read(&iso).expect("iso")
-                    );
-                }
+        if let Some(iso) = check(Tool::FolderToIso, vec![disc])
+            && let Some(cso) = check(Tool::IsoToCso, vec![iso.clone()])
+            && let Some(back) = check(Tool::CsoToIso, vec![cso])
+        {
+            assert_eq!(
+                std::fs::read(&back).expect("back"),
+                std::fs::read(&iso).expect("iso")
+            );
+            // The same image read back as a "disc" copies byte for byte.
+            if let Some(copy) = check(Tool::DiscToIso, vec![iso.clone()]) {
+                assert_eq!(
+                    std::fs::read(&copy).expect("copy"),
+                    std::fs::read(&iso).expect("iso")
+                );
             }
         }
         assert!(

@@ -236,6 +236,23 @@ impl MixLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JoinLayout {
+    Vertical,
+    Horizontal,
+}
+
+impl JoinLayout {
+    pub const ALL: [Self; 2] = [Self::Vertical, Self::Horizontal];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Vertical => tr("join.vertical"),
+            Self::Horizontal => tr("join.horizontal"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadKind {
     Video,
     AudioMp3,
@@ -281,6 +298,8 @@ pub struct VideoSettings {
     /// Fixed bitrate; `None` uses constant quality from [`Quality`].
     pub bitrate_kbps: Option<u32>,
     pub fps: Option<u32>,
+    /// Decode on the GPU when ffmpeg can (`-hwaccel auto`).
+    pub hw_decode: bool,
 }
 
 impl Default for VideoSettings {
@@ -290,6 +309,7 @@ impl Default for VideoSettings {
             hw: HwAccel::Off,
             bitrate_kbps: None,
             fps: None,
+            hw_decode: false,
         }
     }
 }
@@ -391,6 +411,9 @@ pub struct Options {
     pub record_fps: u32,
     pub record_audio: bool,
     pub download_kind: DownloadKind,
+    pub join_layout: JoinLayout,
+    /// Text appended to every output file name, e.g. `_converted`.
+    pub name_tag: String,
 }
 
 impl Default for Options {
@@ -426,8 +449,31 @@ impl Default for Options {
             record_fps: 30,
             record_audio: true,
             download_kind: DownloadKind::Video,
+            join_layout: JoinLayout::Vertical,
+            name_tag: String::new(),
         }
     }
+}
+
+/// Characters that may not appear in a file name on any common system.
+const FORBIDDEN_NAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+pub const MAX_NAME_TAG_LEN: usize = 40;
+
+/// Makes a user-typed file-name tag safe: no separators, control or reserved characters.
+pub fn sanitize_name_tag(tag: &str) -> String {
+    tag.chars()
+        .filter(|c| !c.is_control() && !FORBIDDEN_NAME_CHARS.contains(c))
+        .take(MAX_NAME_TAG_LEN)
+        .collect::<String>()
+        .trim_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_owned()
+}
+
+/// Formats seconds as `h:mm:ss.mmm`, which [`parse_timestamp`] reads back.
+pub fn format_timestamp(secs: f64) -> String {
+    let millis = (secs.max(0.0) * 1000.0).round() as u64;
+    let (s, ms) = (millis / 1000, millis % 1000);
+    format!("{}:{:02}:{:02}.{ms:03}", s / 3600, s / 60 % 60, s % 60)
 }
 
 /// Parses `ss[.f]`, `mm:ss[.f]` or `hh:mm:ss[.f]` into seconds.
@@ -475,6 +521,21 @@ mod tests {
         for bad in ["abc", "1:2:3:4", "1:75", "-3", "1:60:00", "1::2", "nan"] {
             assert_eq!(parse_timestamp(bad), Err(()), "{bad}");
         }
+    }
+
+    #[test]
+    fn timestamps_round_trip() {
+        for secs in [0.0, 5.25, 65.5, 3723.125] {
+            assert_eq!(parse_timestamp(&format_timestamp(secs)), Ok(Some(secs)));
+        }
+    }
+
+    #[test]
+    fn name_tags_are_sanitized() {
+        assert_eq!(sanitize_name_tag("_hd"), "_hd");
+        assert_eq!(sanitize_name_tag("../etc/x"), "etcx");
+        assert_eq!(sanitize_name_tag("a:b*c?"), "abc");
+        assert_eq!(sanitize_name_tag(&"x".repeat(100)).len(), MAX_NAME_TAG_LEN);
     }
 
     #[test]

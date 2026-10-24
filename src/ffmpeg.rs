@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::AtomicBool;
 
-use crate::plan::{Plan, input_url};
+use crate::plan::{BLURAY_PROTOCOL, Plan, input_url};
 use crate::probe::{MediaInfo, parse_ffmpeg_info};
 use crate::process::{self, KillOnDrop, RunError, command};
 
@@ -17,7 +17,7 @@ const MAX_PROBE_BYTES: u64 = 1 << 20;
 /// `demuxer` forces an input format such as `dvdvideo` or `libcdio`.
 pub fn describe(ffmpeg: &Path, path: &Path, demuxer: Option<&str>) -> Result<String, RunError> {
     let mut args: Vec<OsString> = vec!["-hide_banner".into(), "-nostdin".into()];
-    if let Some(format) = demuxer {
+    if let Some(format) = demuxer.filter(|d| *d != BLURAY_PROTOCOL) {
         args.extend(["-f".into(), format.into()]);
     }
     args.extend(["-i".into(), input_url(path, demuxer)]);

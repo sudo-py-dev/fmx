@@ -5,6 +5,7 @@
 mod app;
 mod catalog;
 mod cso;
+mod disc;
 mod docs;
 mod exec;
 mod externals;
@@ -15,10 +16,12 @@ mod imaging;
 mod jobs;
 mod options;
 mod plan;
+mod preview;
 mod probe;
 mod process;
 mod queue;
 mod settings;
+mod sheet;
 mod theme;
 mod widgets;
 
@@ -39,6 +42,8 @@ fn main() -> eframe::Result {
         i18n::set_language(Some(&lang));
     }
 
+    // Files passed on the command line (e.g. "Open with Muxr") go into the file list.
+    let open_files: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(i18n::tr("app.name"))
@@ -51,6 +56,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         APP_ID,
         options,
-        Box::new(|cc| Ok(Box::new(app::MuxrApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::MuxrApp::new(cc, open_files)))),
     )
 }

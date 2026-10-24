@@ -19,9 +19,10 @@ use crate::i18n::{self, tr, trf};
 use crate::icons;
 use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
 use crate::options::{
-    self, Channels, Corner, DownloadKind, Edit, HwAccel, MixLayout, Quality, Rect, Resolution,
-    Rotation,
+    self, Channels, Corner, DownloadKind, Edit, HwAccel, JoinLayout, MixLayout, Quality, Rect,
+    Resolution, Rotation,
 };
+use crate::preview::Preview;
 use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::theme::{self, MOTION, ThemeChoice};
@@ -71,6 +72,7 @@ pub struct MuxrApp {
     toasts: Toasts,
     show_settings: bool,
     media_info: Option<(String, String)>,
+    preview: Option<Preview>,
     after_done: AfterDone,
     was_busy: bool,
     shutdown_at: Option<Instant>,
@@ -78,7 +80,8 @@ pub struct MuxrApp {
 }
 
 impl MuxrApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `open_files` are paths given on the command line ("Open with Muxr").
+    pub fn new(cc: &eframe::CreationContext<'_>, open_files: Vec<PathBuf>) -> Self {
         icons::install(&cc.egui_ctx);
         let mut settings: Settings = cc
             .storage
@@ -96,7 +99,7 @@ impl MuxrApp {
         if toolbox.get(External::Ffmpeg).is_none() {
             tracing::warn!("ffmpeg not found; media tools are disabled");
         }
-        Self {
+        let mut app = Self {
             tool: settings.last_tool,
             queue: Queue::new(settings.auto_start),
             toolbox,
@@ -105,12 +108,17 @@ impl MuxrApp {
             toasts: Toasts::default(),
             show_settings: false,
             media_info: None,
+            preview: None,
             after_done: AfterDone::Nothing,
             was_busy: false,
             shutdown_at: None,
             notifier: Arc::new(move || ctx.request_repaint()),
             settings,
+        };
+        if !open_files.is_empty() {
+            app.add_files(open_files);
         }
+        app
     }
 
     fn select_tool(&mut self, tool: Tool) {
@@ -354,6 +362,9 @@ impl MuxrApp {
         self.was_busy = busy;
         if just_finished && counts.done > 0 {
             self.toasts.push(ToastKind::Success, tr("notice.all_done"));
+            if self.settings.notify_when_done {
+                desktop_notification(tr("app.name"), tr("notice.all_done"));
+            }
             match self.after_done {
                 AfterDone::Nothing => {}
                 AfterDone::OpenFolder => {
@@ -645,6 +656,9 @@ impl MuxrApp {
                 ui.add_space(4.0);
                 self.advanced_video(ui, format);
                 self.edit_panel(ui, true);
+            } else if let Tool::ToDevice(_) = self.tool {
+                ui.add_space(4.0);
+                self.edit_panel(ui, true);
             } else if let Tool::ToAudio(format) = self.tool {
                 ui.add_space(4.0);
                 self.advanced_audio(ui, !format.is_lossless());
@@ -773,6 +787,7 @@ impl MuxrApp {
         let stroke = Stroke::new(1.0 + glow, p.border.lerp_to_gamma(p.accent, glow));
         let ordered = !matches!(self.tool.arity(), InputArity::EachFile);
         let probeable = kind == InputKind::Media && self.toolbox.get(External::Ffmpeg).is_some();
+        let previewable = probeable && previewable(self.tool);
         let mut action = None;
         egui::Frame::new()
             .fill(p.sunken.lerp_to_gamma(p.accent, glow * 0.08))
@@ -819,6 +834,13 @@ impl MuxrApp {
                                     action = Some(FileAction::Swap(i, i + 1));
                                 }
                             }
+                            if previewable
+                                && small(ui, icons::EYE, true)
+                                    .on_hover_text(tr("action.preview"))
+                                    .clicked()
+                            {
+                                action = Some(FileAction::Preview(i));
+                            }
                             if probeable
                                 && small(ui, icons::INFO, true)
                                     .on_hover_text(tr("action.media_info"))
@@ -838,6 +860,7 @@ impl MuxrApp {
             }
             Some(FileAction::Swap(a, b)) => self.files.swap(a, b),
             Some(FileAction::Info(i)) => self.show_media_info(i),
+            Some(FileAction::Preview(i)) => self.open_preview(i, ui.ctx()),
             None => {}
         }
         ui.add_space(4.0);
@@ -852,6 +875,37 @@ impl MuxrApp {
             ui.label(RichText::new("·").weak());
             ui.label(RichText::new(hint).weak());
         });
+    }
+
+    fn open_preview(&mut self, index: usize, ctx: &egui::Context) {
+        if let (Some(ffmpeg), Some(path)) =
+            (self.toolbox.get(External::Ffmpeg), self.files.get(index))
+        {
+            self.preview = Some(Preview::open(path.clone(), ffmpeg.to_path_buf(), ctx));
+        }
+    }
+
+    fn preview_window(&mut self, ctx: &egui::Context) {
+        let Some(preview) = &mut self.preview else {
+            return;
+        };
+        let opts = &mut self.settings.options;
+        let open = if self.tool == Tool::Delogo {
+            let mut area = Some(opts.delogo);
+            let open = preview.show(ctx, &mut opts.edit, &mut area);
+            if let Some(area) = area {
+                opts.delogo = area;
+            }
+            open
+        } else {
+            let mut crop = opts.edit.crop.take();
+            let open = preview.show(ctx, &mut opts.edit, &mut crop);
+            opts.edit.crop = crop;
+            open
+        };
+        if !open {
+            self.preview = None;
+        }
     }
 
     fn show_media_info(&mut self, index: usize) {
@@ -882,9 +936,71 @@ impl MuxrApp {
             Tool::ToAudio(_) | Tool::Rotate | Tool::Speed | Tool::Delogo | Tool::PdfCompress => {
                 quality_row(ui, &mut opts.quality);
             }
-            Tool::ToImage(_) | Tool::ImagesToPdf => {
+            Tool::ToImage(_) | Tool::ImagesToPdf | Tool::JoinImages => {
+                if tool == Tool::JoinImages {
+                    row(ui, tr("option.layout"), |ui| {
+                        combo(
+                            ui,
+                            "join_layout",
+                            &mut opts.join_layout,
+                            &JoinLayout::ALL,
+                            |l| l.label().to_owned(),
+                        );
+                    });
+                }
                 quality_row(ui, &mut opts.quality);
                 image_rows(ui, opts);
+                watermark_row(ui, &mut opts.edit);
+            }
+            Tool::ToDevice(device) => {
+                let p = device.profile();
+                row(ui, tr("option.profile"), |ui| {
+                    ui.label(trf(
+                        "device.summary",
+                        &[
+                            ("w", &p.max_width),
+                            ("h", &p.max_height),
+                            ("profile", &p.profile),
+                            ("kbps", &p.max_kbps),
+                        ],
+                    ));
+                });
+                quality_row(ui, &mut opts.quality);
+            }
+            Tool::BluRayToVideo => {
+                row(ui, tr("option.output_format"), |ui| {
+                    combo(
+                        ui,
+                        "bd_format",
+                        &mut opts.disc_video_format,
+                        &[
+                            VideoFormat::Mp4,
+                            VideoFormat::Mkv,
+                            VideoFormat::Avi,
+                            VideoFormat::Webm,
+                            VideoFormat::Mpg,
+                        ],
+                        |f| f.label().to_owned(),
+                    );
+                });
+                quality_row(ui, &mut opts.quality);
+                resolution_row(ui, &mut opts.resolution);
+            }
+            Tool::Crop => {
+                row(ui, tr("option.crop"), |ui| {
+                    let mut rect = opts.edit.crop.unwrap_or_default();
+                    rect_editor(ui, &mut rect);
+                    opts.edit.crop = Some(rect);
+                });
+                row(ui, "", |ui| {
+                    ui.label(RichText::new(tr("hint.preview_crop")).weak());
+                });
+                quality_row(ui, &mut opts.quality);
+            }
+            Tool::AddSubtitles => {
+                row(ui, tr("option.subtitle_file"), |ui| {
+                    file_slot(ui, &mut opts.edit.subtitle, &["srt", "ass", "ssa", "vtt"]);
+                });
             }
             Tool::JoinAudio | Tool::AudioMix => {
                 quality_row(ui, &mut opts.quality);
@@ -977,6 +1093,9 @@ impl MuxrApp {
             | Tool::PdfMerge
             | Tool::PdfSplit
             | Tool::CsoToIso
+            | Tool::PdfToExcel
+            | Tool::DiscToIso
+            | Tool::ExtractSubtitles
             | Tool::ToEbook(_) => {
                 row(ui, "", |ui| {
                     ui.label(RichText::new(tr("option.none")).weak());
@@ -1149,6 +1268,9 @@ impl MuxrApp {
                                 " kb/s",
                                 tr("option.auto_quality"),
                             );
+                        });
+                        row(ui, tr("option.hw_decode"), |ui| {
+                            ui.checkbox(&mut opts.video.hw_decode, tr("option.hw_decode_on"));
                         });
                         row(ui, tr("option.fps"), |ui| {
                             let mut choices: Vec<Option<u32>> = vec![None];
@@ -1407,6 +1529,17 @@ impl MuxrApp {
                         row(ui, tr("settings.auto_start"), |ui| {
                             ui.checkbox(&mut self.settings.auto_start, "");
                         });
+                        row(ui, tr("settings.notify"), |ui| {
+                            ui.checkbox(&mut self.settings.notify_when_done, "");
+                        });
+                        row(ui, tr("settings.name_tag"), |ui| {
+                            ui.add(
+                                TextEdit::singleline(&mut self.settings.options.name_tag)
+                                    .hint_text("_converted")
+                                    .char_limit(options::MAX_NAME_TAG_LEN)
+                                    .desired_width(160.0),
+                            );
+                        });
                         row(ui, tr("settings.ffmpeg"), |ui| {
                             ui.vertical(|ui| self.ffmpeg_setting(ui));
                         });
@@ -1542,6 +1675,15 @@ enum FileAction {
     Remove(usize),
     Swap(usize, usize),
     Info(usize),
+    Preview(usize),
+}
+
+/// Tools whose clip, crop or logo area can be set in the preview window.
+fn previewable(tool: Tool) -> bool {
+    matches!(
+        tool,
+        Tool::ToVideo(_) | Tool::ToDevice(_) | Tool::Trim | Tool::Crop | Tool::Delogo
+    )
 }
 
 /// A rounded surface that groups related controls.
@@ -1756,6 +1898,23 @@ fn rect_editor(ui: &mut egui::Ui, rect: &mut Rect) {
     }
 }
 
+fn watermark_row(ui: &mut egui::Ui, edit: &mut Edit) {
+    row(ui, tr("option.watermark"), |ui| {
+        file_slot(
+            ui,
+            &mut edit.watermark,
+            &["png", "jpg", "jpeg", "webp", "bmp"],
+        );
+        if edit.watermark.is_some() {
+            let mut corner = edit.watermark_corner.unwrap_or(Corner::BottomRight);
+            combo(ui, "image_wm_corner", &mut corner, &Corner::ALL, |c| {
+                c.label().to_owned()
+            });
+            edit.watermark_corner = Some(corner);
+        }
+    });
+}
+
 /// A file picker slot showing the chosen file with a clear button.
 fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
     if widgets::button(
@@ -1885,6 +2044,32 @@ fn reveal(path: &Path) {
     open_path(dir);
 }
 
+/// Shows a system notification; failures are only logged.
+fn desktop_notification(title: &str, body: &str) {
+    let result = if cfg!(target_os = "macos") {
+        // AppleScript strings: escape backslashes and quotes.
+        let quote = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            quote(body),
+            quote(title)
+        );
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+    } else if cfg!(windows) {
+        // No dependency-free toast API; the in-app notification covers Windows.
+        return;
+    } else {
+        std::process::Command::new("notify-send")
+            .args(["--app-name", title, title, body])
+            .spawn()
+    };
+    if let Err(e) = result {
+        tracing::debug!(error = %e, "desktop notification unavailable");
+    }
+}
+
 /// Powers the computer off (the user opted in and saw a countdown).
 fn power_off() {
     let result = if cfg!(windows) {
@@ -1953,6 +2138,7 @@ impl eframe::App for MuxrApp {
         });
         self.settings_window(&ctx);
         self.media_info_window(&ctx);
+        self.preview_window(&ctx);
         self.toasts.show(&ctx);
     }
 

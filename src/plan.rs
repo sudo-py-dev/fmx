@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::catalog::{AudioFormat, Tool, VideoEncoder, VideoFormat};
+use crate::catalog::{AudioFormat, Device, Tool, VideoEncoder, VideoFormat};
 use crate::i18n::{tr, trf};
 use crate::options::{
     self, Corner, Edit, HwAccel, MixLayout, Options, Quality, Rect, parse_timestamp,
@@ -39,7 +39,10 @@ pub enum PlanError {
     UnknownDuration,
     TargetTooSmall,
     InvalidRect,
+    NoCropArea,
     NoTracks,
+    NoSubtitleFile,
+    NoSubtitleStream,
     UnsupportedTool,
 }
 
@@ -58,6 +61,9 @@ impl fmt::Display for PlanError {
             Self::TargetTooSmall => f.write_str(tr("error.target_too_small")),
             Self::InvalidRect => f.write_str(tr("error.invalid_rect")),
             Self::NoTracks => f.write_str(tr("error.no_tracks")),
+            Self::NoCropArea => f.write_str(tr("error.no_crop")),
+            Self::NoSubtitleFile => f.write_str(tr("error.no_subtitle_file")),
+            Self::NoSubtitleStream => f.write_str(tr("error.no_subtitle_stream")),
             Self::UnsupportedTool => f.write_str(tr("error.unsupported_tool")),
         }
     }
@@ -83,10 +89,17 @@ const VAAPI_DEVICE: &str = "/dev/dri/renderD128";
 /// Demuxers that take a device or disc path rather than a file URL.
 pub const DVD_DEMUXER: &str = "dvdvideo";
 pub const CD_DEMUXER: &str = "libcdio";
+/// Blu-ray is read through ffmpeg's `bluray:` protocol rather than a demuxer.
+pub const BLURAY_PROTOCOL: &str = "bluray";
 
 /// `file:` stops ffmpeg from treating names like `-x.mp4` or `http:x` specially.
 /// Disc/device demuxers read the raw path.
 pub fn input_url(path: &Path, demuxer: Option<&str>) -> OsString {
+    if demuxer == Some(BLURAY_PROTOCOL) {
+        let mut url = OsString::from("bluray:");
+        url.push(path.as_os_str());
+        return url;
+    }
     if demuxer.is_some() {
         return path.as_os_str().to_owned();
     }
@@ -426,7 +439,8 @@ fn audio_codec(format: AudioFormat, opts: &Options) -> Vec<OsString> {
         }
         AudioFormat::M4r => strings(&["-c:a", "aac", "-b:a", &br, "-f", "ipod"]),
         AudioFormat::Flac => strings(&["-c:a", "flac"]),
-        AudioFormat::Wav => strings(&["-c:a", "pcm_s16le"]),
+        // APE is encoded from this WAV by Monkey's Audio afterwards.
+        AudioFormat::Wav | AudioFormat::Ape => strings(&["-c:a", "pcm_s16le"]),
         AudioFormat::Aiff => strings(&["-c:a", "pcm_s16be"]),
         AudioFormat::Wv => strings(&["-c:a", "wavpack"]),
         AudioFormat::Ogg => strings(&[
@@ -660,8 +674,12 @@ fn trim_window(edit: &Edit, duration: Option<f64>) -> Result<(f64, Option<f64>),
 fn conversion_inputs(
     input: &Input,
     edit: &Edit,
+    opts: &Options,
 ) -> Result<(Args, Option<f64>, Option<usize>), PlanError> {
     let mut args = base();
+    if opts.video.hw_decode && input.info.has_video {
+        args = args.flag("-hwaccel", "auto");
+    }
     let mut expected = input.info.duration_s;
     if edit.has_trim() {
         let (start, end) = trim_window(edit, input.info.duration_s)?;
@@ -698,7 +716,7 @@ pub fn build(
             if let Some(rect) = edit.crop {
                 check_rect(rect, &input.info)?;
             }
-            let (mut args, expected, wm) = conversion_inputs(input, edit)?;
+            let (mut args, expected, wm) = conversion_inputs(input, edit, opts)?;
             if uses_vaapi(format, opts) {
                 args = args.flag("-vaapi_device", VAAPI_DEVICE);
             }
@@ -713,7 +731,7 @@ pub fn build(
                 watermark: None,
                 ..opts.edit.clone()
             };
-            let (mut args, mut expected, _) = conversion_inputs(input, &edit)?;
+            let (mut args, mut expected, _) = conversion_inputs(input, &edit, opts)?;
             args = args.switch("-vn").extend(audio_codec(format, opts));
             if format == AudioFormat::M4r && expected.is_none_or(|d| d > RINGTONE_MAX_SECS) {
                 args = args.flag("-t", RINGTONE_MAX_SECS.to_string());
@@ -840,6 +858,63 @@ pub fn build(
         Tool::AudioMix => audio_mix(inputs, output, opts),
         Tool::VideoMix => video_mix(inputs, output, opts),
         Tool::DvdToVideo => dvd(single(inputs)?, output, opts),
+        Tool::BluRayToVideo => {
+            let input = single(inputs)?;
+            let format = opts.disc_video_format;
+            Ok(base()
+                .flag("-i", input_url(&input.path, Some(BLURAY_PROTOCOL)))
+                .flag("-map", "0:v:0")
+                .flag("-map", "0:a:0?")
+                .extend(video_encode(format, opts, &Edit::default(), &[], None))
+                .output(output)
+                .expect(input.info.duration_s))
+        }
+        Tool::ToDevice(device) => to_device(device, with_video(single(inputs)?)?, output, opts),
+        Tool::Crop => {
+            let input = with_video(single(inputs)?)?;
+            let rect = opts.edit.crop.ok_or(PlanError::NoCropArea)?;
+            check_rect(rect, &input.info)?;
+            Ok(base()
+                .input(&input.path)
+                .extend(video_encode(
+                    same_format(&input.path),
+                    opts,
+                    &none,
+                    &[crop_filter(rect)],
+                    None,
+                ))
+                .output(output)
+                .expect(input.info.duration_s))
+        }
+        Tool::AddSubtitles => {
+            let input = with_video(single(inputs)?)?;
+            let subs = opts
+                .edit
+                .subtitle
+                .as_ref()
+                .ok_or(PlanError::NoSubtitleFile)?;
+            // Matroska stores SRT, ASS and WebVTT tracks as they are.
+            Ok(base()
+                .input(&input.path)
+                .input(subs)
+                .flag("-map", "0")
+                .flag("-map", "1:0")
+                .flag("-c", "copy")
+                .output(output)
+                .expect(input.info.duration_s))
+        }
+        Tool::ExtractSubtitles => {
+            let input = single(inputs)?;
+            if !input.info.has_subtitles {
+                return Err(PlanError::NoSubtitleStream);
+            }
+            Ok(base()
+                .input(&input.path)
+                .flag("-map", "0:s:0")
+                .flag("-c:s", "srt")
+                .output(output)
+                .expect(input.info.duration_s))
+        }
         _ => Err(PlanError::UnsupportedTool),
     }
 }
@@ -1121,6 +1196,80 @@ pub fn dvd_root(path: &Path) -> PathBuf {
     }
 }
 
+/// Scales into a box without upscaling, keeping both sides even.
+fn fit_filter(max_width: u32, max_height: u32) -> String {
+    format!(
+        "scale='min({max_width},iw)':'min({max_height},ih)':force_original_aspect_ratio=decrease,\
+         scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    )
+}
+
+/// MP4 tuned for a device: size box, H.264 profile/level, bitrate and frame-rate caps.
+fn to_device(
+    device: Device,
+    input: &Input,
+    output: &Path,
+    opts: &Options,
+) -> Result<Plan, PlanError> {
+    let profile = device.profile();
+    let edit = &opts.edit;
+    if let Some(rect) = edit.crop {
+        check_rect(rect, &input.info)?;
+    }
+    let (args, expected, wm) = conversion_inputs(input, edit, opts)?;
+    // The device box replaces the resolution choice.
+    let mut boxed = opts.clone();
+    boxed.resolution = options::Resolution::Original;
+    let filters = VideoGraph::new(
+        VideoFormat::Mp4,
+        &boxed,
+        edit,
+        &[fit_filter(profile.max_width, profile.max_height)],
+        wm,
+    )
+    .args();
+    let kbps = profile.max_kbps;
+    let mut codec = strings(&[
+        "-c:v",
+        "libx264",
+        "-preset",
+        "faster",
+        "-profile:v",
+        profile.profile,
+        "-level",
+        profile.level,
+        "-crf",
+        opts.quality.pick("19", "23", "27"),
+        "-maxrate",
+        &format!("{kbps}k"),
+        "-bufsize",
+        &format!("{}k", kbps * 2),
+        "-pix_fmt",
+        "yuv420p",
+    ]);
+    if let (Some(cap), Some(fps)) = (profile.max_fps, input.info.fps)
+        && fps > f64::from(cap) + 0.5
+    {
+        codec.extend(strings(&["-r", &cap.to_string()]));
+    }
+    let audio = format!("{}k", profile.audio_kbps);
+    Ok(args
+        .extend(filters)
+        .extend(codec)
+        .extend(strings(&[
+            "-c:a",
+            "aac",
+            "-b:a",
+            &audio,
+            "-ac",
+            "2",
+            "-movflags",
+            "+faststart",
+        ]))
+        .output(output)
+        .expect(expected))
+}
+
 fn dvd(input: &Input, output: &Path, opts: &Options) -> Result<Plan, PlanError> {
     let mut args = base().flag("-f", DVD_DEMUXER);
     if opts.dvd_title > 0 {
@@ -1216,6 +1365,8 @@ mod tests {
             width: video.then_some(1920),
             height: video.then_some(1080),
             chapters: Vec::new(),
+            has_subtitles: false,
+            fps: Some(60.0),
         }
     }
 
@@ -1606,6 +1757,78 @@ mod tests {
             &Options::default(),
         ));
         assert!(cd.contains("-f libcdio -ss 10.000 -to 70.500 -i /dev/cdrom"));
+    }
+
+    #[test]
+    fn device_profiles_box_and_cap() {
+        let cmd = plan(
+            Tool::ToDevice(Device::Psp),
+            &[input("a.mkv", media(true, true, 9.0))],
+            &Options::default(),
+        );
+        assert!(cmd.contains("scale='min(480,iw)':'min(272,ih)'"), "{cmd}");
+        assert!(cmd.contains("-profile:v main -level 3.0") && cmd.contains("-maxrate 768k"));
+        assert!(cmd.contains("-r 30"), "60 fps source is capped: {cmd}");
+        let iphone = plan(
+            Tool::ToDevice(Device::Iphone),
+            &[input("a.mkv", media(true, true, 9.0))],
+            &Options::default(),
+        );
+        assert!(!iphone.contains("-r "), "no cap for iPhone");
+    }
+
+    #[test]
+    fn hardware_decoding_goes_before_input() {
+        let mut opts = Options::default();
+        opts.video.hw_decode = true;
+        let cmd = plan(
+            Tool::ToVideo(VideoFormat::Mp4),
+            &[input("a.mkv", media(true, true, 1.0))],
+            &opts,
+        );
+        assert!(cmd.find("-hwaccel auto").expect("hwaccel") < cmd.find("-i ").expect("input"));
+    }
+
+    #[test]
+    fn crop_and_subtitle_tools() {
+        let inputs = [input("a.mp4", media(true, true, 5.0))];
+        assert_eq!(
+            build(Tool::Crop, &inputs, Path::new("/o"), &Options::default()),
+            Err(PlanError::NoCropArea)
+        );
+        let mut opts = Options::default();
+        opts.edit.crop = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 640,
+            h: 360,
+        });
+        assert!(plan(Tool::Crop, &inputs, &opts).contains("crop=640:360:0:0"));
+        assert_eq!(
+            build(
+                Tool::AddSubtitles,
+                &inputs,
+                Path::new("/o"),
+                &Options::default()
+            ),
+            Err(PlanError::NoSubtitleFile)
+        );
+        opts.edit.subtitle = Some(PathBuf::from("/s.srt"));
+        assert!(plan(Tool::AddSubtitles, &inputs, &opts).contains("-map 0 -map 1:0 -c copy"));
+        assert_eq!(
+            build(Tool::ExtractSubtitles, &inputs, Path::new("/o"), &opts),
+            Err(PlanError::NoSubtitleStream)
+        );
+    }
+
+    #[test]
+    fn bluray_uses_protocol_url() {
+        let cmd = plan(
+            Tool::BluRayToVideo,
+            &[input("disc", media(true, true, 100.0))],
+            &Options::default(),
+        );
+        assert!(cmd.contains("-i bluray:/in/disc"), "{cmd}");
     }
 
     #[test]

@@ -208,8 +208,10 @@ pub fn decompress(
     }
     let raw_index = read_up_to(&mut reader, ((blocks + 1) * 4) as usize)?;
     let index: Vec<u32> = raw_index
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect();
     if index.len() as u64 != blocks + 1 {
         return Err(CsoError::Corrupt);

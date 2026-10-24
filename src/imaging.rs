@@ -10,7 +10,7 @@ use image::{DynamicImage, ImageReader, RgbImage};
 
 use crate::catalog::ImageFormat;
 use crate::i18n::trf;
-use crate::options::{self, Options, Rotation};
+use crate::options::{self, Corner, JoinLayout, Options, Rotation};
 
 /// ICO stores at most 256×256 pixels per image.
 const ICO_MAX_SIDE: u32 = 256;
@@ -23,6 +23,8 @@ const POINTS_PER_PIXEL: f64 = 72.0 / 96.0;
 pub enum ImageError {
     Io(std::io::Error),
     Codec(image::ImageError),
+    /// The format is written through ffmpeg, which failed or is missing.
+    Encode(String),
 }
 
 impl fmt::Display for ImageError {
@@ -30,6 +32,7 @@ impl fmt::Display for ImageError {
         match self {
             Self::Io(e) => f.write_str(&trf("error.io", &[("error", e)])),
             Self::Codec(e) => f.write_str(&trf("error.image", &[("error", e)])),
+            Self::Encode(message) => f.write_str(message),
         }
     }
 }
@@ -145,21 +148,221 @@ pub fn convert(
     ffmpeg: Option<&Path>,
 ) -> Result<(), ImageError> {
     let hard_cap = (format == ImageFormat::Ico).then_some(ICO_MAX_SIDE);
-    let img = transform(open(input, ffmpeg)?, opts, hard_cap);
+    let img = watermark(
+        transform(open(input, ffmpeg)?, opts, hard_cap),
+        opts,
+        ffmpeg,
+    )?;
+    write_image(&img, output, format, opts, ffmpeg)
+}
+
+/// Encodes `img` to `output` atomically, natively or through ffmpeg.
+fn write_image(
+    img: &DynamicImage,
+    output: &Path,
+    format: ImageFormat,
+    opts: &Options,
+    ffmpeg: Option<&Path>,
+) -> Result<(), ImageError> {
     let dir = output.parent().unwrap_or(Path::new("."));
+    let Some(codec) = format.codec() else {
+        return encode_with_ffmpeg(img, output, format, ffmpeg);
+    };
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     {
         let mut out = BufWriter::new(tmp.as_file_mut());
         match format {
-            ImageFormat::Jpeg => encode_jpeg(&img, jpeg_quality(opts), &mut out)?,
+            ImageFormat::Jpeg => encode_jpeg(img, jpeg_quality(opts), &mut out)?,
             // PNG and TIFF keep 16-bit depth; the rest want 8-bit RGBA.
-            ImageFormat::Png | ImageFormat::Tiff => img.write_to(&mut out, format.codec())?,
-            _ => DynamicImage::ImageRgba8(img.to_rgba8()).write_to(&mut out, format.codec())?,
+            ImageFormat::Png | ImageFormat::Tiff => img.write_to(&mut out, codec)?,
+            _ => DynamicImage::ImageRgba8(img.to_rgba8()).write_to(&mut out, codec)?,
         }
         out.flush()?;
     }
     tmp.persist(output).map_err(|e| ImageError::Io(e.error))?;
     Ok(())
+}
+
+/// Hands a lossless PNG to ffmpeg for formats with no native encoder (AVIF, JPEG XL, PCX).
+fn encode_with_ffmpeg(
+    img: &DynamicImage,
+    output: &Path,
+    format: ImageFormat,
+    ffmpeg: Option<&Path>,
+) -> Result<(), ImageError> {
+    let ffmpeg = ffmpeg.ok_or_else(|| {
+        ImageError::Encode(crate::i18n::trf(
+            "error.missing_program",
+            &[("program", &"ffmpeg")],
+        ))
+    })?;
+    let flags = format.ffmpeg_encoder().unwrap_or_default();
+    let dir = output.parent().unwrap_or(Path::new("."));
+    let staging = tempfile::Builder::new().suffix(".png").tempfile_in(dir)?;
+    DynamicImage::ImageRgba8(img.to_rgba8())
+        .save_with_format(staging.path(), image::ImageFormat::Png)?;
+    let encoded = tempfile::Builder::new()
+        .suffix(&format!(".{}", format.ext()))
+        .tempfile_in(dir)?;
+    let mut args: Vec<std::ffi::OsString> =
+        ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-i"]
+            .map(Into::into)
+            .to_vec();
+    args.push(crate::plan::input_url(staging.path(), None));
+    args.extend(flags.iter().map(Into::into));
+    args.extend(["-frames:v".into(), "1".into(), "-update".into(), "1".into()]);
+    args.push(crate::plan::input_url(encoded.path(), None));
+    let never = std::sync::atomic::AtomicBool::new(false);
+    crate::process::run(
+        ffmpeg,
+        &args,
+        crate::process::StopMode::Kill,
+        &never,
+        |_| {},
+    )
+    .map_err(|e| ImageError::Encode(e.to_string()))?;
+    encoded
+        .persist(output)
+        .map_err(|e| ImageError::Io(e.error))?;
+    Ok(())
+}
+
+/// Overlays the batch's watermark image (if any) in its chosen corner.
+fn watermark(
+    mut img: DynamicImage,
+    opts: &Options,
+    ffmpeg: Option<&Path>,
+) -> Result<DynamicImage, ImageError> {
+    let Some(path) = &opts.edit.watermark else {
+        return Ok(img);
+    };
+    let mut mark = open(path, ffmpeg)?;
+    // Keep the mark at most a quarter of the picture's width.
+    let max_width = (img.width() / 4).max(1);
+    if mark.width() > max_width {
+        mark = mark.resize(max_width, u32::MAX, FilterType::Lanczos3);
+    }
+    let (x, y) = corner_position(
+        img.width(),
+        img.height(),
+        mark.width(),
+        mark.height(),
+        opts.edit.watermark_corner.unwrap_or(Corner::BottomRight),
+    );
+    let mut canvas = img.to_rgba8();
+    image::imageops::overlay(&mut canvas, &mark.to_rgba8(), x, y);
+    img = DynamicImage::ImageRgba8(canvas);
+    Ok(img)
+}
+
+const WATERMARK_MARGIN: i64 = 16;
+
+fn corner_position(
+    width: u32,
+    height: u32,
+    mark_w: u32,
+    mark_h: u32,
+    corner: Corner,
+) -> (i64, i64) {
+    let (w, h, mw, mh) = (
+        i64::from(width),
+        i64::from(height),
+        i64::from(mark_w),
+        i64::from(mark_h),
+    );
+    let m = WATERMARK_MARGIN
+        .min((w - mw).max(0) / 2)
+        .min((h - mh).max(0) / 2);
+    match corner {
+        Corner::TopLeft => (m, m),
+        Corner::TopRight => (w - mw - m, m),
+        Corner::BottomLeft => (m, h - mh - m),
+        Corner::BottomRight => (w - mw - m, h - mh - m),
+        Corner::Center => ((w - mw) / 2, (h - mh) / 2),
+    }
+}
+
+/// Stitches pictures into one, top-to-bottom or left-to-right, sized to match.
+pub fn join(
+    inputs: &[impl AsRef<Path>],
+    output: &Path,
+    layout: JoinLayout,
+    opts: &Options,
+    ffmpeg: Option<&Path>,
+    mut on_progress: impl FnMut(f32),
+) -> Result<(), ImageError> {
+    let mut pictures = Vec::with_capacity(inputs.len());
+    for (i, path) in inputs.iter().enumerate() {
+        pictures.push(transform(open(path.as_ref(), ffmpeg)?, opts, None));
+        on_progress((i + 1) as f32 / (inputs.len() + 1) as f32);
+    }
+    let canvas = stitch(&pictures, layout);
+    let img = watermark(DynamicImage::ImageRgba8(canvas), opts, ffmpeg)?;
+    write_image(&img, output, ImageFormat::Png, opts, ffmpeg)
+}
+
+/// Largest side length the stitched image may reach.
+const MAX_STITCH_SIDE: u32 = 32_768;
+
+fn stitch(pictures: &[DynamicImage], layout: JoinLayout) -> image::RgbaImage {
+    // Match the smallest width (vertical) or height (horizontal) so nothing is upscaled.
+    let across = |p: &DynamicImage| {
+        if layout == JoinLayout::Vertical {
+            p.width()
+        } else {
+            p.height()
+        }
+    };
+    let target = pictures.iter().map(across).min().unwrap_or(1).max(1);
+    let scaled: Vec<image::RgbaImage> = pictures
+        .iter()
+        .map(|p| {
+            let (w, h) = (p.width().max(1), p.height().max(1));
+            let (nw, nh) = match layout {
+                JoinLayout::Vertical => (
+                    target,
+                    (u64::from(h) * u64::from(target) / u64::from(w)).max(1) as u32,
+                ),
+                JoinLayout::Horizontal => (
+                    (u64::from(w) * u64::from(target) / u64::from(h)).max(1) as u32,
+                    target,
+                ),
+            };
+            p.resize_exact(nw, nh, FilterType::Lanczos3).to_rgba8()
+        })
+        .collect();
+    let along: u32 = scaled
+        .iter()
+        .map(|p| {
+            if layout == JoinLayout::Vertical {
+                p.height()
+            } else {
+                p.width()
+            }
+        })
+        .fold(0u32, u32::saturating_add)
+        .min(MAX_STITCH_SIDE);
+    let (cw, ch) = if layout == JoinLayout::Vertical {
+        (target, along)
+    } else {
+        (along, target)
+    };
+    let mut canvas = image::RgbaImage::new(cw, ch);
+    let mut offset = 0i64;
+    for p in &scaled {
+        let (x, y) = if layout == JoinLayout::Vertical {
+            (0, offset)
+        } else {
+            (offset, 0)
+        };
+        image::imageops::overlay(&mut canvas, p, x, y);
+        offset += i64::from(if layout == JoinLayout::Vertical {
+            p.height()
+        } else {
+            p.width()
+        });
+    }
+    canvas
 }
 
 /// One JPEG-encoded page ready for embedding.
@@ -179,7 +382,11 @@ pub fn images_to_pdf(
 ) -> Result<(), ImageError> {
     let mut pages = Vec::with_capacity(inputs.len());
     for (i, path) in inputs.iter().enumerate() {
-        let img = transform(open(path.as_ref(), ffmpeg)?, opts, None);
+        let img = watermark(
+            transform(open(path.as_ref(), ffmpeg)?, opts, None),
+            opts,
+            ffmpeg,
+        )?;
         let mut jpeg = Vec::new();
         encode_jpeg(&img, jpeg_quality(opts), &mut jpeg)?;
         pages.push(Page {
@@ -306,7 +513,7 @@ mod tests {
     fn converts_png_to_every_format() {
         let dir = tempfile::tempdir().expect("tempdir");
         let src = sample(dir.path(), "in.png", 40, 30);
-        for format in ImageFormat::ALL {
+        for format in ImageFormat::ALL.into_iter().filter(|f| f.codec().is_some()) {
             let out = dir.path().join(format!("out.{}", format.ext()));
             convert(&src, &out, format, &Options::default(), None)
                 .unwrap_or_else(|e| panic!("{format:?}: {e}"));
@@ -325,6 +532,27 @@ mod tests {
         assert_eq!((img.width(), img.height()), (20, 10));
         let small = transform(DynamicImage::new_rgb8(10, 5), &opts, None);
         assert_eq!((small.width(), small.height()), (10, 5));
+    }
+
+    #[test]
+    fn join_stacks_to_common_width() {
+        let a = DynamicImage::new_rgb8(100, 50);
+        let b = DynamicImage::new_rgb8(200, 100);
+        let v = stitch(&[a.clone(), b.clone()], JoinLayout::Vertical);
+        assert_eq!((v.width(), v.height()), (100, 100));
+        let h = stitch(&[a, b], JoinLayout::Horizontal);
+        assert_eq!((h.width(), h.height()), (200, 50));
+    }
+
+    #[test]
+    fn watermark_positions_stay_inside() {
+        assert_eq!(
+            corner_position(200, 100, 20, 10, Corner::BottomRight),
+            (164, 74)
+        );
+        assert_eq!(corner_position(200, 100, 20, 10, Corner::TopLeft), (16, 16));
+        // A mark as large as the picture sits at the origin.
+        assert_eq!(corner_position(50, 50, 50, 50, Corner::BottomRight), (0, 0));
     }
 
     #[test]

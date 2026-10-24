@@ -29,6 +29,8 @@ pub struct Settings {
     pub theme: ThemeChoice,
     /// Turns off transitions and smooth scrolling.
     pub reduce_motion: bool,
+    /// Show a system notification when the queue finishes.
+    pub notify_when_done: bool,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -56,6 +58,7 @@ impl Default for Settings {
             cd_device: default_cd_device().to_owned(),
             theme: ThemeChoice::System,
             reduce_motion: false,
+            notify_when_done: true,
         }
     }
 }

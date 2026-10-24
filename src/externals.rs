@@ -19,10 +19,11 @@ pub enum External {
     Soffice,
     EbookConvert,
     Xorriso,
+    MonkeysAudio,
 }
 
 impl External {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Ffmpeg,
         Self::YtDlp,
         Self::Pdftoppm,
@@ -34,6 +35,7 @@ impl External {
         Self::Soffice,
         Self::EbookConvert,
         Self::Xorriso,
+        Self::MonkeysAudio,
     ];
 
     /// Executable names to try, most common first.
@@ -50,6 +52,7 @@ impl External {
             Self::Soffice => &["soffice", "libreoffice"],
             Self::EbookConvert => &["ebook-convert"],
             Self::Xorriso => &["xorriso"],
+            Self::MonkeysAudio => &["mac"],
         }
     }
 
@@ -67,6 +70,7 @@ impl External {
             Self::Soffice => "LibreOffice",
             Self::EbookConvert => "Calibre",
             Self::Xorriso => "xorriso",
+            Self::MonkeysAudio => "Monkey's Audio (mac)",
         }
     }
 }

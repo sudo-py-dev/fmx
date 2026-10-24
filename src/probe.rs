@@ -11,6 +11,9 @@ pub struct MediaInfo {
     pub height: Option<u32>,
     /// `(start, end)` seconds of each chapter; audio-CD tracks appear as chapters.
     pub chapters: Vec<(f64, f64)>,
+    pub has_subtitles: bool,
+    /// Frame rate of the first video stream.
+    pub fps: Option<f64>,
 }
 
 /// Parses ffmpeg's banner output (stderr of `ffmpeg -i <file>`).
@@ -33,6 +36,8 @@ pub fn parse_ffmpeg_info(stderr: &str) -> MediaInfo {
 fn parse_stream_line(line: &str, info: &mut MediaInfo) {
     if line.contains(": Audio:") {
         info.has_audio = true;
+    } else if line.contains(": Subtitle:") {
+        info.has_subtitles = true;
     } else if line.contains(": Video:") && !line.contains("(attached pic)") && !info.has_video {
         // Only the first real video stream decides the frame size.
         info.has_video = true;
@@ -40,6 +45,10 @@ fn parse_stream_line(line: &str, info: &mut MediaInfo) {
             info.width = Some(w);
             info.height = Some(h);
         }
+        info.fps = line
+            .split(',')
+            .find_map(|part| part.trim().strip_suffix(" fps"))
+            .and_then(|n| n.trim().parse().ok());
     }
 }
 
@@ -86,6 +95,14 @@ At least one output file must be specified";
         assert_eq!(info.duration_s, Some(62.5));
         assert!(info.has_video && info.has_audio);
         assert_eq!((info.width, info.height), (Some(1920), Some(1080)));
+        assert_eq!(info.fps, Some(30.0));
+        assert!(!info.has_subtitles);
+    }
+
+    #[test]
+    fn subtitle_streams_are_detected() {
+        let info = parse_ffmpeg_info("  Stream #0:2(eng): Subtitle: subrip (srt)");
+        assert!(info.has_subtitles);
     }
 
     #[test]

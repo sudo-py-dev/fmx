@@ -17,7 +17,9 @@ pub const BROOM: &str = "\u{EC54}";
 pub const CARET_DOWN: &str = "\u{E136}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
+pub const DEVICE_MOBILE: &str = "\u{E1E0}";
 pub const DISC: &str = "\u{E564}";
+pub const EYE: &str = "\u{E220}";
 pub const DOWNLOAD: &str = "\u{E20C}";
 pub const FILE_PLUS: &str = "\u{E236}";
 pub const FILE_TEXT: &str = "\u{E23A}";
@@ -79,7 +81,9 @@ mod tests {
             CARET_DOWN,
             CARET_UP,
             CHECK_CIRCLE,
+            DEVICE_MOBILE,
             DISC,
+            EYE,
             DOWNLOAD,
             FILE_PLUS,
             FILE_TEXT,

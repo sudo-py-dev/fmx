@@ -9,6 +9,7 @@ use crate::icons;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
     Video,
+    Devices,
     Audio,
     Image,
     Document,
@@ -17,8 +18,9 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Video,
+        Self::Devices,
         Self::Audio,
         Self::Image,
         Self::Document,
@@ -29,6 +31,7 @@ impl Category {
     pub fn label(self) -> String {
         let (icon, key) = match self {
             Self::Video => (icons::FILM_STRIP, "category.video"),
+            Self::Devices => (icons::DEVICE_MOBILE, "category.devices"),
             Self::Audio => (icons::MUSIC_NOTES, "category.audio"),
             Self::Image => (icons::IMAGE, "category.image"),
             Self::Document => (icons::FILE_TEXT, "category.document"),
@@ -42,13 +45,19 @@ impl Category {
         match self {
             Self::Video => VideoFormat::ALL.into_iter().map(Tool::ToVideo).collect(),
             Self::Audio => AudioFormat::ALL.into_iter().map(Tool::ToAudio).collect(),
-            Self::Image => ImageFormat::ALL.into_iter().map(Tool::ToImage).collect(),
+            Self::Devices => Device::ALL.into_iter().map(Tool::ToDevice).collect(),
+            Self::Image => ImageFormat::ALL
+                .into_iter()
+                .map(Tool::ToImage)
+                .chain([Tool::JoinImages])
+                .collect(),
             Self::Document => [
                 Tool::ImagesToPdf,
                 Tool::PdfToImages,
                 Tool::PdfToText,
                 Tool::PdfToHtml,
                 Tool::PdfToWord,
+                Tool::PdfToExcel,
                 Tool::OfficeToPdf,
                 Tool::PdfMerge,
                 Tool::PdfSplit,
@@ -59,7 +68,9 @@ impl Category {
             .collect(),
             Self::Rom => vec![
                 Tool::DvdToVideo,
+                Tool::BluRayToVideo,
                 Tool::CdToAudio,
+                Tool::DiscToIso,
                 Tool::FolderToIso,
                 Tool::IsoToCso,
                 Tool::CsoToIso,
@@ -72,9 +83,12 @@ impl Category {
                 Tool::VideoMix,
                 Tool::Trim,
                 Tool::Split,
+                Tool::Crop,
                 Tool::Compress,
                 Tool::RemoveAudio,
                 Tool::Delogo,
+                Tool::AddSubtitles,
+                Tool::ExtractSubtitles,
                 Tool::ExtractFrames,
                 Tool::Rotate,
                 Tool::Speed,
@@ -273,10 +287,11 @@ pub enum AudioFormat {
     Mka,
     Mmf,
     Amr,
+    Ape,
 }
 
 impl AudioFormat {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Mp3,
         Self::Aac,
         Self::M4a,
@@ -293,6 +308,7 @@ impl AudioFormat {
         Self::Mka,
         Self::Mmf,
         Self::Amr,
+        Self::Ape,
     ];
 
     pub fn ext(self) -> &'static str {
@@ -313,6 +329,7 @@ impl AudioFormat {
             Self::Mka => "mka",
             Self::Mmf => "mmf",
             Self::Amr => "amr",
+            Self::Ape => "ape",
         }
     }
 
@@ -334,6 +351,7 @@ impl AudioFormat {
             Self::Mka => "MKA",
             Self::Mmf => "MMF",
             Self::Amr => "AMR",
+            Self::Ape => "APE (Monkey's Audio)",
         }
     }
 
@@ -342,7 +360,7 @@ impl AudioFormat {
             Self::Mp3 => "libmp3lame",
             Self::Aac | Self::M4a | Self::M4r | Self::Mka => "aac",
             Self::Flac => "flac",
-            Self::Wav => "pcm_s16le",
+            Self::Wav | Self::Ape => "pcm_s16le",
             Self::Aiff => "pcm_s16be",
             Self::Ogg => "libvorbis",
             Self::Opus => "libopus",
@@ -357,7 +375,10 @@ impl AudioFormat {
 
     /// Lossless and PCM formats ignore bitrate settings.
     pub fn is_lossless(self) -> bool {
-        matches!(self, Self::Flac | Self::Wav | Self::Aiff | Self::Wv)
+        matches!(
+            self,
+            Self::Flac | Self::Wav | Self::Aiff | Self::Wv | Self::Ape
+        )
     }
 }
 
@@ -372,10 +393,13 @@ pub enum ImageFormat {
     Ico,
     Tga,
     Qoi,
+    Avif,
+    Jxl,
+    Pcx,
 }
 
 impl ImageFormat {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::Png,
         Self::Jpeg,
         Self::Webp,
@@ -385,6 +409,9 @@ impl ImageFormat {
         Self::Ico,
         Self::Tga,
         Self::Qoi,
+        Self::Avif,
+        Self::Jxl,
+        Self::Pcx,
     ];
 
     pub fn ext(self) -> &'static str {
@@ -398,6 +425,9 @@ impl ImageFormat {
             Self::Ico => "ico",
             Self::Tga => "tga",
             Self::Qoi => "qoi",
+            Self::Avif => "avif",
+            Self::Jxl => "jxl",
+            Self::Pcx => "pcx",
         }
     }
 
@@ -412,11 +442,15 @@ impl ImageFormat {
             Self::Ico => "ICO",
             Self::Tga => "TGA",
             Self::Qoi => "QOI",
+            Self::Avif => "AVIF",
+            Self::Jxl => "JPEG XL",
+            Self::Pcx => "PCX",
         }
     }
 
-    pub fn codec(self) -> image::ImageFormat {
-        match self {
+    /// The native encoder, or `None` for formats written through ffmpeg.
+    pub fn codec(self) -> Option<image::ImageFormat> {
+        Some(match self {
             Self::Png => image::ImageFormat::Png,
             Self::Jpeg => image::ImageFormat::Jpeg,
             Self::Webp => image::ImageFormat::WebP,
@@ -426,6 +460,26 @@ impl ImageFormat {
             Self::Ico => image::ImageFormat::Ico,
             Self::Tga => image::ImageFormat::Tga,
             Self::Qoi => image::ImageFormat::Qoi,
+            Self::Avif | Self::Jxl | Self::Pcx => return None,
+        })
+    }
+
+    /// ffmpeg encoder flags for formats the native encoders don't cover.
+    pub fn ffmpeg_encoder(self) -> Option<&'static [&'static str]> {
+        match self {
+            Self::Avif => Some(&[
+                "-c:v",
+                "libaom-av1",
+                "-still-picture",
+                "1",
+                "-crf",
+                "30",
+                "-cpu-used",
+                "6",
+            ]),
+            Self::Jxl => Some(&["-c:v", "libjxl", "-distance", "1"]),
+            Self::Pcx => Some(&["-c:v", "pcx"]),
+            _ => None,
         }
     }
 }
@@ -473,23 +527,112 @@ impl EbookFormat {
     }
 }
 
+/// Ready-made output profiles for phones, tablets, consoles and sites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Device {
+    Iphone,
+    Ipad,
+    AndroidPhone,
+    AndroidTablet,
+    Psp,
+    PsVita,
+    Xbox,
+    SmartTv,
+    Youtube,
+    Whatsapp,
+}
+
+/// What a device profile constrains.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceProfile {
+    pub max_width: u32,
+    pub max_height: u32,
+    /// H.264 profile and level.
+    pub profile: &'static str,
+    pub level: &'static str,
+    pub max_fps: Option<u32>,
+    pub max_kbps: u32,
+    pub audio_kbps: u32,
+}
+
+impl Device {
+    pub const ALL: [Self; 10] = [
+        Self::Iphone,
+        Self::Ipad,
+        Self::AndroidPhone,
+        Self::AndroidTablet,
+        Self::Psp,
+        Self::PsVita,
+        Self::Xbox,
+        Self::SmartTv,
+        Self::Youtube,
+        Self::Whatsapp,
+    ];
+
+    /// Device and site names are trademarks and are not translated.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Iphone => "iPhone",
+            Self::Ipad => "iPad",
+            Self::AndroidPhone => "Android phone",
+            Self::AndroidTablet => "Android tablet",
+            Self::Psp => "PSP",
+            Self::PsVita => "PS Vita",
+            Self::Xbox => "Xbox",
+            Self::SmartTv => "Smart TV",
+            Self::Youtube => "YouTube",
+            Self::Whatsapp => "WhatsApp",
+        }
+    }
+
+    pub fn profile(self) -> DeviceProfile {
+        let p =
+            |max_width, max_height, profile, level, max_fps, max_kbps, audio_kbps| DeviceProfile {
+                max_width,
+                max_height,
+                profile,
+                level,
+                max_fps,
+                max_kbps,
+                audio_kbps,
+            };
+        match self {
+            Self::Iphone => p(1920, 1080, "high", "4.1", None, 8000, 160),
+            Self::Ipad => p(2048, 1536, "high", "4.2", None, 10000, 160),
+            Self::AndroidPhone => p(1280, 720, "main", "4.0", Some(30), 4000, 128),
+            Self::AndroidTablet => p(1920, 1080, "high", "4.1", Some(30), 6000, 160),
+            Self::Psp => p(480, 272, "main", "3.0", Some(30), 768, 128),
+            Self::PsVita => p(960, 544, "main", "3.1", Some(30), 2500, 128),
+            Self::Xbox => p(1920, 1080, "high", "4.1", None, 10000, 192),
+            Self::SmartTv => p(1920, 1080, "high", "4.1", None, 12000, 192),
+            Self::Youtube => p(3840, 2160, "high", "5.1", None, 40000, 192),
+            Self::Whatsapp => p(854, 480, "baseline", "3.1", Some(30), 1200, 96),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tool {
     ToVideo(VideoFormat),
+    ToDevice(Device),
     ToAudio(AudioFormat),
     ToImage(ImageFormat),
+    JoinImages,
     ImagesToPdf,
     PdfToImages,
     PdfToText,
     PdfToHtml,
     PdfToWord,
+    PdfToExcel,
     OfficeToPdf,
     PdfMerge,
     PdfSplit,
     PdfCompress,
     ToEbook(EbookFormat),
     DvdToVideo,
+    BluRayToVideo,
     CdToAudio,
+    DiscToIso,
     FolderToIso,
     IsoToCso,
     CsoToIso,
@@ -500,9 +643,12 @@ pub enum Tool {
     VideoMix,
     Trim,
     Split,
+    Crop,
     Compress,
     RemoveAudio,
     Delogo,
+    AddSubtitles,
+    ExtractSubtitles,
     ExtractFrames,
     Rotate,
     Speed,
@@ -583,10 +729,18 @@ impl Tool {
     pub fn label(self) -> &'static str {
         match self {
             Self::ToVideo(f) => f.label(),
+            Self::ToDevice(d) => d.label(),
             Self::ToAudio(f) => f.label(),
             Self::ToImage(f) => f.label(),
             Self::ToEbook(f) => f.label(),
             Self::ImagesToPdf => tr("tool.images_to_pdf"),
+            Self::JoinImages => tr("tool.join_images"),
+            Self::PdfToExcel => tr("tool.pdf_to_excel"),
+            Self::BluRayToVideo => tr("tool.bluray_to_video"),
+            Self::DiscToIso => tr("tool.disc_to_iso"),
+            Self::Crop => tr("tool.crop"),
+            Self::AddSubtitles => tr("tool.add_subtitles"),
+            Self::ExtractSubtitles => tr("tool.extract_subtitles"),
             Self::PdfToImages => tr("tool.pdf_to_images"),
             Self::PdfToText => tr("tool.pdf_to_text"),
             Self::PdfToHtml => tr("tool.pdf_to_html"),
@@ -624,6 +778,14 @@ impl Tool {
     pub fn description(self) -> &'static str {
         match self {
             Self::ToVideo(_) => tr("desc.to_video"),
+            Self::ToDevice(_) => tr("desc.to_device"),
+            Self::JoinImages => tr("desc.join_images"),
+            Self::PdfToExcel => tr("desc.pdf_to_excel"),
+            Self::BluRayToVideo => tr("desc.bluray_to_video"),
+            Self::DiscToIso => tr("desc.disc_to_iso"),
+            Self::Crop => tr("desc.crop"),
+            Self::AddSubtitles => tr("desc.add_subtitles"),
+            Self::ExtractSubtitles => tr("desc.extract_subtitles"),
             Self::ToAudio(_) => tr("desc.to_audio"),
             Self::ToImage(_) => tr("desc.to_image"),
             Self::ToEbook(_) => tr("desc.to_ebook"),
@@ -665,6 +827,7 @@ impl Tool {
     pub fn arity(self) -> InputArity {
         match self {
             Self::ImagesToPdf => InputArity::AllAtLeast(1),
+            Self::JoinImages => InputArity::AllAtLeast(2),
             Self::JoinVideo | Self::JoinAudio | Self::AudioMix | Self::PdfMerge => {
                 InputArity::AllAtLeast(2)
             }
@@ -676,18 +839,19 @@ impl Tool {
 
     pub fn input_kind(self) -> InputKind {
         match self {
-            Self::ToImage(_) | Self::ImagesToPdf => InputKind::Images,
+            Self::ToImage(_) | Self::ImagesToPdf | Self::JoinImages => InputKind::Images,
             Self::PdfToImages
             | Self::PdfToText
             | Self::PdfToHtml
             | Self::PdfToWord
+            | Self::PdfToExcel
             | Self::PdfMerge
             | Self::PdfSplit
             | Self::PdfCompress => InputKind::Pdf,
             Self::OfficeToPdf => InputKind::Documents,
             Self::ToEbook(_) => InputKind::Ebooks,
-            Self::DvdToVideo => InputKind::Disc,
-            Self::CdToAudio => InputKind::Device,
+            Self::DvdToVideo | Self::BluRayToVideo => InputKind::Disc,
+            Self::CdToAudio | Self::DiscToIso => InputKind::Device,
             Self::FolderToIso => InputKind::Folder,
             Self::IsoToCso => InputKind::Iso,
             Self::CsoToIso => InputKind::Cso,
@@ -700,7 +864,15 @@ impl Tool {
     /// External programs the tool cannot run without.
     pub fn requires(self) -> &'static [External] {
         match self {
-            Self::ToImage(_) | Self::ImagesToPdf | Self::IsoToCso | Self::CsoToIso => &[],
+            Self::ToImage(f) if f.codec().is_none() => &[External::Ffmpeg],
+            Self::ToImage(_)
+            | Self::ImagesToPdf
+            | Self::JoinImages
+            | Self::IsoToCso
+            | Self::CsoToIso
+            | Self::DiscToIso => &[],
+            Self::ToAudio(AudioFormat::Ape) => &[External::Ffmpeg, External::MonkeysAudio],
+            Self::PdfToExcel => &[External::Pdftotext],
             Self::PdfToImages => &[External::Pdftoppm],
             Self::PdfToText => &[External::Pdftotext],
             Self::PdfToHtml => &[External::Pdftohtml],
@@ -719,7 +891,11 @@ impl Tool {
     pub fn required_encoder(self) -> Option<&'static str> {
         match self {
             Self::ToVideo(f) => Some(f.required_encoder()),
+            Self::ToDevice(_) => Some("libx264"),
             Self::ToAudio(f) => Some(f.required_encoder()),
+            Self::ToImage(ImageFormat::Avif) => Some("libaom-av1"),
+            Self::ToImage(ImageFormat::Jxl) => Some("libjxl"),
+            Self::ToImage(ImageFormat::Pcx) => Some("pcx"),
             _ => None,
         }
     }
