@@ -132,7 +132,7 @@
   "desc.delogo": "Lässt ein Logo oder Wasserzeichen in einem Rechteck verschwinden.",
   "desc.volume": "Macht den Ton lauter oder leiser; das Video wird unverändert kopiert.",
   "desc.repair": "Repariert defekte Zeitstempel und verwirft beschädigte Pakete ohne Neukodierung.",
-  "desc.download": "Lädt ein Video oder dessen Ton von einer Webseite herunter (benötigt yt-dlp).",
+  "desc.download": "Lädt ein Video oder dessen Ton von einer Webseite herunter. Muxr richtet yt-dlp für dich ein.",
   "desc.record": "Nimmt den Bildschirm auf, optional mit Mikrofon- oder Systemton.",
   "tool.pdf_to_images": "PDF → Bilder",
   "tool.pdf_to_text": "PDF → TXT",
@@ -384,5 +384,14 @@
   "settings.programs_hint": "Optionale Programme für weitere Werkzeuge. Installiere sie und klicke dann auf Erneut suchen.",
   "settings.program_found": "Installiert",
   "settings.program_missing": "Nicht installiert",
-  "settings.ffmpeg_found": "Bereit"
+  "settings.ffmpeg_found": "Bereit",
+  "ytdlp.title": "Der Video-Downloader braucht yt-dlp",
+  "ytdlp.body": "Muxr kann das offizielle Programm yt-dlp aus seinen GitHub-Releases in den eigenen Datenordner laden und mit der veröffentlichten Prüfsumme prüfen. Systemweit wird nichts installiert.",
+  "ytdlp.download": "yt-dlp herunterladen",
+  "ytdlp.update": "yt-dlp aktualisieren",
+  "ytdlp.done": "yt-dlp ist bereit. Der Video-Downloader ist aktiviert.",
+  "ytdlp.unsupported": "Für dieses System gibt es kein fertiges yt-dlp. Installiere yt-dlp selbst und klicke dann auf Erneut suchen.",
+  "availability.ytdlp_offer": "Braucht yt-dlp – öffne das Werkzeug, um es herunterzuladen.",
+  "settings.ytdlp_hint": "Videoseiten ändern sich oft. Wenn Downloads nicht mehr klappen, aktualisiere yt-dlp.",
+  "error.download_failed": "Download fehlgeschlagen. Wenn das öfter passiert, aktualisiere yt-dlp in den Einstellungen."
 }

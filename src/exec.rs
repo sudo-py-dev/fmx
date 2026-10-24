@@ -15,7 +15,7 @@ use crate::jobs::{JobError, JobSpec};
 use crate::office;
 use crate::pdfgen;
 use crate::plan::{self, BLURAY_PROTOCOL, CD_DEMUXER, DVD_DEMUXER, Input, PlanError};
-use crate::process::{self, StopMode, Watch};
+use crate::process::{self, RunError, StopMode, Watch};
 use crate::sheet;
 
 /// Runs a job to completion, reporting progress in `0.0..=1.0`.
@@ -175,7 +175,10 @@ fn run_tool(
                     }
                 },
             )
-            .map_err(JobError::Run)
+            .map_err(|e| match e {
+                RunError::Failed { .. } => JobError::DownloadFailed(e),
+                e => JobError::Run(e),
+            })
         }
         Tool::Record => {
             let ffmpeg = need(toolbox, External::Ffmpeg)?;

@@ -112,15 +112,27 @@ impl From<std::io::Error> for SetupError {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Streams `source` into `dest` while hashing it; fails unless the digest matches.
-fn download_verified(
+/// An HTTP client with Muxr's download timeouts.
+pub(crate) fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_per_read(Some(READ_TIMEOUT))
+        .build()
+        .into()
+}
+
+/// Streams `source` into `dest` while hashing it; fails unless the digest is
+/// `sha256`. More than `size` bytes is treated as a wrong file; progress is
+/// reported against `size`.
+pub(crate) fn download_verified(
     mut source: impl Read,
     dest: &mut impl Write,
-    build: &Build,
+    sha256: &str,
+    size: u64,
     cancel: &AtomicBool,
     on_progress: &mut dyn FnMut(f32),
 ) -> Result<(), SetupError> {
@@ -138,15 +150,15 @@ fn download_verified(
             break;
         }
         received += n as u64;
-        // The compressed size is known; anything bigger is not our file.
-        if received > build.size {
+        // The expected size is known; anything bigger is not our file.
+        if received > size {
             return Err(SetupError::Checksum);
         }
         hasher.update(&buf[..n]);
         dest.write_all(&buf[..n])?;
-        on_progress((received as f64 / build.size as f64).min(1.0) as f32);
+        on_progress((received as f64 / size as f64).min(1.0) as f32);
     }
-    if hex(&hasher.finalize()) == build.sha256 {
+    if hex(&hasher.finalize()) == sha256 {
         Ok(())
     } else {
         Err(SetupError::Checksum)
@@ -162,6 +174,15 @@ fn unpack(gz: &Path, target: &Path) -> Result<(), SetupError> {
     if written > MAX_BINARY_BYTES {
         return Err(SetupError::TooLarge);
     }
+    persist_executable(tmp, target)
+}
+
+/// Marks a finished temporary file executable and moves it to `target` in one
+/// step, so a half-written program is never left in place.
+pub(crate) fn persist_executable(
+    mut tmp: tempfile::NamedTempFile,
+    target: &Path,
+) -> Result<(), SetupError> {
     tmp.as_file_mut().flush()?;
     #[cfg(unix)]
     {
@@ -184,7 +205,14 @@ fn install_from(
     let dir = target.parent().ok_or(SetupError::Unsupported)?;
     std::fs::create_dir_all(dir)?;
     let mut archive = tempfile::Builder::new().suffix(".gz").tempfile_in(dir)?;
-    download_verified(source, archive.as_file_mut(), build, cancel, on_progress)?;
+    download_verified(
+        source,
+        archive.as_file_mut(),
+        build.sha256,
+        build.size,
+        cancel,
+        on_progress,
+    )?;
     archive.as_file_mut().flush()?;
     unpack(archive.path(), target)?;
     Ok(target.to_path_buf())
@@ -197,13 +225,8 @@ pub fn install(
 ) -> Result<PathBuf, SetupError> {
     let build = build_for_this_platform().ok_or(SetupError::Unsupported)?;
     let target = managed_binary().ok_or(SetupError::Unsupported)?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_per_read(Some(READ_TIMEOUT))
-        .build()
-        .into();
     let url = format!("{RELEASE_URL}/{}", build.asset);
-    let mut response = agent
+    let mut response = agent()
         .get(&url)
         .call()
         .map_err(|e| SetupError::Network(e.to_string()))?;
@@ -286,12 +309,12 @@ mod tests {
 
     #[test]
     fn oversized_download_stops_early() {
-        let (gz, mut build) = fake_build(b"payload");
-        build.size = 5;
+        let (gz, build) = fake_build(b"payload");
         let result = download_verified(
             gz.as_slice(),
             &mut Vec::new(),
-            &build,
+            build.sha256,
+            5,
             &AtomicBool::new(false),
             &mut |_| {},
         );

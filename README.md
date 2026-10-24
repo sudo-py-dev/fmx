@@ -45,6 +45,12 @@ overwrite existing files, and failed jobs leave no partial files behind.
   download a static ffmpeg 6.1.1 build (about 20–30 MB) into its data folder
   (`~/.local/share/muxr` on Linux). The download is checked against its published SHA-256 before
   use, and nothing is installed system-wide.
+- **yt-dlp (video downloader):** the first time you open the video downloader, Muxr offers to
+  download the official standalone yt-dlp (about 40 MB on Linux) from yt-dlp's latest GitHub
+  release into the same data folder. It is checked against the SHA-256 list published with that
+  release. Video sites change often, so Settings → Programs has **Update yt-dlp**, and a failed
+  download suggests it. Muxr's own copy is preferred over a system `yt-dlp`, which is often too
+  old for YouTube.
 - **Documents:** Office → PDF is built in. It reads DOCX, ODT, PPTX, ODP, XLSX, XLS, ODS, CSV,
   Markdown, HTML, RTF and text, and writes PDFs with an embedded Unicode font. PDF → Word writes
   DOCX natively. Only old binary `.doc`/`.ppt` files need LibreOffice, and only if you convert them.
@@ -58,7 +64,6 @@ Optional helpers turn on extra tools when present (found next to the app or on `
 | Ghostscript | compress PDF | `ghostscript` |
 | Calibre | eBook conversions | `calibre` |
 | xorriso | folder → ISO | `xorriso` |
-| yt-dlp | video downloader | `yt-dlp` |
 | Monkey's Audio | APE output | `monkeys-audio` |
 | LibreOffice | legacy `.doc`/`.ppt` → PDF | `libreoffice` |
 

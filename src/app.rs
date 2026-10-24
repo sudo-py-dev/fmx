@@ -31,6 +31,7 @@ use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::theme::{self, MOTION, ThemeChoice};
 use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
+use crate::ytdlp_setup;
 
 const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
@@ -78,8 +79,70 @@ const MAX_SCAN_FILES: usize = 10_000;
 /// Progress below this is too early to estimate time left.
 const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
 
-/// A running download of Muxr's own ffmpeg.
-struct FfmpegInstall {
+/// A program Muxr can download and keep for itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Helper {
+    Ffmpeg,
+    YtDlp,
+}
+
+impl Helper {
+    fn external(self) -> External {
+        match self {
+            Self::Ffmpeg => External::Ffmpeg,
+            Self::YtDlp => External::YtDlp,
+        }
+    }
+
+    /// Whether a ready-made build exists for this computer.
+    fn offered(self) -> bool {
+        match self {
+            Self::Ffmpeg => ffmpeg_setup::build_for_this_platform().is_some(),
+            Self::YtDlp => ytdlp_setup::asset_for_this_platform().is_some(),
+        }
+    }
+
+    fn install(self, cancel: &AtomicBool, progress: impl FnMut(f32)) -> Result<PathBuf, String> {
+        match self {
+            Self::Ffmpeg => ffmpeg_setup::install(cancel, progress),
+            Self::YtDlp => ytdlp_setup::install(cancel, progress),
+        }
+        .map_err(|e| e.to_string())
+    }
+
+    /// The button text; `update` when a copy is already in use.
+    fn button_label(self, update: bool) -> String {
+        match (self, update) {
+            (Self::Ffmpeg, _) => trf(
+                "setup.download",
+                &[(
+                    "mb",
+                    &(ffmpeg_setup::build_for_this_platform().map_or(0, |b| b.size) / 1_000_000),
+                )],
+            ),
+            (Self::YtDlp, false) => tr("ytdlp.download").to_owned(),
+            (Self::YtDlp, true) => tr("ytdlp.update").to_owned(),
+        }
+    }
+
+    fn done_message(self) -> &'static str {
+        match self {
+            Self::Ffmpeg => tr("setup.done"),
+            Self::YtDlp => tr("ytdlp.done"),
+        }
+    }
+
+    fn unsupported_message(self) -> &'static str {
+        match self {
+            Self::Ffmpeg => tr("setup.unsupported"),
+            Self::YtDlp => tr("ytdlp.unsupported"),
+        }
+    }
+}
+
+/// A running download of one of Muxr's own helper programs.
+struct HelperInstall {
+    helper: Helper,
     /// Progress as `f32` bits.
     progress: Arc<AtomicU32>,
     cancel: Arc<AtomicBool>,
@@ -122,7 +185,8 @@ pub struct MuxrApp {
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
-    ffmpeg_install: Option<FfmpegInstall>,
+    /// Helper programs being downloaded right now.
+    installs: Vec<HelperInstall>,
     /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
     preview_index: usize,
     /// Size and length of added files, for the file list.
@@ -169,7 +233,7 @@ impl MuxrApp {
             category: settings.last_tool.category(),
             in_editor: false,
             search: String::new(),
-            ffmpeg_install: None,
+            installs: Vec::new(),
             preview_index: 0,
             details: HashMap::new(),
             probe_tx,
@@ -210,6 +274,9 @@ impl MuxrApp {
     /// Why a tool can't run here, if it can't.
     fn unavailable_reason(&self, tool: Tool) -> Option<String> {
         if let Some(missing) = self.toolbox.missing(tool.requires()) {
+            if missing == External::YtDlp && Helper::YtDlp.offered() {
+                return Some(tr("availability.ytdlp_offer").to_owned());
+            }
             return Some(trf("availability.missing", &[("program", &missing.name())]));
         }
         let encoder = tool.required_encoder()?;
@@ -827,7 +894,7 @@ impl MuxrApp {
         });
         ui.add_space(12.0);
         if self.toolbox.get(External::Ffmpeg).is_none() {
-            self.ffmpeg_setup_card(ui);
+            self.setup_card(ui, Helper::Ffmpeg);
             ui.add_space(12.0);
         }
         let needle = self.search.trim().to_lowercase();
@@ -977,15 +1044,23 @@ impl MuxrApp {
                 ui.label(RichText::new(self.tool.description()).color(p.text_weak));
             });
         });
-        if let Some(reason) = self.unavailable_reason(self.tool) {
+        let missing_helpers: Vec<Helper> = [Helper::Ffmpeg, Helper::YtDlp]
+            .into_iter()
+            .filter(|h| {
+                let external = h.external();
+                self.tool.requires().contains(&external) && self.toolbox.get(external).is_none()
+            })
+            .collect();
+        // A setup card already explains what is missing; the chip covers the rest.
+        if missing_helpers.is_empty()
+            && let Some(reason) = self.unavailable_reason(self.tool)
+        {
             ui.add_space(4.0);
             widgets::chip(ui, icons::WARNING, &reason, p.warning);
         }
-        if self.tool.requires().contains(&External::Ffmpeg)
-            && self.toolbox.get(External::Ffmpeg).is_none()
-        {
+        for helper in missing_helpers {
             ui.add_space(8.0);
-            self.ffmpeg_setup_card(ui);
+            self.setup_card(ui, helper);
         }
     }
 
@@ -2187,6 +2262,10 @@ impl MuxrApp {
                         ui.add_space(2.0);
                         self.ffmpeg_setting(ui);
                         ui.add_space(12.0);
+                        ui.label(RichText::new("yt-dlp").strong());
+                        ui.add_space(2.0);
+                        self.ytdlp_setting(ui);
+                        ui.add_space(12.0);
                         ui.label(RichText::new(tr("settings.programs")).strong());
                         ui.label(
                             RichText::new(tr("settings.programs_hint"))
@@ -2234,7 +2313,11 @@ impl MuxrApp {
         let mut seen = HashSet::new();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            for ext in External::ALL.into_iter().filter(|e| *e != External::Ffmpeg) {
+            let shown_above = [External::Ffmpeg, External::YtDlp];
+            for ext in External::ALL
+                .into_iter()
+                .filter(|e| !shown_above.contains(e))
+            {
                 if !seen.insert(ext.name()) {
                     continue;
                 }
@@ -2262,54 +2345,61 @@ impl MuxrApp {
         }
     }
 
-    fn start_ffmpeg_install(&mut self, ctx: &egui::Context) {
+    fn start_install(&mut self, helper: Helper, ctx: &egui::Context) {
+        if self.installs.iter().any(|i| i.helper == helper) {
+            return;
+        }
         let progress = Arc::new(AtomicU32::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let (thread_progress, thread_cancel, ctx) =
             (Arc::clone(&progress), Arc::clone(&cancel), ctx.clone());
         std::thread::spawn(move || {
-            let result = ffmpeg_setup::install(&thread_cancel, |p| {
+            let result = helper.install(&thread_cancel, |p| {
                 thread_progress.store(p.to_bits(), Ordering::Relaxed);
                 ctx.request_repaint();
-            })
-            .map_err(|e| e.to_string());
+            });
             let _ = tx.send(result);
             ctx.request_repaint();
         });
-        self.ffmpeg_install = Some(FfmpegInstall {
+        self.installs.push(HelperInstall {
+            helper,
             progress,
             cancel,
             rx,
         });
     }
 
-    fn poll_ffmpeg_install(&mut self) {
-        let Some(task) = &self.ffmpeg_install else {
-            return;
-        };
-        let Ok(result) = task.rx.try_recv() else {
-            return;
-        };
-        self.ffmpeg_install = None;
-        match result {
-            Ok(_) => {
-                self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
-                self.toasts.push(ToastKind::Success, tr("setup.done"));
+    fn poll_installs(&mut self) {
+        let mut finished = Vec::new();
+        self.installs.retain(|task| match task.rx.try_recv() {
+            Ok(result) => {
+                finished.push((task.helper, result));
+                false
             }
-            Err(message) => self.toasts.push(ToastKind::Error, message),
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => false,
+        });
+        for (helper, result) in finished {
+            match result {
+                Ok(_) => {
+                    self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
+                    self.toasts.push(ToastKind::Success, helper.done_message());
+                }
+                Err(message) => self.toasts.push(ToastKind::Error, message),
+            }
         }
     }
 
-    /// The download button, or progress and Cancel while it runs.
-    fn ffmpeg_install_controls(&mut self, ui: &mut egui::Ui) {
-        if let Some(task) = &self.ffmpeg_install {
+    /// The download (or update) button, or progress and Cancel while it runs.
+    fn install_controls(&mut self, ui: &mut egui::Ui, helper: Helper, update: bool) {
+        if let Some(task) = self.installs.iter().find(|i| i.helper == helper) {
             let fraction = f32::from_bits(task.progress.load(Ordering::Relaxed));
             let cancel = Arc::clone(&task.cancel);
             ui.horizontal(|ui| {
                 widgets::progress(
                     ui,
-                    egui::Id::unique("ffmpeg_download"),
+                    egui::Id::unique(("helper_download", helper as u8)),
                     fraction,
                     format!("{:.0}%", fraction * 100.0),
                     PROGRESS_WIDTH,
@@ -2327,57 +2417,95 @@ impl MuxrApp {
                     cancel.store(true, Ordering::Relaxed);
                 }
             });
-        } else if ffmpeg_setup::build_for_this_platform().is_some() {
-            let label = trf(
-                "setup.download",
-                &[(
-                    "mb",
-                    &(ffmpeg_setup::build_for_this_platform().map_or(0, |b| b.size) / 1_000_000),
-                )],
-            );
+        } else if helper.offered() {
+            let (icon, kind) = if update {
+                (icons::ARROW_CLOCKWISE, Kind::Secondary)
+            } else {
+                (icons::DOWNLOAD, Kind::Primary)
+            };
             if widgets::button_tinted(
                 ui,
-                Some(icons::DOWNLOAD),
+                Some(icon),
                 Some(art::hue::BLUE),
-                &label,
-                Kind::Primary,
+                &helper.button_label(update),
+                kind,
                 Size::Regular,
                 true,
             )
             .clicked()
             {
-                self.start_ffmpeg_install(ui.ctx());
+                self.start_install(helper, ui.ctx());
             }
         } else {
-            ui.label(RichText::new(tr("setup.unsupported")).weak());
+            ui.label(RichText::new(helper.unsupported_message()).weak());
         }
     }
 
-    /// Explains that media tools need ffmpeg and offers Muxr's own copy.
-    fn ffmpeg_setup_card(&mut self, ui: &mut egui::Ui) {
+    /// Explains that a tool needs a helper program and offers Muxr's own copy.
+    fn setup_card(&mut self, ui: &mut egui::Ui, helper: Helper) {
+        let (art, title, body) = match helper {
+            Helper::Ffmpeg => (
+                art::Art {
+                    glyph: art::glyph::FILM_STRIP,
+                    hue: art::hue::BLUE,
+                },
+                tr("setup.title"),
+                trf("setup.body", &[("version", &ffmpeg_setup::VERSION)]),
+            ),
+            Helper::YtDlp => (
+                art::Art {
+                    glyph: art::glyph::DOWNLOAD,
+                    hue: art::hue::RED,
+                },
+                tr("ytdlp.title"),
+                tr("ytdlp.body").to_owned(),
+            ),
+        };
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                widgets::icon_tile(
-                    ui,
-                    art::Art {
-                        glyph: art::glyph::FILM_STRIP,
-                        hue: art::hue::BLUE,
-                    },
-                    40.0,
-                    true,
-                );
+                widgets::icon_tile(ui, art, 40.0, true);
                 ui.add_space(6.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(tr("setup.title")).strong());
-                    ui.label(
-                        RichText::new(trf("setup.body", &[("version", &ffmpeg_setup::VERSION)]))
-                            .weak(),
-                    );
+                    ui.label(RichText::new(title).strong());
+                    ui.label(RichText::new(body).weak());
                     ui.add_space(6.0);
-                    self.ffmpeg_install_controls(ui);
+                    self.install_controls(ui, helper, false);
                 });
             });
         });
+    }
+
+    /// yt-dlp's status in Settings, with download or update.
+    fn ytdlp_setting(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let found = self.toolbox.get(External::YtDlp).map(Path::to_path_buf);
+        match &found {
+            Some(path) => {
+                ui.horizontal(|ui| {
+                    widgets::chip(
+                        ui,
+                        icons::CHECK_CIRCLE,
+                        tr("settings.ffmpeg_found"),
+                        p.success,
+                    );
+                    ui.add(
+                        Label::new(RichText::new(path.display().to_string()).monospace())
+                            .truncate(),
+                    )
+                    .on_hover_text(path.display().to_string());
+                });
+            }
+            None => {
+                widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
+            }
+        }
+        ui.add_space(4.0);
+        self.install_controls(ui, Helper::YtDlp, found.is_some());
+        ui.label(
+            RichText::new(tr("settings.ytdlp_hint"))
+                .small()
+                .color(p.text_weak),
+        );
     }
 
     fn ffmpeg_setting(&mut self, ui: &mut egui::Ui) {
@@ -2400,7 +2528,7 @@ impl MuxrApp {
             }
             None => {
                 widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
-                self.ffmpeg_install_controls(ui);
+                self.install_controls(ui, Helper::Ffmpeg, false);
             }
         }
         ui.add_space(4.0);
@@ -3174,7 +3302,7 @@ impl eframe::App for MuxrApp {
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
         self.check_after_done(&ctx);
-        self.poll_ffmpeg_install();
+        self.poll_installs();
         self.poll_details();
         let p = theme::palette(ui);
 

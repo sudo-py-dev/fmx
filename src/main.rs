@@ -28,6 +28,7 @@ mod settings;
 mod sheet;
 mod theme;
 mod widgets;
+mod ytdlp_setup;
 
 use eframe::egui;
 use tracing_subscriber::EnvFilter;

@@ -35,6 +35,8 @@ pub enum JobError {
     Missing(External),
     Plan(PlanError),
     Run(RunError),
+    /// yt-dlp failed; most often the site changed and yt-dlp needs updating.
+    DownloadFailed(RunError),
     Image(ImageError),
     Cso(CsoError),
     Office(crate::office::OfficeError),
@@ -60,6 +62,8 @@ impl fmt::Display for JobError {
             }
             Self::Plan(e) => e.fmt(f),
             Self::Run(e) => e.fmt(f),
+            // The advice comes first: the queue shows only the first line.
+            Self::DownloadFailed(e) => write!(f, "{}\n{e}", tr("error.download_failed")),
             Self::Image(e) => e.fmt(f),
             Self::Cso(e) => e.fmt(f),
             Self::Office(e) => e.fmt(f),

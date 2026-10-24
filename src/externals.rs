@@ -119,6 +119,11 @@ impl Toolbox {
                     // Muxr's own copy is the fallback when the system has none.
                     (External::Ffmpeg, None) => find_on_path(ext.binaries())
                         .or_else(|| crate::ffmpeg_setup::managed_binary().filter(|p| p.is_file())),
+                    // Muxr's own yt-dlp wins: it is the one kept up to date from
+                    // Settings, while system copies are often too old for YouTube.
+                    (External::YtDlp, _) => crate::ytdlp_setup::managed_binary()
+                        .filter(|p| p.is_file())
+                        .or_else(|| find_on_path(ext.binaries())),
                     _ => find_on_path(ext.binaries()),
                 };
                 found.map(|p| (ext, p))
