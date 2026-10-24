@@ -274,7 +274,7 @@
   "desc.pdf_to_excel": "Turn the tables and text of a PDF into an Excel workbook, one sheet per page.",
   "desc.bluray_to_video": "Rip an unencrypted Blu-ray (disc folder or ISO) to a video file.",
   "desc.disc_to_iso": "Copy a whole disc from a drive into an ISO image.",
-  "desc.crop": "Cut away the edges of the picture. Draw the area in the preview (eye button) or type it.",
+  "desc.crop": "Cut away the edges of the picture. Draw the area to keep on the video, or type it.",
   "desc.add_subtitles": "Add a subtitle file as a selectable track, without re-encoding (output: MKV).",
   "desc.extract_subtitles": "Save the first text subtitle track of a video as an SRT file.",
   "error.no_crop": "Draw or enter a crop area first.",
@@ -371,5 +371,8 @@
   "files.total_length": "{length} in total",
   "ready.summary_one": "Ready: 1 job will be added to the queue and saved {where}.",
   "notice.queued_press_start": "Jobs added: {count}. Press Start to begin.",
-  "hint.start_empty": "Add jobs to the queue first, then press Start."
+  "hint.start_empty": "Add jobs to the queue first, then press Start.",
+  "hint.back_to_tools": "Back to the list of tools",
+  "option.clip_times": "Times",
+  "option.end_short": "End"
 }

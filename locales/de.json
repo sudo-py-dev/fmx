@@ -273,7 +273,7 @@
   "desc.pdf_to_excel": "Wandelt Tabellen und Text einer PDF in eine Excel-Arbeitsmappe um, ein Blatt pro Seite.",
   "desc.bluray_to_video": "Rippt eine unverschlüsselte Blu-ray (Disc-Ordner oder ISO) in eine Videodatei.",
   "desc.disc_to_iso": "Kopiert eine ganze Disc aus einem Laufwerk in ein ISO-Abbild.",
-  "desc.crop": "Schneidet die Bildränder ab. Bereich in der Vorschau (Augen-Knopf) ziehen oder eingeben.",
+  "desc.crop": "Schneidet die Bildränder ab. Zeichne den Bereich zum Behalten auf dem Video oder gib ihn ein.",
   "desc.add_subtitles": "Fügt eine Untertiteldatei als wählbare Spur hinzu, ohne Neukodierung (Ausgabe: MKV).",
   "desc.extract_subtitles": "Speichert die erste Text-Untertitelspur eines Videos als SRT-Datei.",
   "error.no_crop": "Zuerst einen Zuschnittbereich ziehen oder eingeben.",
@@ -370,5 +370,8 @@
   "files.total_length": "{length} insgesamt",
   "ready.summary_one": "Bereit: 1 Auftrag kommt in die Warteschlange und wird {where} gespeichert.",
   "notice.queued_press_start": "Aufträge hinzugefügt: {count}. Klicke auf Starten, um zu beginnen.",
-  "hint.start_empty": "Füge zuerst Aufträge hinzu und klicke dann auf Starten."
+  "hint.start_empty": "Füge zuerst Aufträge hinzu und klicke dann auf Starten.",
+  "hint.back_to_tools": "Zurück zur Werkzeugliste",
+  "option.clip_times": "Zeiten",
+  "option.end_short": "Ende"
 }

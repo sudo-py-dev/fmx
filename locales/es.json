@@ -273,7 +273,7 @@
   "desc.pdf_to_excel": "Convierte las tablas y el texto de un PDF en un libro de Excel, una hoja por página.",
   "desc.bluray_to_video": "Extrae un Blu-ray sin cifrar (carpeta del disco o ISO) a un archivo de vídeo.",
   "desc.disc_to_iso": "Copia un disco entero desde una unidad a una imagen ISO.",
-  "desc.crop": "Recorta los bordes de la imagen. Dibuja el área en la vista previa (botón del ojo) o escríbela.",
+  "desc.crop": "Recorta los bordes de la imagen. Dibuja sobre el vídeo la zona que quieres conservar o escríbela.",
   "desc.add_subtitles": "Añade un archivo de subtítulos como pista seleccionable, sin recodificar (salida: MKV).",
   "desc.extract_subtitles": "Guarda la primera pista de subtítulos de texto como archivo SRT.",
   "error.no_crop": "Dibuja o introduce primero un área de recorte.",
@@ -370,5 +370,8 @@
   "files.total_length": "{length} en total",
   "ready.summary_one": "Listo: se añadirá 1 tarea a la cola y se guardará {where}.",
   "notice.queued_press_start": "Trabajos añadidos: {count}. Pulsa Iniciar para empezar.",
-  "hint.start_empty": "Primero añade trabajos a la cola y luego pulsa Iniciar."
+  "hint.start_empty": "Primero añade trabajos a la cola y luego pulsa Iniciar.",
+  "hint.back_to_tools": "Volver a la lista de herramientas",
+  "option.clip_times": "Tiempos",
+  "option.end_short": "Fin"
 }

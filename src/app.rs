@@ -36,9 +36,25 @@ const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key:
 const SIDEBAR_WIDTH: f32 = 230.0;
 const QUEUE_HEIGHT: f32 = 180.0;
 const PROGRESS_WIDTH: f32 = 220.0;
-/// The task editor's content is kept to a readable width on wide windows.
-const EDITOR_MAX_WIDTH: f32 = 900.0;
-const FILE_LIST_HEIGHT: f32 = 260.0;
+/// The task editor's content is kept to a usable width on very wide windows.
+const EDITOR_MAX_WIDTH: f32 = 1320.0;
+/// Below this width the editor stacks its two panels and scrolls.
+const TWO_COLUMN_MIN_WIDTH: f32 = 760.0;
+const PANEL_GAP: f32 = 14.0;
+/// Share of the width the file panel gets, beside settings or a video preview.
+const FILES_SHARE: f32 = 0.46;
+const FILES_SHARE_BESIDE_PREVIEW: f32 = 0.34;
+const MIN_DROP_HEIGHT: f32 = 120.0;
+/// Below this panel width "Add folder" and "Clear list" show only their icon.
+const COMPACT_BUTTONS_WIDTH: f32 = 460.0;
+/// Sizes used when the panels are stacked on narrow windows.
+const STACKED_DROP_HEIGHT: f32 = 170.0;
+const STACKED_LIST_HEIGHT: f32 = 260.0;
+const STACKED_PREVIEW_HEIGHT: f32 = 260.0;
+/// Room left under the inline video for its controls and the options below it.
+const PREVIEW_RESERVE_CLIP: f32 = 250.0;
+const PREVIEW_RESERVE_AREA: f32 = 230.0;
+const MIN_PREVIEW_HEIGHT: f32 = 140.0;
 const FILE_TILE: f32 = 32.0;
 /// Only this many files of one batch are probed for their length.
 const MAX_PROBED_FILES: usize = 200;
@@ -340,6 +356,8 @@ impl MuxrApp {
                 self.files.clear();
                 self.url.clear();
                 self.settings.options.edit = Edit::default();
+                // Back to the tools, where the queue shows the new jobs.
+                self.in_editor = false;
                 // "Start recording" and "Download" mean now; everything else waits for Start.
                 if self.settings.start_on_add || matches!(self.tool, Tool::Record | Tool::Download)
                 {
@@ -860,18 +878,96 @@ impl MuxrApp {
 
     // ── Task editor ─────────────────────────────────────────────────────
 
+    /// The tool window: files on the left, settings (or the video) on the right,
+    /// sized to the window so nothing scrolls except long lists.
     fn task_editor(&mut self, ui: &mut egui::Ui) {
-        let p = theme::palette(ui);
-        let back = icons::label(icons::CARET_LEFT, self.tool.category().label());
-        if widgets::button(ui, None, &back, Kind::Ghost, Size::Small, true).clicked() {
-            self.in_editor = false;
+        self.editor_header(ui);
+        ui.add_space(12.0);
+        let (title, help) = self.input_heading();
+        let input_done = self.input_missing().is_none();
+        let size = ui.available_size();
+        match self.settings_heading() {
+            None => step_panel(ui, size, 1, input_done, title, &help, |ui| {
+                self.input_ui(ui, true);
+            }),
+            Some((settings_title, settings_help)) if size.x >= TWO_COLUMN_MIN_WIDTH => {
+                let preview = inline_preview_mode(self.tool);
+                let share = if preview.is_some() {
+                    FILES_SHARE_BESIDE_PREVIEW
+                } else {
+                    FILES_SHARE
+                };
+                let left = ((size.x - PANEL_GAP) * share).floor();
+                let right = size.x - PANEL_GAP - left;
+                ui.horizontal_top(|ui| {
+                    let files = egui::vec2(left, size.y);
+                    step_panel(ui, files, 1, input_done, title, &help, |ui| {
+                        self.input_ui(ui, true);
+                    });
+                    ui.add_space(PANEL_GAP - ui.spacing().item_spacing.x);
+                    let settings = egui::vec2(right, size.y);
+                    step_panel(
+                        ui,
+                        settings,
+                        2,
+                        false,
+                        settings_title,
+                        settings_help,
+                        |ui| {
+                            let reserve = match preview {
+                                Some(mode) if mode.clip => PREVIEW_RESERVE_CLIP,
+                                _ => PREVIEW_RESERVE_AREA,
+                            };
+                            let preview_height =
+                                (ui.available_height() - reserve).max(MIN_PREVIEW_HEIGHT);
+                            ScrollArea::vertical()
+                                .id_salt("settings_panel")
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| self.settings_step(ui, preview_height));
+                        },
+                    );
+                });
+            }
+            Some((settings_title, settings_help)) => {
+                ScrollArea::vertical()
+                    .id_salt("editor_stacked")
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        step(ui, 1, input_done, title, &help, |ui| {
+                            self.input_ui(ui, false)
+                        });
+                        ui.add_space(12.0);
+                        step(ui, 2, false, settings_title, settings_help, |ui| {
+                            self.settings_step(ui, STACKED_PREVIEW_HEIGHT);
+                        });
+                    });
+            }
         }
-        ui.add_space(6.0);
+    }
+
+    /// One compact row: back to the category, the tool's icon, name and purpose.
+    fn editor_header(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
         ui.horizontal(|ui| {
-            widgets::icon_tile(ui, art::tool(self.tool), 52.0, true);
-            ui.add_space(6.0);
+            if widgets::button(
+                ui,
+                Some(icons::CARET_LEFT),
+                self.tool.category().label(),
+                Kind::Ghost,
+                Size::Small,
+                true,
+            )
+            .on_hover_text(tr("hint.back_to_tools"))
+            .clicked()
+            {
+                self.in_editor = false;
+            }
+            ui.add_space(4.0);
+            widgets::icon_tile(ui, art::tool(self.tool), 40.0, true);
+            ui.add_space(4.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(self.tool_title()).heading().strong());
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.label(RichText::new(self.tool_title()).size(19.0).strong());
                 ui.label(RichText::new(self.tool.description()).color(p.text_weak));
             });
         });
@@ -882,41 +978,35 @@ impl MuxrApp {
         if self.tool.requires().contains(&External::Ffmpeg)
             && self.toolbox.get(External::Ffmpeg).is_none()
         {
-            ui.add_space(10.0);
+            ui.add_space(8.0);
             self.ffmpeg_setup_card(ui);
         }
-        ui.add_space(14.0);
-        let (title, help) = self.input_heading();
-        let input_done = self.input_missing().is_none();
-        step(ui, 1, input_done, title, &help, |ui| {
-            match self.tool.input_kind() {
-                InputKind::Url => self.url_input(ui),
-                InputKind::Device => {
-                    ui.horizontal(|ui| {
-                        ui.label(tr("input.device"));
-                        ui.add(
-                            TextEdit::singleline(&mut self.settings.cd_device).desired_width(220.0),
-                        );
-                    });
-                }
-                InputKind::Capture => {
-                    ui.label(tr("input.capture"));
-                    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                        ui.add_space(4.0);
-                        ui.colored_label(
-                            p.warning,
-                            icons::label(icons::WARNING, tr("warning.wayland_capture")),
-                        );
-                    }
-                }
-                _ => self.file_list(ui),
+    }
+
+    /// The first step's controls. With `fill`, the file list or drop zone takes
+    /// all the height that is left.
+    fn input_ui(&mut self, ui: &mut egui::Ui, fill: bool) {
+        let p = theme::palette(ui);
+        match self.tool.input_kind() {
+            InputKind::Url => self.url_input(ui),
+            InputKind::Device => {
+                ui.horizontal(|ui| {
+                    ui.label(tr("input.device"));
+                    ui.add(TextEdit::singleline(&mut self.settings.cd_device).desired_width(220.0));
+                });
             }
-        });
-        if let Some((title, help)) = self.settings_heading() {
-            ui.add_space(12.0);
-            step(ui, 2, false, title, help, |ui| self.settings_step(ui));
+            InputKind::Capture => {
+                ui.label(tr("input.capture"));
+                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        p.warning,
+                        icons::label(icons::WARNING, tr("warning.wayland_capture")),
+                    );
+                }
+            }
+            _ => self.file_list(ui, fill),
         }
-        ui.add_space(8.0);
     }
 
     /// The first step's title and a sentence on what to add.
@@ -958,9 +1048,9 @@ impl MuxrApp {
         }
     }
 
-    fn settings_step(&mut self, ui: &mut egui::Ui) {
+    fn settings_step(&mut self, ui: &mut egui::Ui, preview_height: f32) {
         if let Some(mode) = inline_preview_mode(self.tool) {
-            self.inline_preview(ui, mode);
+            self.inline_preview(ui, mode, preview_height);
             ui.add_space(12.0);
         }
         egui::Grid::new("options")
@@ -985,7 +1075,7 @@ impl MuxrApp {
     }
 
     /// The video itself, for tools whose main job is picking a part of it.
-    fn inline_preview(&mut self, ui: &mut egui::Ui, mode: PreviewMode) {
+    fn inline_preview(&mut self, ui: &mut egui::Ui, mode: PreviewMode, max_height: f32) {
         let p = theme::palette(ui);
         let Some(ffmpeg) = self.toolbox.get(External::Ffmpeg) else {
             return;
@@ -995,7 +1085,12 @@ impl MuxrApp {
                 .fill(p.sunken)
                 .corner_radius(CornerRadius::same(10))
                 .show(ui, |ui| {
-                    widgets::empty_state(ui, icons::EYE, tr("preview.add_file_first"), 140.0);
+                    widgets::empty_state(
+                        ui,
+                        icons::EYE,
+                        tr("preview.add_file_first"),
+                        max_height.min(240.0),
+                    );
                 });
             return;
         }
@@ -1008,13 +1103,10 @@ impl MuxrApp {
                 combo(ui, "preview_file", &mut self.preview_index, &choices, |i| {
                     file_name(&files[i])
                 });
+                ui.label(RichText::new(icons::INFO).color(p.text_weak))
+                    .on_hover_text(tr("preview.same_for_all"));
             });
-            ui.label(
-                RichText::new(tr("preview.same_for_all"))
-                    .small()
-                    .color(p.text_weak),
-            );
-            ui.add_space(6.0);
+            ui.add_space(4.0);
         }
         let path = &self.files[self.preview_index];
         if self.preview.as_ref().is_none_or(|v| v.path() != path) {
@@ -1026,13 +1118,13 @@ impl MuxrApp {
         let opts = &mut self.settings.options;
         if self.tool == Tool::Delogo {
             let mut area = Some(opts.delogo);
-            preview.inline(ui, &mut opts.edit, &mut area, mode);
+            preview.inline(ui, &mut opts.edit, &mut area, mode, max_height);
             if let Some(area) = area {
                 opts.delogo = area;
             }
         } else {
             let mut crop = opts.edit.crop.take();
-            preview.inline(ui, &mut opts.edit, &mut crop, mode);
+            preview.inline(ui, &mut opts.edit, &mut crop, mode, max_height);
             opts.edit.crop = crop;
         }
     }
@@ -1099,11 +1191,21 @@ impl MuxrApp {
         );
     }
 
-    fn file_list(&mut self, ui: &mut egui::Ui) {
+    /// The add buttons, then the files, or a drop zone while there are none.
+    /// With `fill`, the list or drop zone uses all the remaining height.
+    fn file_list(&mut self, ui: &mut egui::Ui, fill: bool) {
         let kind = self.tool.input_kind();
         let p = theme::palette(ui);
         let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
         let roles = slot_roles(self.tool);
+        self.add_buttons(ui);
+        ui.add_space(8.0);
+        let (drop_height, list_height) = if fill {
+            let left = (ui.available_height() - 6.0).max(MIN_DROP_HEIGHT);
+            (left, left)
+        } else {
+            (STACKED_DROP_HEIGHT, STACKED_LIST_HEIGHT)
+        };
         if self.files.is_empty() && roles.is_none() {
             let (icon, title) = if kind.picks_folders() {
                 (icons::FOLDER_PLUS, tr("drop.title_folders"))
@@ -1117,14 +1219,13 @@ impl MuxrApp {
                 tr("drop.subtitle"),
                 &formats_line(kind),
                 hovering,
+                drop_height,
             )
             .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
             .clicked()
             {
                 self.pick_files();
             }
-            ui.add_space(8.0);
-            self.add_buttons(ui);
             return;
         }
 
@@ -1148,7 +1249,7 @@ impl MuxrApp {
             .show(ui, |ui| {
                 ScrollArea::vertical()
                     .id_salt("file_list")
-                    .max_height(FILE_LIST_HEIGHT)
+                    .max_height(list_height)
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 6.0;
                         for (i, path) in self.files.iter().enumerate() {
@@ -1177,8 +1278,6 @@ impl MuxrApp {
             Some(FileAction::Add) => self.pick_files(),
             None => {}
         }
-        ui.add_space(8.0);
-        self.add_buttons(ui);
     }
 
     /// "Add more", "Add folder", "Clear list" and a short summary of the list.
@@ -1186,12 +1285,16 @@ impl MuxrApp {
         let p = theme::palette(ui);
         let kind = self.tool.input_kind();
         let has_files = !self.files.is_empty();
+        // In a narrow file panel the secondary buttons show only their icon.
+        let compact = ui.available_width() < COMPACT_BUTTONS_WIDTH;
+        let text = |label: &'static str| if compact { "" } else { label };
         ui.horizontal(|ui| {
-            if has_files {
-                let label = if kind.picks_folders() {
-                    tr("action.add_more_folders")
-                } else {
-                    tr("action.add_more")
+            {
+                let label = match (kind.picks_folders(), has_files) {
+                    (true, false) => tr("action.add_folders"),
+                    (true, true) => tr("action.add_more_folders"),
+                    (false, false) => tr("action.add_files"),
+                    (false, true) => tr("action.add_more"),
                 };
                 if widgets::button(
                     ui,
@@ -1227,12 +1330,16 @@ impl MuxrApp {
                 && widgets::button(
                     ui,
                     Some(icons::FOLDER_PLUS),
-                    tr("action.add_folder_scan"),
+                    text(tr("action.add_folder_scan")),
                     Kind::Ghost,
                     Size::Regular,
                     true,
                 )
-                .on_hover_text(tr("hint.add_folder_scan"))
+                .on_hover_text(format!(
+                    "{}\n{}",
+                    tr("action.add_folder_scan"),
+                    tr("hint.add_folder_scan")
+                ))
                 .clicked()
             {
                 self.add_folder();
@@ -1241,21 +1348,24 @@ impl MuxrApp {
                 && widgets::button(
                     ui,
                     Some(icons::BROOM),
-                    tr("action.clear"),
+                    text(tr("action.clear")),
                     Kind::Ghost,
                     Size::Regular,
                     true,
                 )
+                .on_hover_text(tr("action.clear"))
                 .clicked()
             {
                 self.files.clear();
             }
-            if has_files {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(self.list_summary()).color(p.text_weak));
-                });
-            }
         });
+        if has_files {
+            ui.label(
+                RichText::new(self.list_summary())
+                    .small()
+                    .color(p.text_weak),
+            );
+        }
     }
 
     /// "3 files · 12:30 in total" (the length only once every file is known).
@@ -1517,7 +1627,16 @@ impl MuxrApp {
                 });
             }
             Tool::Trim => {
-                trim_rows(ui, &mut opts.edit);
+                row_hint(ui, tr("option.clip_times"), tr("hint.timestamp"), |ui| {
+                    let edit = &mut opts.edit;
+                    for (label, text) in [
+                        (tr("option.start"), &mut edit.trim_start),
+                        (tr("option.end_short"), &mut edit.trim_end),
+                    ] {
+                        ui.label(RichText::new(label).weak());
+                        ui.add(TextEdit::singleline(text).desired_width(110.0));
+                    }
+                });
                 row_hint(ui, tr("option.mode"), tr("hint.stream_copy"), |ui| {
                     ui.checkbox(&mut opts.stream_copy, tr("option.stream_copy"));
                 });
@@ -2371,20 +2490,55 @@ fn step(
     content: impl FnOnce(&mut egui::Ui),
 ) {
     card(ui, |ui| {
-        let p = theme::palette(ui);
-        ui.horizontal(|ui| {
-            widgets::step_badge(ui, number, done);
-            ui.add_space(4.0);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(RichText::new(title).strong().size(16.5));
-                if !help.is_empty() {
-                    ui.label(RichText::new(help).color(p.text_weak));
-                }
-            });
-        });
+        step_header(ui, number, done, title, help);
         ui.add_space(12.0);
         content(ui);
+    });
+}
+
+/// Like [`step`], as a card of exactly `size` for one side of the editor.
+fn step_panel(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    number: usize,
+    done: bool,
+    title: &str,
+    help: &str,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    let p = theme::palette(ui);
+    let margin = 14;
+    // The frame's margin and stroke on both sides.
+    let inner = size - egui::Vec2::splat(f32::from(margin) * 2.0 + 2.0);
+    ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), |ui| {
+        egui::Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+            .inner_margin(Margin::same(margin))
+            .show(ui, |ui| {
+                ui.set_min_size(inner);
+                ui.set_max_size(inner);
+                step_header(ui, number, done, title, help);
+                ui.add_space(10.0);
+                content(ui);
+            });
+    });
+}
+
+/// A step's badge, title and one-line explanation.
+fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: &str) {
+    let p = theme::palette(ui);
+    ui.horizontal(|ui| {
+        widgets::step_badge(ui, number, done);
+        ui.add_space(4.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(RichText::new(title).strong().size(16.5));
+            if !help.is_empty() {
+                ui.label(RichText::new(help).color(p.text_weak));
+            }
+        });
     });
 }
 
@@ -2961,23 +3115,27 @@ impl eframe::App for MuxrApp {
         egui::Panel::top("toolbar")
             .frame(bar(p.surface).stroke(Stroke::new(1.0, p.border)))
             .show(ui, |ui| self.toolbar(ui));
-        egui::Panel::left("tools")
-            .resizable(true)
-            .default_size(SIDEBAR_WIDTH)
-            .frame(bar(p.panel))
-            .show(ui, |ui| self.sidebar(ui));
-        // An empty queue is a single line, leaving the room to the editor.
-        if self.queue.jobs().is_empty() {
-            egui::Panel::bottom("queue_empty")
-                .resizable(false)
-                .frame(bar(p.surface))
-                .show(ui, |ui| self.queue_panel(ui));
-        } else {
-            egui::Panel::bottom("queue")
+        // Like a tool dialog, an open tool gets the whole window;
+        // the sidebar and queue come back once its jobs are added.
+        if !self.in_editor {
+            egui::Panel::left("tools")
                 .resizable(true)
-                .default_size(QUEUE_HEIGHT)
-                .frame(bar(p.surface))
-                .show(ui, |ui| self.queue_panel(ui));
+                .default_size(SIDEBAR_WIDTH)
+                .frame(bar(p.panel))
+                .show(ui, |ui| self.sidebar(ui));
+            // An empty queue is a single line.
+            if self.queue.jobs().is_empty() {
+                egui::Panel::bottom("queue_empty")
+                    .resizable(false)
+                    .frame(bar(p.surface))
+                    .show(ui, |ui| self.queue_panel(ui));
+            } else {
+                egui::Panel::bottom("queue")
+                    .resizable(true)
+                    .default_size(QUEUE_HEIGHT)
+                    .frame(bar(p.surface))
+                    .show(ui, |ui| self.queue_panel(ui));
+            }
         }
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let rect = ui.max_rect();
@@ -2997,15 +3155,13 @@ impl eframe::App for MuxrApp {
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
-                    ScrollArea::vertical()
-                        .auto_shrink([false; 2])
-                        .show(ui, |ui| {
-                            if self.in_editor {
-                                centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
-                            } else {
-                                self.tool_grid(ui);
-                            }
-                        });
+                    if self.in_editor {
+                        centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
+                    } else {
+                        ScrollArea::vertical()
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| self.tool_grid(ui));
+                    }
                 });
         });
         self.settings_window(&ctx);

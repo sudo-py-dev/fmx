@@ -273,7 +273,7 @@
   "desc.pdf_to_excel": "Transforme les tableaux et le texte d’un PDF en classeur Excel, une feuille par page.",
   "desc.bluray_to_video": "Extrait un Blu-ray non chiffré (dossier du disque ou ISO) vers un fichier vidéo.",
   "desc.disc_to_iso": "Copie un disque entier depuis un lecteur vers une image ISO.",
-  "desc.crop": "Coupe les bords de l’image. Tracez la zone dans l’aperçu (bouton œil) ou saisissez-la.",
+  "desc.crop": "Coupe les bords de l’image. Tracez sur la vidéo la zone à garder, ou saisissez-la.",
   "desc.add_subtitles": "Ajoute un fichier de sous-titres comme piste sélectionnable, sans réencodage (sortie : MKV).",
   "desc.extract_subtitles": "Enregistre la première piste de sous-titres texte au format SRT.",
   "error.no_crop": "Tracez ou saisissez d’abord une zone de recadrage.",
@@ -370,5 +370,8 @@
   "files.total_length": "{length} au total",
   "ready.summary_one": "Prêt : 1 tâche sera ajoutée à la file et enregistrée {where}.",
   "notice.queued_press_start": "Tâches ajoutées : {count}. Cliquez sur Démarrer pour lancer.",
-  "hint.start_empty": "Ajoutez d’abord des tâches à la file, puis cliquez sur Démarrer."
+  "hint.start_empty": "Ajoutez d’abord des tâches à la file, puis cliquez sur Démarrer.",
+  "hint.back_to_tools": "Retour à la liste des outils",
+  "option.clip_times": "Temps",
+  "option.end_short": "Fin"
 }

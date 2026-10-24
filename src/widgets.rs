@@ -17,7 +17,6 @@ const LARGE_BUTTON_HEIGHT: f32 = 40.0;
 const SEGMENT_HEIGHT: f32 = 30.0;
 const SEGMENT_PAD: f32 = 12.0;
 const STEP_BADGE: f32 = 28.0;
-const DROP_ZONE_HEIGHT: f32 = 170.0;
 
 const FOCUS_RING: f32 = 2.0;
 const ICON_GAP: f32 = 7.0;
@@ -570,9 +569,10 @@ pub fn drop_zone(
     subtitle: &str,
     detail: &str,
     files_hovering: bool,
+    height: f32,
 ) -> Response {
     let p = theme::palette(ui);
-    let size = Vec2::new(ui.available_width(), DROP_ZONE_HEIGHT);
+    let size = Vec2::new(ui.available_width(), height);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
     if ui.is_rect_visible(rect) {

@@ -28,8 +28,6 @@ const MAX_FRAME_BYTES: u64 = 64 << 20;
 const DISPLAY_MAX_WIDTH: f32 = 760.0;
 /// Tall (portrait) videos are shown at most this high in the window.
 const DISPLAY_MAX_HEIGHT: f32 = 430.0;
-/// Inside the editor the picture stays smaller, so the timeline fits on screen.
-const INLINE_MAX_HEIGHT: f32 = 260.0;
 const MIN_RECT_SIDE: u32 = 8;
 const TIMELINE_HEIGHT: f32 = 38.0;
 /// How close (in points) the pointer must be to grab a start/end handle.
@@ -266,16 +264,17 @@ impl Preview {
     }
 
     /// Draws the preview inside the current layout, for tools whose main job is
-    /// picking a part of the video.
+    /// picking a part of the video. The picture is at most `max_height` tall.
     pub fn inline(
         &mut self,
         ui: &mut egui::Ui,
         edit: &mut Edit,
         rect: &mut Option<Rect>,
         mode: Mode,
+        max_height: f32,
     ) {
         self.poll(ui.ctx());
-        self.contents(ui, edit, rect, mode, INLINE_MAX_HEIGHT);
+        self.contents(ui, edit, rect, mode, max_height);
     }
 
     fn contents(
@@ -384,7 +383,8 @@ impl Preview {
         let duration = self.duration();
         self.timeline(ui, width, edit, mode.clip);
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        // Seeking, the clock and the set/clear buttons share one row to save height.
+        ui.horizontal_wrapped(|ui| {
             for step in NUDGES {
                 let label = if step < 0.0 {
                     format!("\u{2212}{} s", -step)
@@ -407,9 +407,7 @@ impl Preview {
                 ))
                 .monospace(),
             );
-        });
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
+            ui.add_space(10.0);
             if mode.clip {
                 if widgets::button(
                     ui,
