@@ -88,7 +88,7 @@
   "notice.skipped": "Fichiers ignorés (non pris en charge ou absents) : {count}",
   "queue.title": "File d’attente",
   "queue.summary": "{done} sur {total} terminées",
-  "queue.paused": "En pause — cliquez sur Démarrer",
+  "queue.paused": "En attente — cliquez sur Démarrer",
   "queue.empty": "Aucune tâche pour l’instant. Choisissez un outil, ajoutez des fichiers et cliquez sur « Ajouter à la file ».",
   "queue.more_files": "{name} + {count} autres",
   "status.queued": "En attente",
@@ -368,5 +368,7 @@
   "step.crop": "Choisissez la zone à garder",
   "step.delogo": "Repérez le logo",
   "files.total_length": "{length} au total",
-  "ready.summary_one": "Prêt : 1 tâche sera ajoutée à la file et enregistrée {where}."
+  "ready.summary_one": "Prêt : 1 tâche sera ajoutée à la file et enregistrée {where}.",
+  "notice.queued_press_start": "Tâches ajoutées : {count}. Cliquez sur Démarrer pour lancer.",
+  "hint.start_empty": "Ajoutez d’abord des tâches à la file, puis cliquez sur Démarrer."
 }

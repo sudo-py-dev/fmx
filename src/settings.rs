@@ -19,7 +19,9 @@ pub struct Settings {
     pub parallel_jobs: usize,
     /// `None` searches next to the app, then `PATH`.
     pub ffmpeg_path: Option<PathBuf>,
-    pub auto_start: bool,
+    /// Start jobs as soon as they are added instead of waiting for Start.
+    /// (Renamed from `auto_start`, which defaulted to on, so old saves start paused.)
+    pub start_on_add: bool,
     pub options: Options,
     pub last_tool: Tool,
     /// UI language code; `None` follows the system locale.
@@ -51,7 +53,7 @@ impl Default for Settings {
             output_dir: None,
             parallel_jobs: default_parallel_jobs(),
             ffmpeg_path: None,
-            auto_start: true,
+            start_on_add: false,
             options: Options::default(),
             last_tool: Tool::ToVideo(VideoFormat::Mp4),
             language: None,
@@ -69,9 +71,16 @@ mod tests {
 
     #[test]
     fn missing_fields_fall_back_to_defaults() {
-        let s: Settings = serde_json::from_str(r#"{"auto_start": false}"#).expect("parse");
-        assert!(!s.auto_start);
+        let s: Settings = serde_json::from_str(r#"{"start_on_add": true}"#).expect("parse");
+        assert!(s.start_on_add);
         assert!(s.parallel_jobs >= 1);
         assert_eq!(s.options, Options::default());
+    }
+
+    #[test]
+    fn jobs_wait_for_start_by_default() {
+        // Saves from before the rename carried `auto_start: true`; it must not apply.
+        let s: Settings = serde_json::from_str(r#"{"auto_start": true}"#).expect("parse");
+        assert!(!s.start_on_add);
     }
 }

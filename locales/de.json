@@ -88,7 +88,7 @@
   "notice.skipped": "Übersprungene Dateien (nicht unterstützt oder fehlend): {count}",
   "queue.title": "Warteschlange",
   "queue.summary": "{done} von {total} fertig",
-  "queue.paused": "Pausiert – auf Starten klicken",
+  "queue.paused": "Wartet – auf Starten klicken",
   "queue.empty": "Noch keine Aufträge. Wähle ein Werkzeug, füge Dateien hinzu und klicke auf „Zur Warteschlange“.",
   "queue.more_files": "{name} + {count} weitere",
   "status.queued": "Wartet",
@@ -368,5 +368,7 @@
   "step.crop": "Bereich zum Behalten wählen",
   "step.delogo": "Logo markieren",
   "files.total_length": "{length} insgesamt",
-  "ready.summary_one": "Bereit: 1 Auftrag kommt in die Warteschlange und wird {where} gespeichert."
+  "ready.summary_one": "Bereit: 1 Auftrag kommt in die Warteschlange und wird {where} gespeichert.",
+  "notice.queued_press_start": "Aufträge hinzugefügt: {count}. Klicke auf Starten, um zu beginnen.",
+  "hint.start_empty": "Füge zuerst Aufträge hinzu und klicke dann auf Starten."
 }

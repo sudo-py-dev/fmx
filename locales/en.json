@@ -89,7 +89,7 @@
   "notice.skipped": "Skipped unsupported or missing files: {count}",
   "queue.title": "Queue",
   "queue.summary": "{done} of {total} done",
-  "queue.paused": "Paused — press Start",
+  "queue.paused": "Waiting — press Start to begin",
   "queue.empty": "No jobs yet. Pick a tool, add files and press “Add to queue”.",
   "queue.more_files": "{name} + {count} more",
   "status.queued": "Waiting",
@@ -369,5 +369,7 @@
   "step.crop": "Choose the area to keep",
   "step.delogo": "Mark the logo",
   "files.total_length": "{length} in total",
-  "ready.summary_one": "Ready: 1 job will be added to the queue and saved {where}."
+  "ready.summary_one": "Ready: 1 job will be added to the queue and saved {where}.",
+  "notice.queued_press_start": "Jobs added: {count}. Press Start to begin.",
+  "hint.start_empty": "Add jobs to the queue first, then press Start."
 }

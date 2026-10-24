@@ -136,7 +136,7 @@ impl MuxrApp {
         let (probe_tx, probe_rx) = mpsc::channel();
         let mut app = Self {
             tool: settings.last_tool,
-            queue: Queue::new(settings.auto_start),
+            queue: Queue::new(),
             toolbox,
             files: Vec::new(),
             url: String::new(),
@@ -340,13 +340,18 @@ impl MuxrApp {
                 self.files.clear();
                 self.url.clear();
                 self.settings.options.edit = Edit::default();
-                if self.settings.auto_start {
+                // "Start recording" and "Download" mean now; everything else waits for Start.
+                if self.settings.start_on_add || matches!(self.tool, Tool::Record | Tool::Download)
+                {
                     self.queue.is_running = true;
                 }
-                self.toasts.push(
-                    ToastKind::Success,
-                    trf("notice.queued", &[("count", &count)]),
-                );
+                let key = if self.queue.is_running {
+                    "notice.queued"
+                } else {
+                    "notice.queued_press_start"
+                };
+                self.toasts
+                    .push(ToastKind::Success, trf(key, &[("count", &count)]));
             }
             Err(e) => self.toasts.push(ToastKind::Error, e.to_string()),
         }
@@ -599,9 +604,24 @@ impl MuxrApp {
                     Kind::Primary,
                 )
             };
-            if widgets::button_tinted(ui, Some(icon), Some(tint), label, kind, Size::Regular, true)
-                .on_hover_text(hint)
-                .clicked()
+            // Start needs something waiting; Pause is always available while running.
+            let enabled = self.queue.is_running || counts.queued > 0;
+            let hint = if enabled {
+                hint
+            } else {
+                tr("hint.start_empty")
+            };
+            if widgets::button_tinted(
+                ui,
+                Some(icon),
+                Some(tint),
+                label,
+                kind,
+                Size::Regular,
+                enabled,
+            )
+            .on_hover_text(hint)
+            .clicked()
             {
                 self.queue.is_running = !self.queue.is_running;
             }
@@ -2005,7 +2025,7 @@ impl MuxrApp {
                             );
                         });
                         row(ui, tr("settings.auto_start"), |ui| {
-                            ui.checkbox(&mut self.settings.auto_start, "");
+                            ui.checkbox(&mut self.settings.start_on_add, "");
                         });
                         row(ui, tr("settings.notify"), |ui| {
                             ui.checkbox(&mut self.settings.notify_when_done, "");

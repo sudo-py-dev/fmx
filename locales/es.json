@@ -88,7 +88,7 @@
   "notice.skipped": "Archivos omitidos (no compatibles o inexistentes): {count}",
   "queue.title": "Cola",
   "queue.summary": "{done} de {total} terminados",
-  "queue.paused": "En pausa: pulsa Iniciar",
+  "queue.paused": "En espera: pulsa Iniciar para empezar",
   "queue.empty": "Aún no hay tareas. Elige una herramienta, añade archivos y pulsa «Añadir a la cola».",
   "queue.more_files": "{name} y {count} más",
   "status.queued": "En espera",
@@ -368,5 +368,7 @@
   "step.crop": "Elige la zona que quieres conservar",
   "step.delogo": "Marca el logotipo",
   "files.total_length": "{length} en total",
-  "ready.summary_one": "Listo: se añadirá 1 tarea a la cola y se guardará {where}."
+  "ready.summary_one": "Listo: se añadirá 1 tarea a la cola y se guardará {where}.",
+  "notice.queued_press_start": "Trabajos añadidos: {count}. Pulsa Iniciar para empezar.",
+  "hint.start_empty": "Primero añade trabajos a la cola y luego pulsa Iniciar."
 }

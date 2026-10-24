@@ -70,7 +70,8 @@ impl Job {
 }
 
 impl Queue {
-    pub fn new(is_running: bool) -> Self {
+    /// A new queue is paused: jobs wait until Start is pressed.
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
             jobs: Vec::new(),
@@ -78,7 +79,7 @@ impl Queue {
             tx,
             rx,
             workers: Vec::new(),
-            is_running,
+            is_running: false,
         }
     }
 
@@ -181,6 +182,11 @@ impl Queue {
         for id in ids {
             self.start(id, toolbox.clone(), notify.clone());
         }
+        // Once everything has run, go back to waiting for Start.
+        let counts = self.counts();
+        if counts.queued + counts.running == 0 {
+            self.is_running = false;
+        }
     }
 
     fn apply(&mut self, event: Event) {
@@ -273,7 +279,7 @@ mod tests {
     #[test]
     fn runs_jobs_to_completion_in_parallel_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut queue = Queue::new(false);
+        let mut queue = Queue::new();
         for name in ["a", "b", "c"] {
             queue.push(spec(dir.path(), name));
         }
@@ -284,11 +290,13 @@ mod tests {
         run_until_idle(&mut queue, &notify);
         assert_eq!(queue.counts().done, 3);
         assert!(dir.path().join("b.bmp").is_file());
+        queue.pump(2, &Toolbox::default(), &notify);
+        assert!(!queue.is_running, "a finished queue waits for Start again");
     }
 
     #[test]
     fn missing_ffmpeg_fails_media_jobs_with_message() {
-        let mut queue = Queue::new(false);
+        let mut queue = Queue::new();
         queue.push(JobSpec {
             tool: Tool::Trim,
             inputs: vec![PathBuf::from("/nope.mp4")],
@@ -306,7 +314,7 @@ mod tests {
 
     #[test]
     fn cancelling_queued_job_and_clearing() {
-        let mut queue = Queue::new(false);
+        let mut queue = Queue::new();
         let dir = tempfile::tempdir().expect("tempdir");
         queue.push(spec(dir.path(), "x"));
         queue.cancel(1);
