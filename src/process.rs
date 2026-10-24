@@ -34,6 +34,24 @@ pub fn command(program: &Path) -> Command {
     cmd
 }
 
+/// Starts a program that runs on its own (a file opener, a notification),
+/// with its output discarded so it never floods our terminal. A background
+/// thread waits for it so no zombie process is left behind.
+pub fn spawn_detached<S: AsRef<std::ffi::OsStr>>(
+    program: &str,
+    args: impl IntoIterator<Item = S>,
+) -> std::io::Result<()> {
+    let mut child = command(Path::new(program))
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// What cancelling means for a running program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopMode {

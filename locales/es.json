@@ -373,5 +373,16 @@
   "hint.start_empty": "Primero añade trabajos a la cola y luego pulsa Iniciar.",
   "hint.back_to_tools": "Volver a la lista de herramientas",
   "option.clip_times": "Tiempos",
-  "option.end_short": "Fin"
+  "option.end_short": "Fin",
+  "settings.section_general": "GENERAL",
+  "settings.section_queue": "COLA",
+  "settings.section_programs": "PROGRAMAS",
+  "settings.parallel_hint": "Cuántos trabajos se ejecutan a la vez.",
+  "settings.start_label": "Inicio",
+  "settings.notify_label": "Notificaciones",
+  "settings.name_tag_hint": "Se añade a los nombres de salida, p. ej. video_converted.mp4",
+  "settings.programs_hint": "Programas opcionales que activan más herramientas. Instálalos y pulsa Buscar de nuevo.",
+  "settings.program_found": "Instalado",
+  "settings.program_missing": "No instalado",
+  "settings.ffmpeg_found": "Listo"
 }

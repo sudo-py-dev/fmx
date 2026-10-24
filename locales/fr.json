@@ -373,5 +373,16 @@
   "hint.start_empty": "Ajoutez d’abord des tâches à la file, puis cliquez sur Démarrer.",
   "hint.back_to_tools": "Retour à la liste des outils",
   "option.clip_times": "Temps",
-  "option.end_short": "Fin"
+  "option.end_short": "Fin",
+  "settings.section_general": "GÉNÉRAL",
+  "settings.section_queue": "FILE D’ATTENTE",
+  "settings.section_programs": "PROGRAMMES",
+  "settings.parallel_hint": "Nombre de tâches exécutées en même temps.",
+  "settings.start_label": "Démarrage",
+  "settings.notify_label": "Notifications",
+  "settings.name_tag_hint": "Ajouté aux noms de sortie, p. ex. video_converted.mp4",
+  "settings.programs_hint": "Programmes facultatifs qui activent d’autres outils. Installez-les, puis cliquez sur Rechercher à nouveau.",
+  "settings.program_found": "Installé",
+  "settings.program_missing": "Non installé",
+  "settings.ffmpeg_found": "Prêt"
 }

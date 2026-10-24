@@ -26,6 +26,7 @@ use crate::options::{
     Resolution, Rotation,
 };
 use crate::preview::{Mode as PreviewMode, Preview};
+use crate::process::spawn_detached;
 use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::theme::{self, MOTION, ThemeChoice};
@@ -65,6 +66,11 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "mka", "wv", "mp2", "mmf", "m4r",
 ];
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
+const SETTINGS_WIDTH: f32 = 520.0;
+/// Every settings grid uses this label width, so all controls line up.
+const SETTINGS_LABEL_WIDTH: f32 = 210.0;
+/// Space kept free above and below the Settings window.
+const SETTINGS_SCREEN_MARGIN: f32 = 140.0;
 /// Task-list files larger than this are refused.
 const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
 /// Folder scans stop after this many files.
@@ -2108,61 +2114,87 @@ impl MuxrApp {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         let mut theme_changed = false;
+        let max_height = (ctx.content_rect().height() - SETTINGS_SCREEN_MARGIN).max(200.0);
         egui::Window::new(icons::label(icons::GEAR, tr("settings.title")))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                egui::Grid::new("settings")
-                    .num_columns(2)
-                    .spacing([16.0, 12.0])
+                ScrollArea::vertical()
+                    .max_height(max_height)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        row(ui, tr("settings.language"), |ui| self.language_picker(ui));
-                        row(ui, tr("settings.theme"), |ui| {
-                            let before = self.settings.theme;
-                            combo(
+                        ui.set_width(SETTINGS_WIDTH);
+                        settings_section(ui, tr("settings.section_general"), true);
+                        settings_grid(ui, "settings_general", |ui| {
+                            row(ui, tr("settings.language"), |ui| self.language_picker(ui));
+                            row(ui, tr("settings.theme"), |ui| {
+                                let choices = ThemeChoice::ALL.map(|t| (t, t.label()));
+                                theme_changed |=
+                                    widgets::segmented(ui, &mut self.settings.theme, &choices);
+                            });
+                            row(ui, tr("settings.motion"), |ui| {
+                                theme_changed |= ui
+                                    .checkbox(
+                                        &mut self.settings.reduce_motion,
+                                        tr("settings.reduce_motion"),
+                                    )
+                                    .changed();
+                            });
+                        });
+                        settings_section(ui, tr("settings.section_queue"), false);
+                        settings_grid(ui, "settings_queue", |ui| {
+                            row_hint(
                                 ui,
-                                "theme",
-                                &mut self.settings.theme,
-                                &ThemeChoice::ALL,
-                                |t| t.label().to_owned(),
+                                tr("settings.parallel"),
+                                tr("settings.parallel_hint"),
+                                |ui| {
+                                    ui.add(
+                                        DragValue::new(&mut self.settings.parallel_jobs)
+                                            .range(1..=MAX_PARALLEL_JOBS),
+                                    );
+                                },
                             );
-                            theme_changed |= before != self.settings.theme;
-                        });
-                        row(ui, tr("settings.motion"), |ui| {
-                            theme_changed |= ui
-                                .checkbox(
-                                    &mut self.settings.reduce_motion,
-                                    tr("settings.reduce_motion"),
-                                )
-                                .changed();
-                        });
-                        row(ui, tr("settings.parallel"), |ui| {
-                            ui.add(
-                                DragValue::new(&mut self.settings.parallel_jobs)
-                                    .range(1..=MAX_PARALLEL_JOBS),
+                            row(ui, tr("settings.start_label"), |ui| {
+                                ui.checkbox(
+                                    &mut self.settings.start_on_add,
+                                    tr("settings.auto_start"),
+                                );
+                            });
+                            row(ui, tr("settings.notify_label"), |ui| {
+                                ui.checkbox(
+                                    &mut self.settings.notify_when_done,
+                                    tr("settings.notify"),
+                                );
+                            });
+                            row_hint(
+                                ui,
+                                tr("settings.name_tag"),
+                                tr("settings.name_tag_hint"),
+                                |ui| {
+                                    ui.add(
+                                        TextEdit::singleline(&mut self.settings.options.name_tag)
+                                            .hint_text("_converted")
+                                            .char_limit(options::MAX_NAME_TAG_LEN)
+                                            .desired_width(180.0),
+                                    );
+                                },
                             );
                         });
-                        row(ui, tr("settings.auto_start"), |ui| {
-                            ui.checkbox(&mut self.settings.start_on_add, "");
-                        });
-                        row(ui, tr("settings.notify"), |ui| {
-                            ui.checkbox(&mut self.settings.notify_when_done, "");
-                        });
-                        row(ui, tr("settings.name_tag"), |ui| {
-                            ui.add(
-                                TextEdit::singleline(&mut self.settings.options.name_tag)
-                                    .hint_text("_converted")
-                                    .char_limit(options::MAX_NAME_TAG_LEN)
-                                    .desired_width(160.0),
-                            );
-                        });
-                        row(ui, tr("settings.ffmpeg"), |ui| {
-                            ui.vertical(|ui| self.ffmpeg_setting(ui));
-                        });
-                        row(ui, tr("settings.programs"), |ui| {
-                            ui.vertical(|ui| self.programs_list(ui));
-                        });
+                        settings_section(ui, tr("settings.section_programs"), false);
+                        ui.label(RichText::new(tr("settings.ffmpeg")).strong());
+                        ui.add_space(2.0);
+                        self.ffmpeg_setting(ui);
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(tr("settings.programs")).strong());
+                        ui.label(
+                            RichText::new(tr("settings.programs_hint"))
+                                .small()
+                                .color(theme::palette(ui).text_weak),
+                        );
+                        ui.add_space(4.0);
+                        self.programs_list(ui);
                     });
             });
         self.show_settings = open;
@@ -2200,16 +2232,22 @@ impl MuxrApp {
     fn programs_list(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
         let mut seen = HashSet::new();
-        for ext in External::ALL.into_iter().filter(|e| *e != External::Ffmpeg) {
-            if !seen.insert(ext.name()) {
-                continue;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for ext in External::ALL.into_iter().filter(|e| *e != External::Ffmpeg) {
+                if !seen.insert(ext.name()) {
+                    continue;
+                }
+                if self.toolbox.get(ext).is_some() {
+                    widgets::chip(ui, icons::CHECK_CIRCLE, ext.name(), p.success)
+                        .on_hover_text(tr("settings.program_found"));
+                } else {
+                    widgets::chip(ui, icons::X_CIRCLE, ext.name(), p.text_weak)
+                        .on_hover_text(tr("settings.program_missing"));
+                }
             }
-            if self.toolbox.get(ext).is_some() {
-                widgets::chip(ui, icons::CHECK_CIRCLE, ext.name(), p.success);
-            } else {
-                widgets::chip(ui, icons::X_CIRCLE, ext.name(), p.text_weak);
-            }
-        }
+        });
+        ui.add_space(6.0);
         if widgets::button(
             ui,
             Some(icons::ARROW_CLOCKWISE),
@@ -2346,13 +2384,26 @@ impl MuxrApp {
         let p = theme::palette(ui);
         match self.toolbox.get(External::Ffmpeg) {
             Some(path) => {
-                ui.label(RichText::new(path.display().to_string()).monospace());
+                ui.horizontal(|ui| {
+                    widgets::chip(
+                        ui,
+                        icons::CHECK_CIRCLE,
+                        tr("settings.ffmpeg_found"),
+                        p.success,
+                    );
+                    ui.add(
+                        Label::new(RichText::new(path.display().to_string()).monospace())
+                            .truncate(),
+                    )
+                    .on_hover_text(path.display().to_string());
+                });
             }
             None => {
                 widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
                 self.ffmpeg_install_controls(ui);
             }
         }
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             if widgets::button(
                 ui,
@@ -2540,6 +2591,33 @@ fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: 
             }
         });
     });
+}
+
+/// A titled group of settings, with a divider above all but the first.
+fn settings_section(ui: &mut egui::Ui, title: &str, first: bool) {
+    if !first {
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+    }
+    ui.label(
+        RichText::new(title)
+            .small()
+            .strong()
+            .color(theme::palette(ui).accent),
+    );
+    ui.add_space(6.0);
+}
+
+/// A settings grid whose labels share one fixed-width column.
+fn settings_grid(ui: &mut egui::Ui, id: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .striped(false)
+        .min_col_width(SETTINGS_LABEL_WIDTH)
+        .max_col_width(SETTINGS_WIDTH - SETTINGS_LABEL_WIDTH)
+        .spacing([18.0, 12.0])
+        .show(ui, rows);
 }
 
 /// A small circled position number for ordered lists.
@@ -3035,7 +3113,7 @@ fn opener() -> &'static str {
 
 /// Opens a file with its default application.
 fn open_path(path: &Path) {
-    if let Err(e) = std::process::Command::new(opener()).arg(path).spawn() {
+    if let Err(e) = spawn_detached(opener(), [path]) {
         tracing::warn!(error = %e, "could not open file");
     }
 }
@@ -3060,16 +3138,12 @@ fn desktop_notification(title: &str, body: &str) {
             quote(body),
             quote(title)
         );
-        std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .spawn()
+        spawn_detached("osascript", ["-e", &script])
     } else if cfg!(windows) {
         // No dependency-free toast API; the in-app notification covers Windows.
         return;
     } else {
-        std::process::Command::new("notify-send")
-            .args(["--app-name", title, title, body])
-            .spawn()
+        spawn_detached("notify-send", ["--app-name", title, title, body])
     };
     if let Err(e) = result {
         tracing::debug!(error = %e, "desktop notification unavailable");
@@ -3079,17 +3153,14 @@ fn desktop_notification(title: &str, body: &str) {
 /// Powers the computer off (the user opted in and saw a countdown).
 fn power_off() {
     let result = if cfg!(windows) {
-        std::process::Command::new("shutdown")
-            .args(["/s", "/t", "0"])
-            .spawn()
+        spawn_detached("shutdown", ["/s", "/t", "0"])
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("osascript")
-            .args(["-e", "tell app \"System Events\" to shut down"])
-            .spawn()
+        spawn_detached(
+            "osascript",
+            ["-e", "tell app \"System Events\" to shut down"],
+        )
     } else {
-        std::process::Command::new("systemctl")
-            .arg("poweroff")
-            .spawn()
+        spawn_detached("systemctl", ["poweroff"])
     };
     if let Err(e) = result {
         tracing::warn!(error = %e, "could not shut down");

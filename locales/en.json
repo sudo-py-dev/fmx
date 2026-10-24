@@ -374,5 +374,16 @@
   "hint.start_empty": "Add jobs to the queue first, then press Start.",
   "hint.back_to_tools": "Back to the list of tools",
   "option.clip_times": "Times",
-  "option.end_short": "End"
+  "option.end_short": "End",
+  "settings.section_general": "GENERAL",
+  "settings.section_queue": "QUEUE",
+  "settings.section_programs": "PROGRAMS",
+  "settings.parallel_hint": "How many jobs run at the same time.",
+  "settings.start_label": "Starting",
+  "settings.notify_label": "Notifications",
+  "settings.name_tag_hint": "Added to output names, e.g. video_converted.mp4",
+  "settings.programs_hint": "Optional programs that turn on extra tools. Install them, then press Scan again.",
+  "settings.program_found": "Installed",
+  "settings.program_missing": "Not installed",
+  "settings.ffmpeg_found": "Ready"
 }

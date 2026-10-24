@@ -373,5 +373,16 @@
   "hint.start_empty": "Füge zuerst Aufträge hinzu und klicke dann auf Starten.",
   "hint.back_to_tools": "Zurück zur Werkzeugliste",
   "option.clip_times": "Zeiten",
-  "option.end_short": "Ende"
+  "option.end_short": "Ende",
+  "settings.section_general": "ALLGEMEIN",
+  "settings.section_queue": "WARTESCHLANGE",
+  "settings.section_programs": "PROGRAMME",
+  "settings.parallel_hint": "Wie viele Aufträge gleichzeitig laufen.",
+  "settings.start_label": "Start",
+  "settings.notify_label": "Benachrichtigungen",
+  "settings.name_tag_hint": "Wird an Ausgabenamen angehängt, z. B. video_converted.mp4",
+  "settings.programs_hint": "Optionale Programme für weitere Werkzeuge. Installiere sie und klicke dann auf Erneut suchen.",
+  "settings.program_found": "Installiert",
+  "settings.program_missing": "Nicht installiert",
+  "settings.ffmpeg_found": "Bereit"
 }
