@@ -14,7 +14,7 @@ use eframe::egui::{
 
 use crate::i18n::{tr, trf};
 use crate::icons;
-use crate::options::{Edit, Rect, format_timestamp, parse_timestamp};
+use crate::options::{Edit, Rect, display_time, format_timestamp, parse_timestamp};
 use crate::plan::input_url;
 use crate::probe::MediaInfo;
 use crate::process::{KillOnDrop, command};
@@ -26,7 +26,50 @@ const PREVIEW_WIDTH: u32 = 960;
 /// Cap on the PNG bytes read for one frame.
 const MAX_FRAME_BYTES: u64 = 64 << 20;
 const DISPLAY_MAX_WIDTH: f32 = 760.0;
+/// Tall (portrait) videos are shown at most this high in the window.
+const DISPLAY_MAX_HEIGHT: f32 = 430.0;
+/// Inside the editor the picture stays smaller, so the timeline fits on screen.
+const INLINE_MAX_HEIGHT: f32 = 260.0;
 const MIN_RECT_SIDE: u32 = 8;
+const TIMELINE_HEIGHT: f32 = 38.0;
+/// How close (in points) the pointer must be to grab a start/end handle.
+const HANDLE_GRAB: f32 = 10.0;
+/// The shortest clip the handles allow, in seconds.
+const MIN_CLIP_S: f64 = 0.1;
+/// Seek steps offered under the timeline, in seconds.
+const NUDGES: [f64; 4] = [-5.0, -1.0, 1.0, 5.0];
+
+/// What the preview lets the user set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mode {
+    /// Start and end points of the part to keep.
+    pub clip: bool,
+    /// A rectangle drawn on the picture (crop or logo area).
+    pub area: bool,
+}
+
+impl Mode {
+    pub const CLIP: Self = Self {
+        clip: true,
+        area: false,
+    };
+    pub const AREA: Self = Self {
+        clip: false,
+        area: true,
+    };
+    const BOTH: Self = Self {
+        clip: true,
+        area: true,
+    };
+}
+
+/// What a drag on the timeline moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grab {
+    Playhead,
+    Start,
+    End,
+}
 
 type FrameResult = Result<ColorImage, String>;
 
@@ -41,6 +84,7 @@ pub struct Preview {
     frame_rx: Option<(f64, Receiver<FrameResult>)>,
     error: Option<String>,
     drag_from: Option<Pos2>,
+    grab: Option<Grab>,
 }
 
 /// Decodes one frame at `time` as an egui image.
@@ -135,7 +179,12 @@ impl Preview {
             frame_rx: None,
             error: None,
             drag_from: None,
+            grab: None,
         }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     fn duration(&self) -> f64 {
@@ -210,22 +259,58 @@ impl Preview {
             .open(&mut open)
             .default_width(DISPLAY_MAX_WIDTH + 32.0)
             .resizable(false)
-            .show(ctx, |ui| self.contents(ui, edit, rect));
+            .show(ctx, |ui| {
+                self.contents(ui, edit, rect, Mode::BOTH, DISPLAY_MAX_HEIGHT);
+            });
         open
     }
 
-    fn contents(&mut self, ui: &mut egui::Ui, edit: &mut Edit, rect: &mut Option<Rect>) {
+    /// Draws the preview inside the current layout, for tools whose main job is
+    /// picking a part of the video.
+    pub fn inline(
+        &mut self,
+        ui: &mut egui::Ui,
+        edit: &mut Edit,
+        rect: &mut Option<Rect>,
+        mode: Mode,
+    ) {
+        self.poll(ui.ctx());
+        self.contents(ui, edit, rect, mode, INLINE_MAX_HEIGHT);
+    }
+
+    fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        edit: &mut Edit,
+        rect: &mut Option<Rect>,
+        mode: Mode,
+        max_height: f32,
+    ) {
         let p = theme::palette(ui);
         if let Some(error) = &self.error {
             widgets::chip(ui, icons::WARNING, error, p.danger);
         }
         let Some(source) = self.source_size() else {
-            ui.add(egui::Spinner::new());
+            if self.error.is_none() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label(RichText::new(tr("preview.loading")).color(p.text_weak));
+                });
+            }
             return;
         };
-        let width = ui.available_width().min(DISPLAY_MAX_WIDTH);
-        let height = width * source.1 as f32 / source.0.max(1) as f32;
-        let (shown, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::drag());
+        let aspect = source.0.max(1) as f32 / source.1.max(1) as f32;
+        let width = ui
+            .available_width()
+            .min(DISPLAY_MAX_WIDTH)
+            .min(max_height * aspect);
+        let height = width / aspect;
+        let sense = if mode.area {
+            Sense::drag()
+        } else {
+            Sense::hover()
+        };
+        let (shown, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
         let painter = ui.painter_at(shown);
         painter.rect_filled(shown, CornerRadius::same(6), p.sunken);
         if let Some(texture) = &self.texture {
@@ -288,98 +373,236 @@ impl Preview {
                 StrokeKind::Middle,
             );
         }
-        let response = response.on_hover_cursor(egui::CursorIcon::Crosshair);
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::Role::Image, true, tr("preview.draw_hint"))
-        });
+        if mode.area {
+            let response = response.on_hover_cursor(egui::CursorIcon::Crosshair);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::Role::Image, true, tr("preview.draw_hint"))
+            });
+        }
 
         ui.add_space(8.0);
         let duration = self.duration();
+        self.timeline(ui, width, edit, mode.clip);
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = (width - 140.0).max(120.0);
-            ui.add(egui::Slider::new(&mut self.time, 0.0..=duration.max(0.001)).show_value(false));
+            for step in NUDGES {
+                let label = if step < 0.0 {
+                    format!("\u{2212}{} s", -step)
+                } else {
+                    format!("+{step} s")
+                };
+                if widgets::button(ui, None, &label, Kind::Ghost, Size::Small, true)
+                    .on_hover_text(tr("preview.nudge"))
+                    .clicked()
+                {
+                    self.time = (self.time + step).clamp(0.0, duration);
+                }
+            }
+            ui.add_space(6.0);
             ui.label(
                 RichText::new(format!(
                     "{} / {}",
-                    format_timestamp(self.time),
-                    format_timestamp(duration)
+                    display_time(self.time),
+                    display_time(duration)
                 ))
                 .monospace(),
             );
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            if widgets::button(
-                ui,
-                Some(icons::CARET_UP),
-                tr("preview.set_start"),
-                Kind::Secondary,
-                Size::Regular,
-                true,
-            )
-            .clicked()
-            {
-                edit.trim_start = format_timestamp(self.time);
+            if mode.clip {
+                if widgets::button(
+                    ui,
+                    Some(icons::CARET_RIGHT),
+                    tr("preview.set_start"),
+                    Kind::Secondary,
+                    Size::Regular,
+                    true,
+                )
+                .on_hover_text(tr("preview.set_start_hint"))
+                .clicked()
+                {
+                    edit.trim_start = format_timestamp(self.time);
+                }
+                if widgets::button(
+                    ui,
+                    Some(icons::CARET_LEFT),
+                    tr("preview.set_end"),
+                    Kind::Secondary,
+                    Size::Regular,
+                    true,
+                )
+                .on_hover_text(tr("preview.set_end_hint"))
+                .clicked()
+                {
+                    edit.trim_end = format_timestamp(self.time);
+                }
             }
-            if widgets::button(
-                ui,
-                Some(icons::CARET_DOWN),
-                tr("preview.set_end"),
-                Kind::Secondary,
-                Size::Regular,
-                true,
-            )
-            .clicked()
-            {
-                edit.trim_end = format_timestamp(self.time);
-            }
+            let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
             if widgets::button(
                 ui,
                 Some(icons::X),
                 tr("preview.clear"),
                 Kind::Ghost,
                 Size::Regular,
-                edit.has_trim() || rect.is_some(),
+                has_edit,
             )
             .clicked()
             {
-                edit.trim_start.clear();
-                edit.trim_end.clear();
-                *rect = None;
+                if mode.clip {
+                    edit.trim_start.clear();
+                    edit.trim_end.clear();
+                }
+                if mode.area {
+                    *rect = None;
+                }
             }
         });
         ui.add_space(4.0);
-        let start = parse_timestamp(&edit.trim_start)
-            .ok()
-            .flatten()
-            .unwrap_or(0.0);
-        let end = parse_timestamp(&edit.trim_end)
-            .ok()
-            .flatten()
-            .unwrap_or(duration);
-        let summary = match *rect {
-            Some(r) => trf(
-                "preview.summary_crop",
-                &[
-                    ("start", &format_timestamp(start)),
-                    ("end", &format_timestamp(end)),
-                    ("w", &r.w),
-                    ("h", &r.h),
-                    ("x", &r.x),
-                    ("y", &r.y),
-                ],
-            ),
-            None => trf(
+        let (start, end) = clip_range(edit, duration);
+        let mut lines = Vec::new();
+        if mode.clip {
+            lines.push(trf(
                 "preview.summary",
                 &[
-                    ("start", &format_timestamp(start)),
-                    ("end", &format_timestamp(end)),
+                    ("start", &display_time(start)),
+                    ("end", &display_time(end)),
+                    ("length", &display_time((end - start).max(0.0))),
                 ],
-            ),
-        };
-        ui.label(RichText::new(summary).color(p.text_weak));
-        ui.label(RichText::new(tr("preview.draw_hint")).weak());
+            ));
+        }
+        if mode.area {
+            lines.push(match *rect {
+                Some(r) => trf(
+                    "preview.summary_area",
+                    &[("w", &r.w), ("h", &r.h), ("x", &r.x), ("y", &r.y)],
+                ),
+                None => tr("preview.draw_hint").to_owned(),
+            });
+        }
+        for line in lines {
+            ui.label(RichText::new(line).color(p.text_weak));
+        }
     }
+
+    /// A scrubbable track. With `clip`, the kept part is highlighted and its two
+    /// ends can be dragged; anywhere else moves the playhead.
+    fn timeline(&mut self, ui: &mut egui::Ui, width: f32, edit: &mut Edit, clip: bool) {
+        let p = theme::palette(ui);
+        let duration = self.duration().max(0.001);
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(width, TIMELINE_HEIGHT), Sense::click_and_drag());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Slider, true, tr("preview.timeline"))
+        });
+        let x_of = |t: f64| rect.left() + (t / duration).clamp(0.0, 1.0) as f32 * rect.width();
+        let t_of =
+            |x: f32| f64::from(((x - rect.left()) / rect.width()).clamp(0.0, 1.0)) * duration;
+        let (start, end) = clip_range(edit, duration);
+        let near = |x: f32, t: f64| clip && (x - x_of(t)).abs() <= HANDLE_GRAB;
+        let pointer = response.interact_pointer_pos().or(response.hover_pos());
+
+        if response.drag_started()
+            && let Some(pos) = pointer
+        {
+            // The handle nearest the pointer wins when both are within reach.
+            let to_start = (pos.x - x_of(start)).abs();
+            let to_end = (pos.x - x_of(end)).abs();
+            self.grab = Some(match (near(pos.x, start), near(pos.x, end)) {
+                (true, true) if to_start < to_end => Grab::Start,
+                (true, true) | (false, true) => Grab::End,
+                (true, false) => Grab::Start,
+                (false, false) => Grab::Playhead,
+            });
+        }
+        if let Some(pos) = pointer
+            && (response.dragged() || response.clicked())
+        {
+            let t = t_of(pos.x);
+            match self.grab.unwrap_or(Grab::Playhead) {
+                Grab::Playhead => self.time = t,
+                Grab::Start => {
+                    let t = t.min(end - MIN_CLIP_S).max(0.0);
+                    edit.trim_start = format_timestamp(t);
+                    self.time = t;
+                }
+                Grab::End => {
+                    let t = t.max(start + MIN_CLIP_S).min(duration);
+                    edit.trim_end = format_timestamp(t);
+                    self.time = t;
+                }
+            }
+        }
+        if response.drag_stopped() {
+            self.grab = None;
+        }
+        let over_handle = response
+            .hover_pos()
+            .is_some_and(|pos| near(pos.x, start) || near(pos.x, end));
+        let cursor = if over_handle || matches!(self.grab, Some(Grab::Start | Grab::End)) {
+            egui::CursorIcon::ResizeHorizontal
+        } else {
+            egui::CursorIcon::PointingHand
+        };
+        let response = response.on_hover_cursor(cursor);
+        if response.hovered() && !over_handle && self.grab.is_none() {
+            response.on_hover_text(tr("preview.timeline_hint"));
+        }
+
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let painter = ui.painter();
+        let track = rect.shrink2(Vec2::new(0.0, 6.0));
+        painter.rect_filled(track, CornerRadius::same(6), p.sunken);
+        painter.rect_stroke(
+            track,
+            CornerRadius::same(6),
+            Stroke::new(1.0, p.border),
+            StrokeKind::Inside,
+        );
+        if clip {
+            let kept = ScreenRect::from_x_y_ranges(x_of(start)..=x_of(end), track.y_range());
+            painter.rect_filled(kept, CornerRadius::same(4), p.accent.gamma_multiply(0.35));
+            for t in [start, end] {
+                let handle = ScreenRect::from_center_size(
+                    Pos2::new(x_of(t), rect.center().y),
+                    Vec2::new(8.0, rect.height()),
+                );
+                painter.rect_filled(handle, CornerRadius::same(3), p.accent);
+                // Grip lines make the handles read as draggable.
+                for dy in [-4.0, 0.0, 4.0] {
+                    let y = handle.center().y + dy;
+                    painter.line_segment(
+                        [
+                            Pos2::new(handle.left() + 2.0, y),
+                            Pos2::new(handle.right() - 2.0, y),
+                        ],
+                        Stroke::new(1.0, p.on_accent),
+                    );
+                }
+            }
+        }
+        let x = x_of(self.time);
+        painter.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            Stroke::new(2.0, p.text),
+        );
+        painter.circle_filled(Pos2::new(x, rect.top() + 2.0), 4.0, p.text);
+    }
+}
+
+/// The kept part as `(start, end)` seconds; empty fields mean the whole file.
+fn clip_range(edit: &Edit, duration: f64) -> (f64, f64) {
+    let start = parse_timestamp(&edit.trim_start)
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+    let end = parse_timestamp(&edit.trim_end)
+        .ok()
+        .flatten()
+        .unwrap_or(duration);
+    (start, end)
 }
 
 #[cfg(test)]

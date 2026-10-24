@@ -13,6 +13,12 @@ use crate::theme::{
     self, BUTTON_HEIGHT, MOTION, Palette, RADIUS, SMALL_BUTTON_HEIGHT, VALUE_MOTION,
 };
 
+const LARGE_BUTTON_HEIGHT: f32 = 40.0;
+const SEGMENT_HEIGHT: f32 = 30.0;
+const SEGMENT_PAD: f32 = 12.0;
+const STEP_BADGE: f32 = 28.0;
+const DROP_ZONE_HEIGHT: f32 = 170.0;
+
 const FOCUS_RING: f32 = 2.0;
 const ICON_GAP: f32 = 7.0;
 const DISABLED_OPACITY: f32 = 0.45;
@@ -31,6 +37,8 @@ pub enum Kind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Size {
+    /// The one main action of a screen.
+    Large,
     Regular,
     Small,
 }
@@ -103,10 +111,10 @@ pub fn button_tinted(
 ) -> Response {
     let p = theme::palette(ui);
     let base = TextStyle::Button.resolve(ui.style());
-    let font = if size == Size::Small {
-        FontId::new(base.size - 1.5, base.family.clone())
-    } else {
-        base
+    let font = match size {
+        Size::Small => FontId::new(base.size - 1.5, base.family.clone()),
+        Size::Large => FontId::new(base.size + 1.0, base.family.clone()),
+        Size::Regular => base,
     };
     let (fills, text_color, border) = colors(kind, &p);
     let icon_galley = icon.map(|i| {
@@ -129,12 +137,11 @@ pub fn button_tinted(
         + gap
         + text_galley.as_ref().map_or(0.0, |g| g.size().x);
 
-    let height = if size == Size::Small {
-        SMALL_BUTTON_HEIGHT
-    } else {
-        BUTTON_HEIGHT
+    let (height, pad) = match size {
+        Size::Small => (SMALL_BUTTON_HEIGHT, 9.0),
+        Size::Regular => (BUTTON_HEIGHT, 14.0),
+        Size::Large => (LARGE_BUTTON_HEIGHT, 22.0),
     };
-    let pad = if size == Size::Small { 9.0 } else { 14.0 };
     let width = (content_w + pad * 2.0).max(height);
     let sense = if enabled {
         Sense::click()
@@ -456,6 +463,177 @@ pub fn progress(ui: &mut egui::Ui, id: Id, target: f32, text: String, width: f32
             .fill(p.accent)
             .text(text),
     )
+}
+
+/// A row of joined choices where exactly one is selected: radio buttons that
+/// read as one control. Returns `true` when the selection changed.
+pub fn segmented<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    value: &mut T,
+    choices: &[(T, &str)],
+) -> bool {
+    let p = theme::palette(ui);
+    let font = TextStyle::Button.resolve(ui.style());
+    let mut changed = false;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(0.0, 4.0);
+        ui.horizontal_wrapped(|ui| {
+            let last = choices.len().saturating_sub(1);
+            for (i, (choice, text)) in choices.iter().enumerate() {
+                let selected = *value == *choice;
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap((*text).to_owned(), font.clone(), p.text);
+                let size = Vec2::new(galley.size().x + SEGMENT_PAD * 2.0, SEGMENT_HEIGHT);
+                let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+                response.widget_info(|| {
+                    WidgetInfo::selected(egui::Role::RadioButton, true, selected, *text)
+                });
+                if response.clicked() && !selected {
+                    *value = *choice;
+                    changed = true;
+                }
+                if !ui.is_rect_visible(rect) {
+                    continue;
+                }
+                let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
+                let active = animate(ui, response.id.with("on"), *value == *choice, MOTION);
+                let r = RADIUS;
+                let corners = CornerRadius {
+                    nw: if i == 0 { r } else { 0 },
+                    sw: if i == 0 { r } else { 0 },
+                    ne: if i == last { r } else { 0 },
+                    se: if i == last { r } else { 0 },
+                };
+                let fill = mix(mix(p.control, p.control_hover, hover), p.accent, active);
+                let painter = ui.painter();
+                painter.rect(
+                    rect,
+                    corners,
+                    fill,
+                    Stroke::new(1.0, mix(p.border, p.accent, active)),
+                    StrokeKind::Inside,
+                );
+                if response.has_focus() {
+                    painter.rect_stroke(
+                        rect.expand(FOCUS_RING),
+                        corners,
+                        Stroke::new(FOCUS_RING, p.accent),
+                        StrokeKind::Outside,
+                    );
+                }
+                let color = mix(p.text, p.on_accent, active);
+                painter.galley_with_override_text_color(
+                    rect.center() - galley.size() / 2.0,
+                    galley,
+                    color,
+                );
+                response.on_hover_cursor(CursorIcon::PointingHand);
+            }
+        });
+    });
+    changed
+}
+
+/// A numbered step marker: the number in a circle, or a check once the step is complete.
+pub fn step_badge(ui: &mut egui::Ui, number: usize, done: bool) -> Response {
+    let p = theme::palette(ui);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(STEP_BADGE), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let t = animate(ui, response.id.with("done"), done, MOTION * 2.0);
+        let fill = mix(p.accent, p.success, t);
+        let painter = ui.painter();
+        painter.circle_filled(rect.center(), STEP_BADGE / 2.0, fill);
+        let number = number.to_string();
+        let (text, font) = if t > 0.5 {
+            (crate::icons::CHECK, FontId::proportional(16.0))
+        } else {
+            (number.as_str(), FontId::proportional(14.5))
+        };
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            text,
+            font,
+            p.on_accent,
+        );
+    }
+    response
+}
+
+/// A large click-or-drop target for adding files. It glows while the pointer is
+/// over it or files are being dragged over the window.
+pub fn drop_zone(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    subtitle: &str,
+    detail: &str,
+    files_hovering: bool,
+) -> Response {
+    let p = theme::palette(ui);
+    let size = Vec2::new(ui.available_width(), DROP_ZONE_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
+    if ui.is_rect_visible(rect) {
+        let hover = animate(
+            ui,
+            response.id.with("hover"),
+            response.hovered() || files_hovering,
+            MOTION,
+        );
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            CornerRadius::same(12),
+            mix(p.sunken, p.accent, 0.03 + hover * 0.07),
+            Stroke::new(1.0 + hover, mix(p.border, p.accent, 0.35 + hover * 0.65)),
+            StrokeKind::Inside,
+        );
+        let c = rect.center();
+        let lift = -3.0 * hover;
+        painter.circle_filled(
+            c + Vec2::new(0.0, -34.0 + lift),
+            28.0,
+            p.accent.gamma_multiply(0.14 + hover * 0.1),
+        );
+        painter.text(
+            c + Vec2::new(0.0, -34.0 + lift),
+            Align2::CENTER_CENTER,
+            icon,
+            FontId::proportional(28.0),
+            p.accent,
+        );
+        painter.text(
+            c + Vec2::new(0.0, 12.0),
+            Align2::CENTER_CENTER,
+            title,
+            FontId::proportional(17.0),
+            p.text,
+        );
+        painter.text(
+            c + Vec2::new(0.0, 34.0),
+            Align2::CENTER_CENTER,
+            subtitle,
+            FontId::proportional(13.5),
+            p.text_weak,
+        );
+        if !detail.is_empty() {
+            let galley = elided(
+                ui,
+                detail,
+                FontId::proportional(12.0),
+                p.text_weak,
+                rect.width() - 40.0,
+            );
+            painter.galley(
+                c + Vec2::new(-galley.size().x / 2.0, 52.0),
+                galley,
+                p.text_weak,
+            );
+        }
+    }
+    response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 /// A centered icon with a message, for empty lists.

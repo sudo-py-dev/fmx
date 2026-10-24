@@ -23,7 +23,9 @@ pub const ARROW_SQUARE_OUT: &str = "\u{E5DE}";
 pub const BROOM: &str = "\u{EC54}";
 pub const CARET_DOWN: &str = "\u{E136}";
 pub const CARET_LEFT: &str = "\u{E138}";
+pub const CARET_RIGHT: &str = "\u{E13A}";
 pub const CARET_UP: &str = "\u{E13C}";
+pub const CHECK: &str = "\u{E182}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
 pub const DISC: &str = "\u{E564}";
 pub const EYE: &str = "\u{E220}";
@@ -39,6 +41,7 @@ pub const LIST_PLUS: &str = "\u{E2F8}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const PAUSE: &str = "\u{E39E}";
 pub const PLAY: &str = "\u{E3D0}";
+pub const PLUS: &str = "\u{E3D4}";
 pub const RECORD: &str = "\u{E3EE}";
 pub const SCISSORS: &str = "\u{EAE0}";
 pub const SLIDERS: &str = "\u{E432}";
@@ -91,7 +94,9 @@ mod tests {
             BROOM,
             CARET_DOWN,
             CARET_LEFT,
+            CARET_RIGHT,
             CARET_UP,
+            CHECK,
             CHECK_CIRCLE,
             DISC,
             EYE,
@@ -107,6 +112,7 @@ mod tests {
             MAGNIFYING_GLASS,
             PAUSE,
             PLAY,
+            PLUS,
             RECORD,
             SCISSORS,
             SLIDERS,

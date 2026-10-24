@@ -1,14 +1,14 @@
 //! The egui front end: tool sidebar, task editor, and job queue.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, ComboBox, CornerRadius, DragValue, Id, Key, KeyboardShortcut, Layout, Margin,
-    Modifiers, RichText, ScrollArea, Slider, Stroke, TextEdit,
+    self, Align, ComboBox, CornerRadius, DragValue, Id, Key, KeyboardShortcut, Label, Layout,
+    Margin, Modifiers, RichText, ScrollArea, Slider, Stroke, TextEdit,
 };
 
 use crate::art;
@@ -25,7 +25,7 @@ use crate::options::{
     self, Channels, Corner, DownloadKind, Edit, HwAccel, JoinLayout, MixLayout, Quality, Rect,
     Resolution, Rotation,
 };
-use crate::preview::Preview;
+use crate::preview::{Mode as PreviewMode, Preview};
 use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::theme::{self, MOTION, ThemeChoice};
@@ -36,7 +36,18 @@ const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key:
 const SIDEBAR_WIDTH: f32 = 230.0;
 const QUEUE_HEIGHT: f32 = 180.0;
 const PROGRESS_WIDTH: f32 = 220.0;
-const DROP_ZONE_HEIGHT: f32 = 90.0;
+/// The task editor's content is kept to a readable width on wide windows.
+const EDITOR_MAX_WIDTH: f32 = 900.0;
+const FILE_LIST_HEIGHT: f32 = 260.0;
+const FILE_TILE: f32 = 32.0;
+/// Only this many files of one batch are probed for their length.
+const MAX_PROBED_FILES: usize = 200;
+/// How many extensions the drop zone lists before "…".
+const SHOWN_EXTENSIONS: usize = 10;
+const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "aac", "m4a", "flac", "wav", "ogg", "opus", "wma", "aiff", "aif", "ac3", "amr", "ape",
+    "mka", "wv", "mp2", "mmf", "m4r",
+];
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
 /// Task-list files larger than this are refused.
 const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
@@ -90,6 +101,12 @@ pub struct MuxrApp {
     in_editor: bool,
     search: String,
     ffmpeg_install: Option<FfmpegInstall>,
+    /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
+    preview_index: usize,
+    /// Size and length of added files, for the file list.
+    details: HashMap<PathBuf, FileDetails>,
+    probe_tx: mpsc::Sender<(PathBuf, Option<f64>)>,
+    probe_rx: mpsc::Receiver<(PathBuf, Option<f64>)>,
     after_done: AfterDone,
     was_busy: bool,
     shutdown_at: Option<Instant>,
@@ -116,6 +133,7 @@ impl MuxrApp {
         if toolbox.get(External::Ffmpeg).is_none() {
             tracing::warn!("ffmpeg not found; media tools are disabled");
         }
+        let (probe_tx, probe_rx) = mpsc::channel();
         let mut app = Self {
             tool: settings.last_tool,
             queue: Queue::new(settings.auto_start),
@@ -130,6 +148,10 @@ impl MuxrApp {
             in_editor: false,
             search: String::new(),
             ffmpeg_install: None,
+            preview_index: 0,
+            details: HashMap::new(),
+            probe_tx,
+            probe_rx,
             after_done: AfterDone::Nothing,
             was_busy: false,
             shutdown_at: None,
@@ -146,6 +168,10 @@ impl MuxrApp {
     fn select_tool(&mut self, tool: Tool) {
         if tool.input_kind() != self.tool.input_kind() {
             self.files.clear();
+        }
+        if tool != self.tool {
+            self.preview = None;
+            self.preview_index = 0;
         }
         self.tool = tool;
         self.settings.last_tool = tool;
@@ -186,18 +212,62 @@ impl MuxrApp {
     fn add_files(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         let mut known: HashSet<PathBuf> = self.files.iter().cloned().collect();
         let mut skipped = 0usize;
+        let mut added = Vec::new();
         for path in paths {
             if !self.accepts(&path) {
                 skipped += 1;
             } else if known.insert(path.clone()) {
+                added.push(path.clone());
                 self.files.push(path);
             }
         }
+        self.probe_details(added);
         if skipped > 0 {
             self.toasts.push(
                 ToastKind::Error,
                 trf("notice.skipped", &[("count", &skipped)]),
             );
+        }
+    }
+
+    /// Records the size of new files and finds media lengths in the background.
+    fn probe_details(&mut self, added: Vec<PathBuf>) {
+        for path in &added {
+            let bytes = std::fs::metadata(path)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len());
+            self.details.entry(path.clone()).or_insert(FileDetails {
+                bytes,
+                duration: None,
+            });
+        }
+        let Some(ffmpeg) = self.toolbox.get(External::Ffmpeg) else {
+            return;
+        };
+        if self.tool.input_kind() != InputKind::Media || added.is_empty() {
+            return;
+        }
+        let ffmpeg = ffmpeg.to_path_buf();
+        let (tx, notify) = (self.probe_tx.clone(), Arc::clone(&self.notifier));
+        std::thread::spawn(move || {
+            for path in added.into_iter().take(MAX_PROBED_FILES) {
+                let duration = ffmpeg::probe(&ffmpeg, &path, None)
+                    .ok()
+                    .and_then(|i| i.duration_s);
+                if tx.send((path, duration)).is_err() {
+                    return;
+                }
+                notify();
+            }
+        });
+    }
+
+    fn poll_details(&mut self) {
+        while let Ok((path, duration)) = self.probe_rx.try_recv() {
+            if let Some(d) = self.details.get_mut(&path) {
+                d.duration = duration;
+            }
         }
     }
 
@@ -283,13 +353,69 @@ impl MuxrApp {
     }
 
     fn can_enqueue(&self) -> bool {
-        let has_input = match self.tool.input_kind() {
-            InputKind::Url => !self.url.trim().is_empty(),
-            InputKind::Device => !self.settings.cd_device.trim().is_empty(),
-            InputKind::Capture => true,
-            _ => !self.files.is_empty(),
-        };
-        has_input && self.unavailable_reason(self.tool).is_none()
+        self.blocker().is_none()
+    }
+
+    /// What is still missing before the tool can run, in plain words.
+    fn blocker(&self) -> Option<String> {
+        self.unavailable_reason(self.tool)
+            .or_else(|| self.input_missing())
+            .or_else(|| {
+                (self.tool == Tool::AddSubtitles && self.settings.options.edit.subtitle.is_none())
+                    .then(|| tr("error.no_subtitle_file").to_owned())
+            })
+    }
+
+    /// What the first step still needs, if anything.
+    fn input_missing(&self) -> Option<String> {
+        let kind = self.tool.input_kind();
+        let count = self.files.len();
+        match kind {
+            InputKind::Url => self
+                .url
+                .trim()
+                .is_empty()
+                .then(|| tr("need.url").to_owned()),
+            InputKind::Device => self
+                .settings
+                .cd_device
+                .trim()
+                .is_empty()
+                .then(|| tr("need.device").to_owned()),
+            InputKind::Capture => None,
+            _ => match self.tool.arity() {
+                InputArity::Exactly(n) if count != n => {
+                    Some(trf("need.exactly", &[("count", &n), ("got", &count)]))
+                }
+                InputArity::AllAtLeast(n) if n > 1 && count < n => {
+                    Some(trf("need.at_least", &[("count", &n)]))
+                }
+                _ if count == 0 && kind.picks_folders() => Some(tr("need.folder").to_owned()),
+                _ if count == 0 => Some(tr("need.file").to_owned()),
+                _ => None,
+            },
+        }
+    }
+
+    /// How many jobs the main action will add.
+    fn job_count(&self) -> usize {
+        match (self.tool.input_kind(), self.tool.arity()) {
+            (InputKind::Url | InputKind::Device | InputKind::Capture, _) => 1,
+            (_, InputArity::EachFile) => self.files.len(),
+            _ => 1,
+        }
+    }
+
+    /// One sentence telling the user what pressing the main button will do.
+    fn ready_summary(&self) -> String {
+        let place = self.settings.output_dir.as_deref().map_or_else(
+            || tr("ready.beside_source").to_owned(),
+            |dir| trf("ready.in_folder", &[("folder", &file_name(dir))]),
+        );
+        match self.job_count() {
+            1 => trf("ready.summary_one", &[("where", &place)]),
+            count => trf("ready.summary", &[("count", &count), ("where", &place)]),
+        }
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
@@ -739,72 +865,190 @@ impl MuxrApp {
             ui.add_space(10.0);
             self.ffmpeg_setup_card(ui);
         }
-        ui.add_space(10.0);
-        card(ui, |ui| match self.tool.input_kind() {
-            InputKind::Url => self.url_input(ui),
-            InputKind::Device => {
-                ui.horizontal(|ui| {
-                    ui.label(tr("input.device"));
-                    ui.add(TextEdit::singleline(&mut self.settings.cd_device).desired_width(220.0));
-                });
-            }
-            InputKind::Capture => {
-                ui.label(tr("input.capture"));
-                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                    ui.add_space(4.0);
-                    ui.colored_label(
-                        p.warning,
-                        icons::label(icons::WARNING, tr("warning.wayland_capture")),
-                    );
+        ui.add_space(14.0);
+        let (title, help) = self.input_heading();
+        let input_done = self.input_missing().is_none();
+        step(ui, 1, input_done, title, &help, |ui| {
+            match self.tool.input_kind() {
+                InputKind::Url => self.url_input(ui),
+                InputKind::Device => {
+                    ui.horizontal(|ui| {
+                        ui.label(tr("input.device"));
+                        ui.add(
+                            TextEdit::singleline(&mut self.settings.cd_device).desired_width(220.0),
+                        );
+                    });
                 }
-            }
-            _ => self.file_list(ui),
-        });
-        ui.add_space(10.0);
-        card(ui, |ui| {
-            egui::Grid::new("options")
-                .num_columns(2)
-                .spacing([16.0, 10.0])
-                .show(ui, |ui| {
-                    self.options_ui(ui);
-                });
-            if let Tool::ToVideo(format) = self.tool {
-                ui.add_space(4.0);
-                self.advanced_video(ui, format);
-                self.edit_panel(ui, true);
-            } else if let Tool::ToDevice(_) = self.tool {
-                ui.add_space(4.0);
-                self.edit_panel(ui, true);
-            } else if let Tool::ToAudio(format) = self.tool {
-                ui.add_space(4.0);
-                self.advanced_audio(ui, !format.is_lossless());
-                self.edit_panel(ui, false);
+                InputKind::Capture => {
+                    ui.label(tr("input.capture"));
+                    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                        ui.add_space(4.0);
+                        ui.colored_label(
+                            p.warning,
+                            icons::label(icons::WARNING, tr("warning.wayland_capture")),
+                        );
+                    }
+                }
+                _ => self.file_list(ui),
             }
         });
+        if let Some((title, help)) = self.settings_heading() {
+            ui.add_space(12.0);
+            step(ui, 2, false, title, help, |ui| self.settings_step(ui));
+        }
         ui.add_space(8.0);
     }
 
-    /// The editor's sticky footer: the main action stays visible while options scroll.
+    /// The first step's title and a sentence on what to add.
+    fn input_heading(&self) -> (&'static str, String) {
+        let kind = self.tool.input_kind();
+        match kind {
+            InputKind::Url => (tr("step.url"), tr("hint.download_rights").to_owned()),
+            InputKind::Device => (tr("step.device"), tr("help.device").to_owned()),
+            InputKind::Capture => (tr("step.capture"), String::new()),
+            _ => {
+                let title = if kind.picks_folders() {
+                    tr("step.folders")
+                } else {
+                    tr("step.files")
+                };
+                let help = match self.tool.arity() {
+                    InputArity::Exactly(_) if self.tool == Tool::Mux => {
+                        tr("hint.mux_order").to_owned()
+                    }
+                    InputArity::Exactly(_) => tr("hint.mix_order").to_owned(),
+                    InputArity::AllAtLeast(n) if n > 1 => trf("help.combine", &[("count", &n)]),
+                    InputArity::AllAtLeast(_) => tr("help.in_order").to_owned(),
+                    _ if kind.picks_folders() => tr("help.each_folder").to_owned(),
+                    _ => tr("help.each_file").to_owned(),
+                };
+                (title, help)
+            }
+        }
+    }
+
+    /// The second step's title and help, or `None` when the tool has nothing to set.
+    fn settings_heading(&self) -> Option<(&'static str, &'static str)> {
+        match self.tool {
+            Tool::Trim => Some((tr("step.trim"), tr("help.trim"))),
+            Tool::Crop => Some((tr("step.crop"), tr("help.crop"))),
+            Tool::Delogo => Some((tr("step.delogo"), tr("help.delogo"))),
+            tool if has_options(tool) => Some((tr("step.settings"), tr("help.settings"))),
+            _ => None,
+        }
+    }
+
+    fn settings_step(&mut self, ui: &mut egui::Ui) {
+        if let Some(mode) = inline_preview_mode(self.tool) {
+            self.inline_preview(ui, mode);
+            ui.add_space(12.0);
+        }
+        egui::Grid::new("options")
+            .num_columns(2)
+            .striped(false)
+            .spacing([16.0, 12.0])
+            .show(ui, |ui| {
+                self.options_ui(ui);
+            });
+        if let Tool::ToVideo(format) = self.tool {
+            ui.add_space(4.0);
+            self.advanced_video(ui, format);
+            self.edit_panel(ui, true);
+        } else if let Tool::ToDevice(_) = self.tool {
+            ui.add_space(4.0);
+            self.edit_panel(ui, true);
+        } else if let Tool::ToAudio(format) = self.tool {
+            ui.add_space(4.0);
+            self.advanced_audio(ui, !format.is_lossless());
+            self.edit_panel(ui, false);
+        }
+    }
+
+    /// The video itself, for tools whose main job is picking a part of it.
+    fn inline_preview(&mut self, ui: &mut egui::Ui, mode: PreviewMode) {
+        let p = theme::palette(ui);
+        let Some(ffmpeg) = self.toolbox.get(External::Ffmpeg) else {
+            return;
+        };
+        if self.files.is_empty() {
+            egui::Frame::new()
+                .fill(p.sunken)
+                .corner_radius(CornerRadius::same(10))
+                .show(ui, |ui| {
+                    widgets::empty_state(ui, icons::EYE, tr("preview.add_file_first"), 140.0);
+                });
+            return;
+        }
+        self.preview_index = self.preview_index.min(self.files.len() - 1);
+        if self.files.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("preview.showing")).color(p.text_weak));
+                let choices: Vec<usize> = (0..self.files.len()).collect();
+                let files = &self.files;
+                combo(ui, "preview_file", &mut self.preview_index, &choices, |i| {
+                    file_name(&files[i])
+                });
+            });
+            ui.label(
+                RichText::new(tr("preview.same_for_all"))
+                    .small()
+                    .color(p.text_weak),
+            );
+            ui.add_space(6.0);
+        }
+        let path = &self.files[self.preview_index];
+        if self.preview.as_ref().is_none_or(|v| v.path() != path) {
+            self.preview = Some(Preview::open(path.clone(), ffmpeg.to_path_buf(), ui.ctx()));
+        }
+        let Some(preview) = self.preview.as_mut() else {
+            return;
+        };
+        let opts = &mut self.settings.options;
+        if self.tool == Tool::Delogo {
+            let mut area = Some(opts.delogo);
+            preview.inline(ui, &mut opts.edit, &mut area, mode);
+            if let Some(area) = area {
+                opts.delogo = area;
+            }
+        } else {
+            let mut crop = opts.edit.crop.take();
+            preview.inline(ui, &mut opts.edit, &mut crop, mode);
+            opts.edit.crop = crop;
+        }
+    }
+
+    /// The editor's sticky footer: what will happen, or what is still missing,
+    /// next to the main action.
     fn action_bar(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let blocker = self.blocker();
         ui.horizontal(|ui| {
-            let (icon, label) = self.primary_action();
-            if widgets::button(
-                ui,
-                Some(icon),
-                label,
-                Kind::Primary,
-                Size::Regular,
-                self.can_enqueue(),
-            )
-            .on_hover_text(ui.ctx().format_shortcut(&ENQUEUE))
-            .clicked()
-            {
-                self.enqueue();
-            }
-            let count = self.files.len();
-            if count > 0 {
-                ui.label(RichText::new(trf("files.count", &[("count", &count)])).weak());
-            }
+            ui.set_min_height(44.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (icon, label) = self.primary_action();
+                if widgets::button(
+                    ui,
+                    Some(icon),
+                    label,
+                    Kind::Primary,
+                    Size::Large,
+                    blocker.is_none(),
+                )
+                .on_hover_text(ui.ctx().format_shortcut(&ENQUEUE))
+                .clicked()
+                {
+                    self.enqueue();
+                }
+                ui.add_space(10.0);
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let (glyph, color, text, text_color) = match &blocker {
+                        Some(reason) => (icons::INFO, p.text_weak, reason.clone(), p.text_weak),
+                        None => (icons::CHECK_CIRCLE, p.success, self.ready_summary(), p.text),
+                    };
+                    ui.label(RichText::new(glyph).size(20.0).color(color));
+                    ui.add(Label::new(RichText::new(text).color(text_color)).wrap());
+                });
+            });
         });
     }
 
@@ -826,30 +1070,122 @@ impl MuxrApp {
     }
 
     fn url_input(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(tr("input.url"));
-            ui.add(
-                TextEdit::singleline(&mut self.url)
-                    .hint_text("https://…")
-                    .desired_width(f32::INFINITY),
-            );
-        });
-        ui.label(RichText::new(tr("hint.download_rights")).weak());
+        ui.add(
+            TextEdit::singleline(&mut self.url)
+                .hint_text("https://…")
+                .font(egui::FontId::proportional(16.0))
+                .margin(Margin::symmetric(10, 8))
+                .desired_width(f32::INFINITY),
+        );
     }
 
     fn file_list(&mut self, ui: &mut egui::Ui) {
         let kind = self.tool.input_kind();
-        ui.horizontal_wrapped(|ui| {
-            let (icon, label) = if kind.picks_folders() {
-                (icons::FOLDER_PLUS, tr("action.add_folders"))
+        let p = theme::palette(ui);
+        let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
+        let roles = slot_roles(self.tool);
+        if self.files.is_empty() && roles.is_none() {
+            let (icon, title) = if kind.picks_folders() {
+                (icons::FOLDER_PLUS, tr("drop.title_folders"))
             } else {
-                (icons::FILE_PLUS, tr("action.add_files"))
+                (icons::FILE_PLUS, tr("drop.title"))
             };
-            if widgets::button(ui, Some(icon), label, Kind::Secondary, Size::Regular, true)
-                .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
-                .clicked()
+            if widgets::drop_zone(
+                ui,
+                icon,
+                title,
+                tr("drop.subtitle"),
+                &formats_line(kind),
+                hovering,
+            )
+            .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
+            .clicked()
             {
                 self.pick_files();
+            }
+            ui.add_space(8.0);
+            self.add_buttons(ui);
+            return;
+        }
+
+        let glow = ui
+            .ctx()
+            .animate_bool_with_time(Id::unique("drop_glow"), hovering, MOTION);
+        let probeable = kind == InputKind::Media && self.toolbox.get(External::Ffmpeg).is_some();
+        let inline = inline_preview_mode(self.tool).is_some();
+        let row = RowContext {
+            count: self.files.len(),
+            ordered: !matches!(self.tool.arity(), InputArity::EachFile),
+            probeable,
+            eye: probeable && (previewable(self.tool) || (inline && self.files.len() > 1)),
+            selected: (inline && self.files.len() > 1).then_some(self.preview_index),
+        };
+        let mut action = None;
+        egui::Frame::new()
+            .stroke(Stroke::new(1.5, p.accent.gamma_multiply(glow)))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(2))
+            .show(ui, |ui| {
+                ScrollArea::vertical()
+                    .id_salt("file_list")
+                    .max_height(FILE_LIST_HEIGHT)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        for (i, path) in self.files.iter().enumerate() {
+                            let role = roles.and_then(|r| r.get(i).copied());
+                            if let Some(a) = self.file_row(ui, i, path, role, &row) {
+                                action = Some(a);
+                            }
+                        }
+                        if let Some(roles) = roles {
+                            for (i, role) in roles.iter().enumerate().skip(self.files.len()) {
+                                if empty_slot(ui, i + 1, role) {
+                                    action = Some(FileAction::Add);
+                                }
+                            }
+                        }
+                    });
+            });
+        match action {
+            Some(FileAction::Remove(i)) => {
+                self.files.remove(i);
+            }
+            Some(FileAction::Swap(a, b)) => self.files.swap(a, b),
+            Some(FileAction::Info(i)) => self.show_media_info(i),
+            Some(FileAction::Preview(i)) if inline => self.preview_index = i,
+            Some(FileAction::Preview(i)) => self.open_preview(i, ui.ctx()),
+            Some(FileAction::Add) => self.pick_files(),
+            None => {}
+        }
+        ui.add_space(8.0);
+        self.add_buttons(ui);
+    }
+
+    /// "Add more", "Add folder", "Clear list" and a short summary of the list.
+    fn add_buttons(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let kind = self.tool.input_kind();
+        let has_files = !self.files.is_empty();
+        ui.horizontal(|ui| {
+            if has_files {
+                let label = if kind.picks_folders() {
+                    tr("action.add_more_folders")
+                } else {
+                    tr("action.add_more")
+                };
+                if widgets::button(
+                    ui,
+                    Some(icons::PLUS),
+                    label,
+                    Kind::Secondary,
+                    Size::Regular,
+                    true,
+                )
+                .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
+                .clicked()
+                {
+                    self.pick_files();
+                }
             }
             if kind == InputKind::Disc
                 && widgets::button(
@@ -872,125 +1208,170 @@ impl MuxrApp {
                     ui,
                     Some(icons::FOLDER_PLUS),
                     tr("action.add_folder_scan"),
-                    Kind::Secondary,
+                    Kind::Ghost,
+                    Size::Regular,
+                    true,
+                )
+                .on_hover_text(tr("hint.add_folder_scan"))
+                .clicked()
+            {
+                self.add_folder();
+            }
+            if has_files
+                && widgets::button(
+                    ui,
+                    Some(icons::BROOM),
+                    tr("action.clear"),
+                    Kind::Ghost,
                     Size::Regular,
                     true,
                 )
                 .clicked()
             {
-                self.add_folder();
-            }
-            if widgets::button(
-                ui,
-                Some(icons::BROOM),
-                tr("action.clear"),
-                Kind::Ghost,
-                Size::Regular,
-                !self.files.is_empty(),
-            )
-            .clicked()
-            {
                 self.files.clear();
             }
+            if has_files {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(self.list_summary()).color(p.text_weak));
+                });
+            }
         });
-        ui.add_space(6.0);
+    }
 
+    /// "3 files · 12:30 in total" (the length only once every file is known).
+    fn list_summary(&self) -> String {
+        let count = trf("files.count", &[("count", &self.files.len())]);
+        let total: Option<f64> = self
+            .files
+            .iter()
+            .map(|f| self.details.get(f).and_then(|d| d.duration))
+            .sum();
+        match total {
+            Some(secs) if self.files.len() > 1 => format!(
+                "{count} · {}",
+                trf(
+                    "files.total_length",
+                    &[("length", &clock(Duration::from_secs_f64(secs)))]
+                )
+            ),
+            _ => count,
+        }
+    }
+
+    /// One file in the list: its kind, name, size and length, and its actions.
+    fn file_row(
+        &self,
+        ui: &mut egui::Ui,
+        i: usize,
+        path: &Path,
+        role: Option<&str>,
+        row: &RowContext,
+    ) -> Option<FileAction> {
         let p = theme::palette(ui);
-        let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
-        let glow = ui
-            .ctx()
-            .animate_bool_with_time(Id::unique("drop_glow"), hovering, MOTION);
-        let stroke = Stroke::new(1.0 + glow, p.border.lerp_to_gamma(p.accent, glow));
-        let ordered = !matches!(self.tool.arity(), InputArity::EachFile);
-        let probeable = kind == InputKind::Media && self.toolbox.get(External::Ffmpeg).is_some();
-        let previewable = probeable && previewable(self.tool);
         let mut action = None;
+        let fill = if row.selected == Some(i) {
+            p.sunken.lerp_to_gamma(p.accent, 0.14)
+        } else {
+            p.sunken
+        };
         egui::Frame::new()
-            .fill(p.sunken.lerp_to_gamma(p.accent, glow * 0.08))
-            .stroke(stroke)
-            .corner_radius(CornerRadius::same(theme::RADIUS))
-            .inner_margin(Margin::same(8))
+            .fill(fill)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                if self.files.is_empty() {
-                    widgets::empty_state(ui, icons::FILE_PLUS, tr("files.empty"), DROP_ZONE_HEIGHT);
-                    return;
-                }
-                ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    for (i, path) in self.files.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let small = |ui: &mut egui::Ui, icon, enabled| {
-                                widgets::button(
-                                    ui,
-                                    Some(icon),
-                                    "",
-                                    Kind::Ghost,
-                                    Size::Small,
-                                    enabled,
-                                )
-                            };
-                            if small(ui, icons::X, true)
-                                .on_hover_text(tr("action.remove"))
-                                .clicked()
-                            {
-                                action = Some(FileAction::Remove(i));
-                            }
-                            if ordered {
-                                if small(ui, icons::CARET_UP, i > 0)
-                                    .on_hover_text(tr("action.move_up"))
-                                    .clicked()
-                                {
-                                    action = Some(FileAction::Swap(i, i - 1));
-                                }
-                                if small(ui, icons::CARET_DOWN, i + 1 < self.files.len())
-                                    .on_hover_text(tr("action.move_down"))
-                                    .clicked()
-                                {
-                                    action = Some(FileAction::Swap(i, i + 1));
-                                }
-                            }
-                            if previewable
-                                && small(ui, icons::EYE, true)
-                                    .on_hover_text(tr("action.preview"))
-                                    .clicked()
-                            {
-                                action = Some(FileAction::Preview(i));
-                            }
-                            if probeable
-                                && small(ui, icons::INFO, true)
-                                    .on_hover_text(tr("action.media_info"))
-                                    .clicked()
-                            {
-                                action = Some(FileAction::Info(i));
-                            }
-                            ui.label(file_name(path))
-                                .on_hover_text(path.display().to_string());
-                        });
+                ui.horizontal(|ui| {
+                    if row.ordered {
+                        position_badge(ui, i + 1);
                     }
+                    widgets::icon_tile(
+                        ui,
+                        file_art(path, self.tool.input_kind()),
+                        FILE_TILE,
+                        false,
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let mut small = |icon, hint: &str, enabled, then: FileAction| {
+                            if widgets::button(
+                                ui,
+                                Some(icon),
+                                "",
+                                Kind::Ghost,
+                                Size::Small,
+                                enabled,
+                            )
+                            .on_hover_text(hint)
+                            .clicked()
+                            {
+                                action = Some(then);
+                            }
+                        };
+                        small(icons::X, tr("action.remove"), true, FileAction::Remove(i));
+                        if row.ordered {
+                            small(
+                                icons::CARET_DOWN,
+                                tr("action.move_down"),
+                                i + 1 < row.count,
+                                FileAction::Swap(i, i + 1),
+                            );
+                            small(
+                                icons::CARET_UP,
+                                tr("action.move_up"),
+                                i > 0,
+                                FileAction::Swap(i, i.saturating_sub(1)),
+                            );
+                        }
+                        if row.probeable {
+                            small(
+                                icons::INFO,
+                                tr("action.media_info"),
+                                true,
+                                FileAction::Info(i),
+                            );
+                        }
+                        if row.eye {
+                            let hint = if row.selected.is_some() {
+                                tr("action.show_in_preview")
+                            } else {
+                                tr("action.preview")
+                            };
+                            small(icons::EYE, hint, true, FileAction::Preview(i));
+                        }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                if let Some(role) = role {
+                                    ui.label(RichText::new(role).small().strong().color(p.accent));
+                                }
+                                ui.add(
+                                    Label::new(RichText::new(file_name(path)).strong()).truncate(),
+                                )
+                                .on_hover_text(path.display().to_string());
+                                let detail = self.file_detail(path);
+                                if !detail.is_empty() {
+                                    ui.label(RichText::new(detail).small().color(p.text_weak));
+                                }
+                            });
+                        });
+                    });
                 });
             });
-        match action {
-            Some(FileAction::Remove(i)) => {
-                self.files.remove(i);
-            }
-            Some(FileAction::Swap(a, b)) => self.files.swap(a, b),
-            Some(FileAction::Info(i)) => self.show_media_info(i),
-            Some(FileAction::Preview(i)) => self.open_preview(i, ui.ctx()),
-            None => {}
-        }
-        ui.add_space(4.0);
-        let hint = match self.tool.arity() {
-            InputArity::Exactly(2) if self.tool == Tool::Mux => tr("hint.mux_order"),
-            InputArity::Exactly(2) => tr("hint.mix_order"),
-            InputArity::AllAtLeast(_) => tr("hint.order_matters"),
-            _ => tr("hint.drop_files"),
+        action
+    }
+
+    /// "12.4 MB · 3:24" for a file, as far as it is known.
+    fn file_detail(&self, path: &Path) -> String {
+        let Some(details) = self.details.get(path) else {
+            return String::new();
         };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(trf("files.count", &[("count", &self.files.len())])).weak());
-            ui.label(RichText::new("·").weak());
-            ui.label(RichText::new(hint).weak());
-        });
+        let mut parts = Vec::new();
+        if let Some(bytes) = details.bytes {
+            parts.push(human_size(bytes));
+        }
+        if let Some(secs) = details.duration {
+            parts.push(clock(Duration::from_secs_f64(secs)));
+        }
+        parts.join(" · ")
     }
 
     fn open_preview(&mut self, index: usize, ctx: &egui::Context) {
@@ -1002,23 +1383,16 @@ impl MuxrApp {
     }
 
     fn preview_window(&mut self, ctx: &egui::Context) {
+        if inline_preview_mode(self.tool).is_some() {
+            return;
+        }
         let Some(preview) = &mut self.preview else {
             return;
         };
         let opts = &mut self.settings.options;
-        let open = if self.tool == Tool::Delogo {
-            let mut area = Some(opts.delogo);
-            let open = preview.show(ctx, &mut opts.edit, &mut area);
-            if let Some(area) = area {
-                opts.delogo = area;
-            }
-            open
-        } else {
-            let mut crop = opts.edit.crop.take();
-            let open = preview.show(ctx, &mut opts.edit, &mut crop);
-            opts.edit.crop = crop;
-            open
-        };
+        let mut crop = opts.edit.crop.take();
+        let open = preview.show(ctx, &mut opts.edit, &mut crop);
+        opts.edit.crop = crop;
         if !open {
             self.preview = None;
         }
@@ -1055,13 +1429,8 @@ impl MuxrApp {
             Tool::ToImage(_) | Tool::ImagesToPdf | Tool::JoinImages => {
                 if tool == Tool::JoinImages {
                     row(ui, tr("option.layout"), |ui| {
-                        combo(
-                            ui,
-                            "join_layout",
-                            &mut opts.join_layout,
-                            &JoinLayout::ALL,
-                            |l| l.label().to_owned(),
-                        );
+                        let choices = JoinLayout::ALL.map(|l| (l, l.label()));
+                        widgets::segmented(ui, &mut opts.join_layout, &choices);
                     });
                 }
                 quality_row(ui, &mut opts.quality);
@@ -1103,13 +1472,10 @@ impl MuxrApp {
                 resolution_row(ui, &mut opts.resolution);
             }
             Tool::Crop => {
-                row(ui, tr("option.crop"), |ui| {
+                row_hint(ui, tr("option.crop"), tr("hint.rect_exact"), |ui| {
                     let mut rect = opts.edit.crop.unwrap_or_default();
                     rect_editor(ui, &mut rect);
                     opts.edit.crop = Some(rect);
-                });
-                row(ui, "", |ui| {
-                    ui.label(RichText::new(tr("hint.preview_crop")).weak());
                 });
                 quality_row(ui, &mut opts.quality);
             }
@@ -1132,9 +1498,8 @@ impl MuxrApp {
             }
             Tool::Trim => {
                 trim_rows(ui, &mut opts.edit);
-                row(ui, tr("option.mode"), |ui| {
-                    ui.checkbox(&mut opts.stream_copy, tr("option.stream_copy"))
-                        .on_hover_text(tr("hint.stream_copy"));
+                row_hint(ui, tr("option.mode"), tr("hint.stream_copy"), |ui| {
+                    ui.checkbox(&mut opts.stream_copy, tr("option.stream_copy"));
                 });
                 if !opts.stream_copy {
                     quality_row(ui, &mut opts.quality);
@@ -1143,8 +1508,14 @@ impl MuxrApp {
             }
             Tool::Split => {
                 row(ui, tr("option.split_mode"), |ui| {
-                    ui.radio_value(&mut opts.split_by_parts, false, tr("option.split_by_time"));
-                    ui.radio_value(&mut opts.split_by_parts, true, tr("option.split_by_parts"));
+                    widgets::segmented(
+                        ui,
+                        &mut opts.split_by_parts,
+                        &[
+                            (false, tr("option.split_by_time")),
+                            (true, tr("option.split_by_parts")),
+                        ],
+                    );
                 });
                 if opts.split_by_parts {
                     row(ui, tr("option.parts"), |ui| {
@@ -1164,7 +1535,7 @@ impl MuxrApp {
                 }
             }
             Tool::Compress => {
-                row(ui, tr("option.target_size"), |ui| {
+                row_hint(ui, tr("option.target_size"), tr("hint.target_size"), |ui| {
                     ui.add(
                         DragValue::new(&mut opts.target_size_mb)
                             .range(options::MIN_TARGET_MB..=options::MAX_TARGET_MB)
@@ -1212,11 +1583,7 @@ impl MuxrApp {
             | Tool::PdfToExcel
             | Tool::DiscToIso
             | Tool::ExtractSubtitles
-            | Tool::ToEbook(_) => {
-                row(ui, "", |ui| {
-                    ui.label(RichText::new(tr("option.none")).weak());
-                });
-            }
+            | Tool::ToEbook(_) => {}
             Tool::PdfToImages => {
                 row(ui, tr("option.dpi"), |ui| {
                     ui.add(
@@ -1292,13 +1659,8 @@ impl MuxrApp {
             }
             Tool::Download => {
                 row(ui, tr("option.download_kind"), |ui| {
-                    combo(
-                        ui,
-                        "download_kind",
-                        &mut opts.download_kind,
-                        &DownloadKind::ALL,
-                        |k| k.label().to_owned(),
-                    );
+                    let choices = DownloadKind::ALL.map(|k| (k, k.label()));
+                    widgets::segmented(ui, &mut opts.download_kind, &choices);
                 });
             }
             Tool::Record => {
@@ -1312,13 +1674,15 @@ impl MuxrApp {
         }
         if tool == Tool::Rotate {
             row(ui, tr("option.rotation"), |ui| {
-                combo(ui, "rotation", &mut opts.rotation, &Rotation::ALL, |r| {
-                    r.label().to_owned()
+                ui.vertical(|ui| {
+                    for rotation in Rotation::ALL {
+                        ui.radio_value(&mut opts.rotation, rotation, rotation.label());
+                    }
                 });
             });
         }
         if tool == Tool::Speed {
-            row(ui, tr("option.speed"), |ui| {
+            row_hint(ui, tr("option.speed"), tr("hint.speed"), |ui| {
                 ui.add(
                     Slider::new(&mut opts.speed, options::MIN_SPEED..=options::MAX_SPEED)
                         .suffix("×")
@@ -1328,17 +1692,12 @@ impl MuxrApp {
         }
         if tool == Tool::VideoMix {
             row(ui, tr("option.layout"), |ui| {
-                combo(
-                    ui,
-                    "mix_layout",
-                    &mut opts.mix_layout,
-                    &MixLayout::ALL,
-                    |l| l.label().to_owned(),
-                );
+                let choices = MixLayout::ALL.map(|l| (l, l.label()));
+                widgets::segmented(ui, &mut opts.mix_layout, &choices);
             });
         }
         if tool == Tool::Delogo {
-            row(ui, tr("option.logo_area"), |ui| {
+            row_hint(ui, tr("option.logo_area"), tr("hint.rect_exact"), |ui| {
                 rect_editor(ui, &mut opts.delogo)
             });
         }
@@ -1351,6 +1710,7 @@ impl MuxrApp {
             .id_salt("adv_video")
             .show(ui, |ui| {
                 egui::Grid::new("adv_video_grid")
+                    .striped(false)
                     .num_columns(2)
                     .spacing([16.0, 10.0])
                     .show(ui, |ui| {
@@ -1419,6 +1779,7 @@ impl MuxrApp {
             .show(ui, |ui| {
                 ui.label(RichText::new(tr("hint.edit_applies")).weak());
                 egui::Grid::new("edit_grid")
+                    .striped(false)
                     .num_columns(2)
                     .spacing([16.0, 10.0])
                     .show(ui, |ui| {
@@ -1486,17 +1847,18 @@ impl MuxrApp {
             if !self.queue.is_running && counts.queued > 0 {
                 widgets::chip(ui, icons::PAUSE, tr("queue.paused"), p.warning);
             }
+            if total == 0 {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(icons::label(icons::LIST_PLUS, tr("queue.empty")))
+                        .color(p.text_weak),
+                );
+            }
         });
-        ui.add_space(4.0);
         if self.queue.jobs().is_empty() {
-            widgets::empty_state(
-                ui,
-                icons::LIST_PLUS,
-                tr("queue.empty"),
-                ui.available_height().max(80.0),
-            );
             return;
         }
+        ui.add_space(4.0);
         let mut cancel = None;
         let mut remove = None;
         ScrollArea::vertical()
@@ -1911,14 +2273,221 @@ enum FileAction {
     Swap(usize, usize),
     Info(usize),
     Preview(usize),
+    Add,
 }
 
-/// Tools whose clip, crop or logo area can be set in the preview window.
+/// What is known about an added file.
+struct FileDetails {
+    bytes: Option<u64>,
+    /// Length in seconds, once probed.
+    duration: Option<f64>,
+}
+
+/// What every row of one file list shows.
+struct RowContext {
+    count: usize,
+    /// Order matters, so rows get numbers and move buttons.
+    ordered: bool,
+    probeable: bool,
+    /// Show the preview (eye) button.
+    eye: bool,
+    /// The row shown in the inline preview.
+    selected: Option<usize>,
+}
+
+/// Tools whose clip and crop can be set in the preview window.
 fn previewable(tool: Tool) -> bool {
-    matches!(
+    matches!(tool, Tool::ToVideo(_) | Tool::ToDevice(_))
+}
+
+/// Tools that show the video inside the editor, and what can be picked on it.
+fn inline_preview_mode(tool: Tool) -> Option<PreviewMode> {
+    match tool {
+        Tool::Trim => Some(PreviewMode::CLIP),
+        Tool::Crop | Tool::Delogo => Some(PreviewMode::AREA),
+        _ => None,
+    }
+}
+
+/// Whether the tool has any settings to show.
+fn has_options(tool: Tool) -> bool {
+    !matches!(
         tool,
-        Tool::ToVideo(_) | Tool::ToDevice(_) | Tool::Trim | Tool::Crop | Tool::Delogo
+        Tool::Mux
+            | Tool::RemoveAudio
+            | Tool::Normalize
+            | Tool::Repair
+            | Tool::PdfToText
+            | Tool::PdfToHtml
+            | Tool::PdfToWord
+            | Tool::OfficeToPdf
+            | Tool::PdfMerge
+            | Tool::PdfSplit
+            | Tool::CsoToIso
+            | Tool::PdfToExcel
+            | Tool::DiscToIso
+            | Tool::ExtractSubtitles
+            | Tool::ToEbook(_)
     )
+}
+
+/// Names for the two inputs of tools that take exactly two files.
+fn slot_roles(tool: Tool) -> Option<[&'static str; 2]> {
+    match tool {
+        Tool::Mux => Some([tr("role.video"), tr("role.audio")]),
+        Tool::VideoMix => Some([tr("role.main_video"), tr("role.second_video")]),
+        _ => None,
+    }
+}
+
+/// One numbered step of the task editor: a card with a badge, a title and a
+/// short explanation above its controls.
+fn step(
+    ui: &mut egui::Ui,
+    number: usize,
+    done: bool,
+    title: &str,
+    help: &str,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    card(ui, |ui| {
+        let p = theme::palette(ui);
+        ui.horizontal(|ui| {
+            widgets::step_badge(ui, number, done);
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(RichText::new(title).strong().size(16.5));
+                if !help.is_empty() {
+                    ui.label(RichText::new(help).color(p.text_weak));
+                }
+            });
+        });
+        ui.add_space(12.0);
+        content(ui);
+    });
+}
+
+/// A small circled position number for ordered lists.
+fn position_badge(ui: &mut egui::Ui, number: usize) {
+    let p = theme::palette(ui);
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 11.0, p.control);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        number.to_string(),
+        egui::FontId::proportional(12.5),
+        p.text_weak,
+    );
+}
+
+/// A placeholder row for a named input that has not been added yet.
+/// Returns `true` when its button was clicked.
+fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
+    let p = theme::palette(ui);
+    let mut clicked = false;
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                position_badge(ui, number);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(RichText::new(role).small().strong().color(p.accent));
+                    ui.label(RichText::new(tr("slot.empty")).color(p.text_weak));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    clicked = widgets::button(
+                        ui,
+                        Some(icons::PLUS),
+                        tr("action.choose"),
+                        Kind::Secondary,
+                        Size::Small,
+                        true,
+                    )
+                    .clicked();
+                });
+            });
+        });
+    clicked
+}
+
+/// Lays out `content` at most `max_width` wide, centered in the available space.
+fn centered(ui: &mut egui::Ui, max_width: f32, content: impl FnOnce(&mut egui::Ui)) {
+    let width = ui.available_width().min(max_width);
+    let pad = ((ui.available_width() - width) / 2.0).max(0.0);
+    ui.horizontal_top(|ui| {
+        ui.add_space(pad);
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            content(ui);
+        });
+    });
+}
+
+/// "Supported: MP4, MKV, …" for the drop zone.
+fn formats_line(kind: InputKind) -> String {
+    let exts = kind.extensions();
+    if exts.is_empty() {
+        return String::new();
+    }
+    let mut list = exts
+        .iter()
+        .take(SHOWN_EXTENSIONS)
+        .map(|e| e.to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if exts.len() > SHOWN_EXTENSIONS {
+        list.push_str(", …");
+    }
+    trf("drop.formats", &[("list", &list)])
+}
+
+/// A colored icon for a file, chosen by its type.
+fn file_art(path: &Path, kind: InputKind) -> art::Art {
+    use art::{glyph, hue};
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let ext = ext.as_str();
+    let (glyph, hue) = match (kind, ext) {
+        (InputKind::Folder, _) => (glyph::HARD_DRIVE, hue::SLATE),
+        (InputKind::Disc, _) | (_, "iso" | "cso") => (glyph::DISC, hue::VIOLET),
+        _ if AUDIO_EXTENSIONS.contains(&ext) => (glyph::FILE_AUDIO, hue::PINK),
+        (InputKind::Media, _) => (glyph::FILE_VIDEO, hue::BLUE),
+        (InputKind::Images, _) => (glyph::FILE_IMAGE, hue::GREEN),
+        (_, "pdf") => (glyph::FILE_PDF, hue::RED),
+        (_, "docx" | "doc" | "odt" | "rtf") => (glyph::FILE_DOC, hue::INDIGO),
+        (_, "xlsx" | "xlsm" | "xls" | "ods" | "csv" | "tsv") => (glyph::EXCEL, hue::EMERALD),
+        (_, "pptx" | "ppt" | "odp") => (glyph::FILE_DOC, hue::ORANGE),
+        (_, "html" | "htm") => (glyph::FILE_HTML, hue::ORANGE),
+        (_, "txt" | "md") => (glyph::FILE_TXT, hue::SLATE),
+        (InputKind::Ebooks, _) => (glyph::BOOK, hue::AMBER),
+        _ => (glyph::FILE_TEXT, hue::SLATE),
+    };
+    art::Art { glyph, hue }
+}
+
+/// A file size such as `12.4 MB` (decimal units, like file managers).
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// A rounded surface that groups related controls.
@@ -2013,14 +2582,27 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
     ui.end_row();
 }
 
+/// A grid row with a short explanation under the control.
+fn row_hint(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mut egui::Ui)) {
+    let p = theme::palette(ui);
+    ui.label(RichText::new(label).color(p.text_weak));
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        ui.horizontal(content);
+        ui.label(RichText::new(hint).small().color(p.text_weak));
+    });
+    ui.end_row();
+}
+
 fn quality_row(ui: &mut egui::Ui, q: &mut Quality) {
-    row(ui, tr("option.quality"), |ui| {
-        combo(ui, "quality", q, &Quality::ALL, |v| v.label().to_owned())
+    row_hint(ui, tr("option.quality"), tr("hint.quality"), |ui| {
+        let choices = Quality::ALL.map(|v| (v, v.label()));
+        widgets::segmented(ui, q, &choices);
     });
 }
 
 fn resolution_row(ui: &mut egui::Ui, r: &mut Resolution) {
-    row(ui, tr("option.resolution"), |ui| {
+    row_hint(ui, tr("option.resolution"), tr("hint.resolution"), |ui| {
         combo(ui, "resolution", r, &Resolution::ALL, |v| v.label())
     });
 }
@@ -2084,6 +2666,7 @@ fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {
 
 fn audio_grid(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool) {
     egui::Grid::new("adv_audio_grid")
+        .striped(false)
         .num_columns(2)
         .spacing([16.0, 10.0])
         .show(ui, |ui| {
@@ -2347,6 +2930,7 @@ impl eframe::App for MuxrApp {
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
         self.check_after_done(&ctx);
         self.poll_ffmpeg_install();
+        self.poll_details();
         let p = theme::palette(ui);
 
         let bar = |fill| {
@@ -2362,11 +2946,19 @@ impl eframe::App for MuxrApp {
             .default_size(SIDEBAR_WIDTH)
             .frame(bar(p.panel))
             .show(ui, |ui| self.sidebar(ui));
-        egui::Panel::bottom("queue")
-            .resizable(true)
-            .default_size(QUEUE_HEIGHT)
-            .frame(bar(p.surface))
-            .show(ui, |ui| self.queue_panel(ui));
+        // An empty queue is a single line, leaving the room to the editor.
+        if self.queue.jobs().is_empty() {
+            egui::Panel::bottom("queue_empty")
+                .resizable(false)
+                .frame(bar(p.surface))
+                .show(ui, |ui| self.queue_panel(ui));
+        } else {
+            egui::Panel::bottom("queue")
+                .resizable(true)
+                .default_size(QUEUE_HEIGHT)
+                .frame(bar(p.surface))
+                .show(ui, |ui| self.queue_panel(ui));
+        }
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let rect = ui.max_rect();
             ui.painter().rect_filled(rect, CornerRadius::ZERO, p.panel);
@@ -2375,10 +2967,13 @@ impl eframe::App for MuxrApp {
             egui::Panel::bottom("editor_actions")
                 .frame(
                     egui::Frame::new()
-                        .fill(p.panel)
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
                         .inner_margin(Margin::symmetric(18, 10)),
                 )
-                .show_collapsible(ui, &mut in_editor, |ui| self.action_bar(ui));
+                .show_collapsible(ui, &mut in_editor, |ui| {
+                    centered(ui, EDITOR_MAX_WIDTH, |ui| self.action_bar(ui));
+                });
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
@@ -2386,7 +2981,7 @@ impl eframe::App for MuxrApp {
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
                             if self.in_editor {
-                                self.task_editor(ui);
+                                centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                             } else {
                                 self.tool_grid(ui);
                             }
@@ -2413,6 +3008,20 @@ mod tests {
         assert_eq!(clock(Duration::from_secs(5)), "0:05");
         assert_eq!(clock(Duration::from_secs(125)), "2:05");
         assert_eq!(clock(Duration::from_secs(3725)), "1:02:05");
+    }
+
+    #[test]
+    fn sizes_use_readable_units() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(12_400_000), "12.4 MB");
+        assert_eq!(human_size(3_000_000_000), "3.0 GB");
+    }
+
+    #[test]
+    fn formats_line_lists_a_few_extensions() {
+        assert!(formats_line(InputKind::Pdf).contains("PDF"));
+        assert!(formats_line(InputKind::Media).ends_with("…"));
+        assert!(formats_line(InputKind::Folder).is_empty());
     }
 
     #[test]

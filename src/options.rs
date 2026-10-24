@@ -476,6 +476,17 @@ pub fn format_timestamp(secs: f64) -> String {
     format!("{}:{:02}:{:02}.{ms:03}", s / 3600, s / 60 % 60, s % 60)
 }
 
+/// A short, readable time such as `1:05.5` or `1:02:05.0`, for display only.
+pub fn display_time(secs: f64) -> String {
+    let tenths = (secs.max(0.0) * 10.0).round() as u64;
+    let (s, t) = (tenths / 10, tenths % 10);
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}.{t}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}.{t}", s / 60, s % 60)
+    }
+}
+
 /// Parses `ss[.f]`, `mm:ss[.f]` or `hh:mm:ss[.f]` into seconds.
 /// Empty input yields `None`; malformed input yields `Err(())`.
 pub fn parse_timestamp(text: &str) -> Result<Option<f64>, ()> {
@@ -506,6 +517,13 @@ pub fn parse_timestamp(text: &str) -> Result<Option<f64>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_time_is_short_and_readable() {
+        assert_eq!(display_time(0.0), "0:00.0");
+        assert_eq!(display_time(65.46), "1:05.5");
+        assert_eq!(display_time(3725.0), "1:02:05.0");
+    }
 
     #[test]
     fn timestamps_parse_in_all_forms() {
