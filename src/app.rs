@@ -2732,7 +2732,10 @@ impl MuxrApp {
                         }
                     });
                     ui.separator();
+                    let right_width = ui.available_width();
                     ui.vertical(|ui| {
+                        ui.set_width(right_width);
+                        ui.set_max_width(right_width);
                         ui.label(RichText::new(self.settings_tab.label()).heading().strong());
                         ui.add_space(8.0);
                         ScrollArea::vertical()
@@ -3149,35 +3152,44 @@ impl MuxrApp {
                 ui.checkbox(&mut self.settings.check_updates, tr("update.automatic"));
             });
             row(ui, "", |ui| {
-                let checking = matches!(self.update, UpdateState::Checking { .. });
-                check_now = widgets::button(
-                    ui,
-                    Some(icons::ARROW_CLOCKWISE),
-                    tr("update.check_now"),
-                    Kind::Secondary,
-                    Size::Small,
-                    !checking && !matches!(self.update, UpdateState::Downloading { .. }),
-                )
-                .clicked();
-                let (text, color) = match &self.update {
-                    UpdateState::Checking { .. } => (tr("update.checking").to_owned(), p.text_weak),
-                    UpdateState::UpToDate => (tr("update.up_to_date").to_owned(), p.success),
-                    UpdateState::Available(r) | UpdateState::Downloading { release: r, .. } => (
-                        trf("update.available_short", &[("version", &r.version)]),
-                        p.accent,
-                    ),
-                    UpdateState::Failed(message) => {
-                        (trf("update.failed", &[("error", message)]), p.danger)
+                ui.vertical(|ui| {
+                    let checking = matches!(self.update, UpdateState::Checking { .. });
+                    check_now = widgets::button(
+                        ui,
+                        Some(icons::ARROW_CLOCKWISE),
+                        tr("update.check_now"),
+                        Kind::Secondary,
+                        Size::Small,
+                        !checking && !matches!(self.update, UpdateState::Downloading { .. }),
+                    )
+                    .clicked();
+                    let (text, color) = match &self.update {
+                        UpdateState::Checking { .. } => {
+                            (tr("update.checking").to_owned(), p.text_weak)
+                        }
+                        UpdateState::UpToDate => (tr("update.up_to_date").to_owned(), p.success),
+                        UpdateState::Available(r) | UpdateState::Downloading { release: r, .. } => (
+                            trf("update.available_short", &[("version", &r.version)]),
+                            p.accent,
+                        ),
+                        UpdateState::Failed(message) => {
+                            (trf("update.failed", &[("error", message)]), p.danger)
+                        }
+                        _ => (String::new(), p.text_weak),
+                    };
+                    if !text.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
                     }
-                    _ => (String::new(), p.text_weak),
-                };
-                ui.label(RichText::new(text).small().color(color));
+                });
             });
         });
-        ui.label(
-            RichText::new(tr("update.safety_hint"))
-                .small()
-                .color(p.text_weak),
+        ui.add(
+            egui::Label::new(
+                RichText::new(tr("update.safety_hint"))
+                    .small()
+                    .color(p.text_weak),
+            )
+            .wrap(),
         );
         if check_now {
             self.start_update_check(ui.ctx(), true);
