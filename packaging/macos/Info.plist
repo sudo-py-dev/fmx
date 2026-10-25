@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Muxr</string>
-  <key>CFBundleDisplayName</key><string>Muxr</string>
-  <key>CFBundleIdentifier</key><string>io.github.sudo-py-dev.muxr</string>
-  <key>CFBundleExecutable</key><string>muxr</string>
-  <key>CFBundleIconFile</key><string>muxr</string>
+  <key>CFBundleName</key><string>FMX</string>
+  <key>CFBundleDisplayName</key><string>FMX</string>
+  <key>CFBundleIdentifier</key><string>io.github.sudo-py-dev.fmx</string>
+  <key>CFBundleExecutable</key><string>fmx</string>
+  <key>CFBundleIconFile</key><string>fmx</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>
   <key>CFBundleVersion</key><string>@VERSION@</string>

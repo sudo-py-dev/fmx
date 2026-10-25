@@ -8,7 +8,7 @@ use crate::catalog::{Tool, VideoFormat};
 use crate::options::Options;
 use crate::theme::ThemeChoice;
 
-pub const STORAGE_KEY: &str = "muxr.settings.v1";
+pub const STORAGE_KEY: &str = "fmx.settings.v1";
 pub const MAX_PARALLEL_JOBS: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,9 +33,9 @@ pub struct Settings {
     pub reduce_motion: bool,
     /// Show a system notification when the queue finishes.
     pub notify_when_done: bool,
-    /// Look for a newer Muxr on GitHub about once a day.
+    /// Look for a newer Fmx on GitHub about once a day.
     pub check_updates: bool,
-    /// When Muxr last looked for updates (seconds since 1970).
+    /// When Fmx last looked for updates (seconds since 1970).
     pub last_update_check: u64,
     /// A release the user chose to skip; it is not offered again.
     pub skipped_version: Option<String>,

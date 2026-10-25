@@ -1,0 +1,55 @@
+name: fmx
+base: core24
+version: '0.0.4' # or adopt-info: fmx to extract dynamically
+summary: All-in-one media, document and disc converter
+description: |
+  fmx converts video, audio, images, documents and discs from one simple
+  window with a clean, responsive GUI.
+
+grade: stable
+confinement: strict
+icon: packaging/icons/fmx-512.png
+
+apps:
+  fmx:
+    command: bin/fmx
+    desktop: usr/share/applications/fmx.desktop
+    extensions: [gnome]
+    plugs:
+      - home
+      - removable-media     # Read/write files on USB drives / external media
+      - optical-drive       # Rip/read optical CD/DVD drives (xorriso / disc.rs)
+      - network             # yt-dlp / external media downloads
+      - network-bind
+      - audio-playback      # Audio preview
+
+parts:
+  fmx:
+    plugin: nil
+    source: .
+    build-packages:
+      - curl
+      - build-essential
+      - pkg-config
+    override-build: |
+      # Install the required Rust toolchain (Rust >= 1.88 per Cargo.toml)
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+      . "$HOME/.cargo/env"
+
+      cargo build --release --locked
+
+      # Install binary
+      install -Dm755 target/release/fmx "$CRAFT_PART_INSTALL/bin/fmx"
+
+      # Install desktop file & icons
+      install -Dm644 packaging/linux/fmx.desktop "$CRAFT_PART_INSTALL/usr/share/applications/fmx.desktop"
+      for size in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "packaging/icons/fmx-$size.png" \
+          "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/${size}x${size}/apps/fmx.png"
+      done
+
+    stage-packages:
+      - ffmpeg
+      - poppler-utils
+      - ghostscript
+      - xorriso

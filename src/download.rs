@@ -13,10 +13,10 @@ use crate::i18n::{tr, trf};
 use crate::options::{DownloadAudio, DownloadContainer, DownloadKind, DownloadOptions};
 use crate::process::{KillOnDrop, command};
 
-/// Marks the progress lines Muxr asks yt-dlp to print.
-const PROGRESS_TAG: &str = "MUXR|";
+/// Marks the progress lines FMX asks yt-dlp to print.
+const PROGRESS_TAG: &str = "FMX|";
 /// Bytes, total, estimated total, speed, seconds left, playlist item, item count.
-const PROGRESS_TEMPLATE: &str = "download:MUXR|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.playlist_index)s|%(info.n_entries)s";
+const PROGRESS_TEMPLATE: &str = "download:FMX|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.playlist_index)s|%(info.n_entries)s";
 /// Link details larger than this are not read (a flat playlist is a few MB at most).
 const MAX_INFO_BYTES: u64 = 32 << 20;
 const INFO_TIMEOUT: Duration = Duration::from_secs(60);
@@ -273,7 +273,7 @@ struct RawFormat {
     vcodec: Option<String>,
 }
 
-/// Turns yt-dlp's `-J` answer into the details Muxr shows.
+/// Turns yt-dlp's `-J` answer into the details Fmx shows.
 pub fn parse_info(json: &str) -> Option<LinkInfo> {
     let raw: RawInfo = serde_json::from_str(json).ok()?;
     let playlist = raw.kind.as_deref() == Some("playlist");
@@ -456,20 +456,20 @@ mod tests {
 
     #[test]
     fn progress_lines_become_words() {
-        let p = parse_progress("MUXR|12400000|120000000|NA|2300000|45|NA|NA").expect("line");
+        let p = parse_progress("FMX|12400000|120000000|NA|2300000|45|NA|NA").expect("line");
         assert_eq!(p.fraction, Some(12.4 / 120.0));
         assert!(p.detail.contains("12.4 MB") && p.detail.contains("120.0 MB"));
         assert!(p.detail.contains("2.3 MB/s") && p.detail.contains("0:45"));
 
         // Playlist item 3 of 4, half done: 2.5 of 4 overall.
-        let p = parse_progress("MUXR|50|NA|100|NA|NA|3|4").expect("line");
+        let p = parse_progress("FMX|50|NA|100|NA|NA|3|4").expect("line");
         assert_eq!(p.fraction, Some(0.625));
         assert!(p.detail.contains('3') && p.detail.contains('4'));
 
         let p = parse_progress("[Merger] Merging formats into \"x.mp4\"").expect("step");
         assert_eq!(p.fraction, None);
         assert!(parse_progress("[youtube] abc: Downloading webpage").is_none());
-        assert!(parse_progress("MUXR|NA|NA|NA|NA|NA|NA|NA").is_none());
+        assert!(parse_progress("FMX|NA|NA|NA|NA|NA|NA|NA").is_none());
     }
 
     #[test]

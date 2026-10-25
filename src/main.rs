@@ -1,4 +1,4 @@
-//! Muxr — a lightweight, fast media converter.
+//! Fmx — a lightweight, fast media converter.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -35,13 +35,13 @@ mod ytdlp_setup;
 use eframe::egui;
 use tracing_subscriber::EnvFilter;
 
-const APP_ID: &str = "muxr";
+const APP_ID: &str = "fmx";
 const INITIAL_SIZE: [f32; 2] = [1120.0, 760.0];
 const MIN_SIZE: [f32; 2] = [760.0, 520.0];
 
 /// The app icon for the window and taskbar (from `packaging/make-icons.py`).
 fn window_icon() -> egui::IconData {
-    let png = include_bytes!("../packaging/icons/muxr-256.png");
+    let png = include_bytes!("../packaging/icons/fmx-256.png");
     let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
         .expect("bundled icon is a valid PNG")
         .into_rgba8();
@@ -56,14 +56,16 @@ fn window_icon() -> egui::IconData {
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("MUXR_LOG").unwrap_or_else(|_| EnvFilter::new("warn")),
+            EnvFilter::try_from_env("FMX_LOG")
+                .or_else(|_| EnvFilter::try_from_env("Fmx_LOG"))
+                .unwrap_or_else(|_| EnvFilter::new("warn")),
         )
         .init();
-    if let Ok(lang) = std::env::var("MUXR_LANG") {
+    if let Ok(lang) = std::env::var("FMX_LANG").or_else(|_| std::env::var("Fmx_LANG")) {
         i18n::set_language(Some(&lang));
     }
 
-    // Files passed on the command line (e.g. "Open with Muxr") go into the file list.
+    // Files passed on the command line (e.g. "Open with Fmx") go into the file list.
     let open_files: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -78,6 +80,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         APP_ID,
         options,
-        Box::new(|cc| Ok(Box::new(app::MuxrApp::new(cc, open_files)))),
+        Box::new(|cc| Ok(Box::new(app::FmxApp::new(cc, open_files)))),
     )
 }

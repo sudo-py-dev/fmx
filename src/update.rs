@@ -1,11 +1,11 @@
-//! Checking GitHub for a newer Muxr and installing it safely.
+//! Checking GitHub for a newer Fmx and installing it safely.
 //!
 //! What keeps this safe:
 //! - Requests go only over HTTPS, to this repository's GitHub releases.
 //! - Only a version newer than the running one is offered, never a downgrade,
 //!   draft or pre-release.
 //! - Every downloaded file needs a minisign (Ed25519) signature made with the
-//!   release key, whose public half is compiled into Muxr. The signed "trusted
+//!   release key, whose public half is compiled into Fmx. The signed "trusted
 //!   comment" must name exactly this file and version, so an older or different
 //!   signed file cannot be swapped in.
 //! - Downloads are size-limited, verified while streaming, and only moved into
@@ -25,9 +25,9 @@ use crate::process::spawn_detached;
 
 /// The running version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/sudo-py-dev/muxr/releases/latest";
-const DOWNLOAD_PREFIX: &str = "https://github.com/sudo-py-dev/muxr/releases/download/";
-const RELEASES_PAGE: &str = "https://github.com/sudo-py-dev/muxr/releases";
+const LATEST_RELEASE_API: &str = "https://api.github.com/repos/sudo-py-dev/fmx/releases/latest";
+const DOWNLOAD_PREFIX: &str = "https://github.com/sudo-py-dev/fmx/releases/download/";
+const RELEASES_PAGE: &str = "https://github.com/sudo-py-dev/fmx/releases";
 /// The release signing key (public half); the private half signs in CI.
 const RELEASE_KEY: &str = include_str!("../packaging/update-key.pub");
 const MAX_API_BYTES: u64 = 1 << 20;
@@ -35,7 +35,7 @@ const MAX_SIGNATURE_BYTES: u64 = 4 << 10;
 const MAX_PACKAGE_BYTES: u64 = 300 << 20;
 const MAX_BINARY_BYTES: u64 = 300 << 20;
 const CHUNK: usize = 64 * 1024;
-/// How often Muxr looks for updates on its own, in seconds.
+/// How often Fmx looks for updates on its own, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// A plain `major.minor.patch` version.
@@ -73,10 +73,10 @@ impl fmt::Display for Version {
     }
 }
 
-/// How Muxr was installed, which decides what an update downloads.
+/// How Fmx was installed, which decides what an update downloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallKind {
-    /// The Debian package (`/usr/bin/muxr`).
+    /// The Debian package (`/usr/bin/Fmx`).
     Deb,
     /// The portable Linux archive, run from wherever it was unpacked.
     LinuxPortable,
@@ -91,6 +91,11 @@ impl InstallKind {
             ("windows", "x86_64") => Some(Self::WindowsSetup),
             ("macos", _) => Some(Self::MacDmg),
             ("linux", "x86_64") => {
+                // Snaps are updated automatically by snapd. Attempting to self-update
+                // would fail against the read-only SquashFS mount.
+                if std::env::var_os("SNAP").is_some() || std::env::var_os("SNAP_NAME").is_some() {
+                    return None;
+                }
                 let exe = std::env::current_exe().ok()?;
                 Some(if exe.starts_with("/usr") {
                     Self::Deb
@@ -105,17 +110,17 @@ impl InstallKind {
     /// The release file for this kind; the release workflow uses the same names.
     pub fn asset_name(self, version: Version) -> String {
         match self {
-            Self::Deb => format!("muxr_{version}_amd64.deb"),
-            Self::LinuxPortable => format!("muxr-{version}-linux-x86_64.tar.gz"),
-            Self::WindowsSetup => format!("muxr-{version}-windows-x64-setup.exe"),
-            Self::MacDmg => format!("muxr-{version}-macos-universal.dmg"),
+            Self::Deb => format!("fmx_{version}_amd64.deb"),
+            Self::LinuxPortable => format!("fmx-{version}-linux-x86_64.tar.gz"),
+            Self::WindowsSetup => format!("fmx-{version}-windows-x64-setup.exe"),
+            Self::MacDmg => format!("fmx-{version}-macos-universal.dmg"),
         }
     }
 }
 
 /// The signed comment every release file's signature must carry.
 pub fn trusted_comment(version: Version, asset: &str) -> String {
-    format!("muxr {version} {asset}")
+    format!("fmx {version} {asset}")
 }
 
 /// A newer release, ready to download.
@@ -232,12 +237,12 @@ fn newer_release(
     }))
 }
 
-/// Asks GitHub for the latest release; `None` means Muxr is up to date.
+/// Asks GitHub for the latest release; `None` means Fmx is up to date.
 pub fn check() -> Result<Option<Release>, UpdateError> {
     let kind = InstallKind::detect().ok_or(UpdateError::Unsupported)?;
     let response = agent()
         .get(LATEST_RELEASE_API)
-        .header("User-Agent", &format!("muxr/{VERSION}"))
+        .header("User-Agent", &format!("fmx/{VERSION}"))
         .header("Accept", "application/vnd.github+json")
         .call();
     let mut response = match response {
@@ -308,7 +313,7 @@ fn release_key() -> Result<PublicKey, UpdateError> {
 
 /// Where downloaded updates wait to be installed.
 fn updates_dir() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("muxr").join("updates"))
+    dirs::data_dir().map(|d| d.join("fmx").join("updates"))
 }
 
 /// Downloads `release` and verifies its signature. Returns the verified file.
@@ -351,7 +356,7 @@ pub fn download(
 /// What the user still has to do after [`install`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Installed {
-    /// The installer is running; Muxr should close so it can replace files.
+    /// The installer is running; Fmx should close so it can replace files.
     QuitForInstaller,
     /// The system's package installer or disk image is open.
     FinishInInstaller,
@@ -363,7 +368,7 @@ pub enum Installed {
 pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError> {
     match release.kind {
         InstallKind::WindowsSetup => {
-            // The setup closes Muxr, upgrades it, and starts it again (its [Run] section).
+            // The setup closes Fmx, upgrades it, and starts it again (its [Run] section).
             spawn_detached(
                 &file.to_string_lossy(),
                 [
@@ -392,7 +397,7 @@ pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError>
     }
 }
 
-/// Takes the `muxr` program out of a verified `.tar.gz` and swaps it in for
+/// Takes the `Fmx` program out of a verified `.tar.gz` and swaps it in for
 /// `exe` in one step (a running program can be replaced on Linux).
 fn replace_from_archive(archive: &Path, exe: &Path) -> Result<(), UpdateError> {
     let dir = exe.parent().ok_or(UpdateError::Unsupported)?;
@@ -401,7 +406,8 @@ fn replace_from_archive(archive: &Path, exe: &Path) -> Result<(), UpdateError> {
     for entry in entries.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
-        if path.file_name().and_then(|n| n.to_str()) != Some("muxr")
+        let file_name = path.file_name().and_then(|n| n.to_str());
+        if (file_name != Some("fmx") && file_name != Some("Fmx"))
             || !entry.header().entry_type().is_file()
         {
             continue;
@@ -434,7 +440,7 @@ mod tests {
     const TEST_PAYLOAD: &[u8] = include_bytes!("../packaging/test-fixtures/payload.bin");
     const TEST_SIGNATURE: &str = include_str!("../packaging/test-fixtures/payload.bin.minisig");
     /// The trusted comment the fixture was signed with.
-    const TEST_COMMENT: &str = "muxr 9.9.9 muxr-9.9.9-linux-x86_64.tar.gz";
+    const TEST_COMMENT: &str = "Fmx 9.9.9 Fmx-9.9.9-linux-x86_64.tar.gz";
 
     fn v(text: &str) -> Version {
         Version::parse(text).expect("version")
@@ -491,7 +497,7 @@ mod tests {
         let kind = InstallKind::Deb;
         let name = kind.asset_name(v("0.0.2"));
         let json = api_json("v0.0.2", &[&name, &format!("{name}.minisig")])
-            .replace("github.com/sudo-py-dev/muxr", "evil.example/muxr");
+            .replace("github.com/sudo-py-dev/fmx", "evil.example/fmx");
         assert!(newer_release(&json, v("0.0.1"), kind).is_err());
     }
 
@@ -531,7 +537,7 @@ mod tests {
     #[test]
     fn signature_for_another_file_or_version_is_refused() {
         let key = PublicKey::decode(TEST_KEY).expect("key");
-        let other = "muxr 9.9.8 muxr-9.9.8-linux-x86_64.tar.gz";
+        let other = "Fmx 9.9.8 Fmx-9.9.8-linux-x86_64.tar.gz";
         assert!(matches!(
             checked_signature(TEST_SIGNATURE, &key, other),
             Err(UpdateError::Signature)
@@ -559,10 +565,10 @@ mod tests {
     #[test]
     fn portable_update_replaces_the_program() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let exe = dir.path().join("muxr");
+        let exe = dir.path().join("Fmx");
         std::fs::write(&exe, b"old program").expect("old");
         let archive = dir.path().join("update.tar.gz");
-        let data = archive_with(&[("README.md", b"readme"), ("muxr", b"new program")]);
+        let data = archive_with(&[("README.md", b"readme"), ("Fmx", b"new program")]);
         std::fs::write(&archive, data).expect("archive");
         replace_from_archive(&archive, &exe).expect("replace");
         assert_eq!(std::fs::read(&exe).expect("read"), b"new program");

@@ -1,4 +1,4 @@
-//! Muxr's own copy of yt-dlp, so the video downloader works without a system
+//! Fmx's own copy of yt-dlp, so the video downloader works without a system
 //! install.
 //!
 //! The official standalone build is downloaded from yt-dlp's latest GitHub
@@ -32,14 +32,26 @@ pub fn asset_for_this_platform() -> Option<&'static str> {
     }
 }
 
-/// Where Muxr keeps its own yt-dlp (inside the per-user data folder).
+/// Where FMX keeps its own yt-dlp (inside the per-user data folder).
 pub fn managed_binary() -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "yt-dlp.exe"
     } else {
         "yt-dlp"
     };
-    dirs::data_dir().map(|d| d.join("muxr").join("yt-dlp").join(name))
+    dirs::data_dir().map(|d| {
+        let fmx_path = d.join("fmx").join("yt-dlp").join(name);
+        if fmx_path.is_file() {
+            fmx_path
+        } else {
+            let legacy_path = d.join("muxr").join("yt-dlp").join(name);
+            if legacy_path.is_file() {
+                legacy_path
+            } else {
+                fmx_path
+            }
+        }
+    })
 }
 
 /// The digest listed for `asset` in a `SHA2-256SUMS` file

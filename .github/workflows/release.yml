@@ -2,9 +2,9 @@
 #   git tag v0.0.1 && git push origin v0.0.1
 # The tag must match the version in Cargo.toml.
 #
-# Every file is signed with the release key (secret MUXR_SIGNING_KEY) and
-# checked against packaging/update-key.pub, the public key built into Muxr,
-# before anything is published. Muxr's updater refuses unsigned files.
+# Every file is signed with the release key (secret FMX_SIGNING_KEY or Fmx_SIGNING_KEY) and
+# checked against packaging/update-key.pub, the public key built into FMX,
+# before anything is published. FMX's updater refuses unsigned files.
 name: Release
 
 on:
@@ -48,8 +48,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cargo deb --no-build --output "dist/muxr_${VERSION}_amd64.deb"
-          tar -czf "dist/muxr-${VERSION}-linux-x86_64.tar.gz" -C target/release muxr -C "$PWD" README.md
+          cargo deb --no-build --output "dist/fmx_${VERSION}_amd64.deb"
+          tar -czf "dist/fmx-${VERSION}-linux-x86_64.tar.gz" -C target/release fmx -C "$PWD" README.md
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -70,7 +70,7 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DBinDir=$pwd\target\release" "/DOutDir=$pwd\dist" packaging\windows\muxr.iss
+          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DBinDir=$pwd\target\release" "/DOutDir=$pwd\dist" packaging\windows\fmx.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
@@ -108,19 +108,19 @@ jobs:
       - run: cargo install rsign2 --locked --version 0.6.7
       - name: Sign and verify every file
         env:
-          MUXR_SIGNING_KEY: ${{ secrets.MUXR_SIGNING_KEY }}
+          SIGNING_KEY: ${{ secrets.FMX_SIGNING_KEY || secrets.Fmx_SIGNING_KEY }}
         run: |
-          if [ -z "$MUXR_SIGNING_KEY" ]; then
-            echo "::error::The MUXR_SIGNING_KEY secret is not set"
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::The FMX_SIGNING_KEY or Fmx_SIGNING_KEY secret is not set"
             exit 1
           fi
           key=$(mktemp)
           trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$MUXR_SIGNING_KEY" > "$key"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
           cd dist
           for file in *; do
             # The updater requires exactly this trusted comment.
-            rsign sign -W -s "$key" -x "$file.minisig" -t "muxr $VERSION $file" "$file"
+            rsign sign -W -s "$key" -x "$file.minisig" -t "fmx $VERSION $file" "$file"
             rsign verify -p ../packaging/update-key.pub -x "$file.minisig" "$file"
           done
           sha256sum -- * > SHA256SUMS
@@ -129,4 +129,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sed "s/@VERSION@/$VERSION/g" packaging/release-notes.md > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Muxr $VERSION" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "FMX $VERSION" --notes-file notes.md

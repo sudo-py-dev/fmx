@@ -403,8 +403,8 @@ fn remove_partial(output: &Path) {
     }
 }
 
-/// End-to-end runs against real programs. Skipped unless `MUXR_FFMPEG` points
-/// at ffmpeg: `MUXR_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture`.
+/// End-to-end runs against real programs. Skipped unless `Fmx_FFMPEG` points
+/// at ffmpeg: `Fmx_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture`.
 /// Document/ISO tools run when their programs are on `PATH`.
 #[cfg(test)]
 mod e2e {
@@ -418,7 +418,7 @@ mod e2e {
     use std::time::{Duration, Instant};
 
     fn toolbox() -> Option<Toolbox> {
-        std::env::var_os("MUXR_FFMPEG").map(|p| Toolbox::detect(Some(Path::new(&p))))
+        std::env::var_os("FMX_FFMPEG").map(|p| Toolbox::detect(Some(Path::new(&p))))
     }
 
     fn generate(ffmpeg: &Path, out: &Path, extra: &[impl AsRef<std::ffi::OsStr>]) {
@@ -551,7 +551,7 @@ mod e2e {
     #[test]
     fn every_media_tool_produces_output() {
         let Some(tb) = toolbox() else {
-            eprintln!("MUXR_FFMPEG not set; skipping");
+            eprintln!("FMX_FFMPEG not set; skipping");
             return;
         };
         let fx = fixture(tb.get(External::Ffmpeg).expect("ffmpeg"));

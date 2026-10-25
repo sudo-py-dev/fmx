@@ -87,7 +87,7 @@ const MAX_SCAN_FILES: usize = 10_000;
 /// Progress below this is too early to estimate time left.
 const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
 
-/// A program Muxr can download and keep for itself.
+/// A program Fmx can download and keep for itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Helper {
     Ffmpeg,
@@ -163,7 +163,7 @@ enum LinkState {
     Failed(String),
 }
 
-/// Where Muxr is with its own updates.
+/// Where Fmx is with its own updates.
 enum UpdateState {
     Idle,
     Checking {
@@ -191,7 +191,7 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// A running download of one of Muxr's own helper programs.
+/// A running download of one of Fmx's own helper programs.
 struct HelperInstall {
     helper: Helper,
     /// Progress as `f32` bits.
@@ -252,7 +252,7 @@ impl AfterDone {
     }
 }
 
-pub struct MuxrApp {
+pub struct FmxApp {
     settings: Settings,
     queue: Queue,
     toolbox: Toolbox,
@@ -291,8 +291,8 @@ pub struct MuxrApp {
     update_dismissed: bool,
 }
 
-impl MuxrApp {
-    /// `open_files` are paths given on the command line ("Open with Muxr").
+impl FmxApp {
+    /// `open_files` are paths given on the command line ("Open with Fmx").
     pub fn new(cc: &eframe::CreationContext<'_>, open_files: Vec<PathBuf>) -> Self {
         icons::install(&cc.egui_ctx);
         let mut settings: Settings = cc
@@ -303,8 +303,8 @@ impl MuxrApp {
         theme::apply(&cc.egui_ctx, settings.theme, settings.reduce_motion);
         // Clip/crop/subtitle edits belong to one batch, not to the next session.
         settings.options.edit = Edit::default();
-        // MUXR_LANG (applied in main) wins unless a language was chosen in Settings.
-        if settings.language.is_some() || std::env::var_os("MUXR_LANG").is_none() {
+        // FMX_LANG (applied in main) wins unless a language was chosen in Settings.
+        if settings.language.is_some() || std::env::var_os("FMX_LANG").is_none() {
             i18n::set_language(settings.language.as_deref());
         }
         let ctx = cc.egui_ctx.clone();
@@ -707,7 +707,7 @@ impl MuxrApp {
             .collect();
         let Some(path) = rfd::FileDialog::new()
             .add_filter(tr("filter.task_list"), &["json"])
-            .set_file_name("muxr-tasks.json")
+            .set_file_name("fmx-tasks.json")
             .save_file()
         else {
             return;
@@ -3146,7 +3146,7 @@ impl MuxrApp {
         let mut check_now = false;
         settings_grid(ui, "settings_updates", |ui| {
             row(ui, tr("update.version_label"), |ui| {
-                ui.label(RichText::new(format!("Muxr {}", update::VERSION)).strong());
+                ui.label(RichText::new(format!("FMX (Free Media Xpress) {}", update::VERSION)).strong());
             });
             row(ui, tr("update.automatic_label"), |ui| {
                 ui.checkbox(&mut self.settings.check_updates, tr("update.automatic"));
@@ -3292,7 +3292,7 @@ impl MuxrApp {
         }
     }
 
-    /// Explains that a tool needs a helper program and offers Muxr's own copy.
+    /// Explains that a tool needs a helper program and offers Fmx's own copy.
     fn setup_card(&mut self, ui: &mut egui::Ui, helper: Helper) {
         let (art, title, body) = match helper {
             Helper::Ffmpeg => (
@@ -4337,7 +4337,7 @@ fn power_off() {
     }
 }
 
-impl eframe::App for MuxrApp {
+impl eframe::App for FmxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_input(&ctx);

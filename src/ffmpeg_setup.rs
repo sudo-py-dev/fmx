@@ -1,4 +1,4 @@
-//! Muxr's own copy of ffmpeg, so media tools work without a system install.
+//! Fmx's own copy of ffmpeg, so media tools work without a system install.
 //!
 //! A pinned static build is downloaded once into the user's data folder,
 //! checked against its published SHA-256 digest, and unpacked atomically.
@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::i18n::{tr, trf};
 
-/// The ffmpeg release Muxr installs (static builds from eugeneware/ffmpeg-static).
+/// The ffmpeg release Fmx installs (static builds from eugeneware/ffmpeg-static).
 pub const VERSION: &str = "6.1.1";
 const RELEASE_URL: &str = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1";
 /// Upper bound for the unpacked binary; guards against a decompression bomb.
@@ -71,14 +71,26 @@ pub fn build_for_this_platform() -> Option<Build> {
     }
 }
 
-/// Where Muxr keeps its own ffmpeg (inside the per-user data folder).
+/// Where FMX keeps its own ffmpeg (inside the per-user data folder).
 pub fn managed_binary() -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "ffmpeg.exe"
     } else {
         "ffmpeg"
     };
-    dirs::data_dir().map(|d| d.join("muxr").join(format!("ffmpeg-{VERSION}")).join(name))
+    dirs::data_dir().map(|d| {
+        let fmx_path = d.join("fmx").join(format!("ffmpeg-{VERSION}")).join(name);
+        if fmx_path.is_file() {
+            fmx_path
+        } else {
+            let legacy_path = d.join("muxr").join(format!("ffmpeg-{VERSION}")).join(name);
+            if legacy_path.is_file() {
+                legacy_path
+            } else {
+                fmx_path
+            }
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -116,7 +128,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// An HTTP client with Muxr's download timeouts.
+/// An HTTP client with Fmx's download timeouts.
 pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT_TIMEOUT))

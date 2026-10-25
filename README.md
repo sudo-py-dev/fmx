@@ -1,4 +1,4 @@
-# Muxr
+# FMX (Free Media Xpress)
 
 A lightweight, fast all-in-one converter written in Rust. It is a single ~22 MB native binary with an egui GUI (OpenGL/glow, no web engine),
 available in English, Spanish, French and German.
@@ -27,7 +27,7 @@ available in English, Spanish, French and German.
 Audio conversions get the same output settings and clipping.
 
 **Interface:** colorful category navigation. Pick a category in the sidebar, then a tool
-from a grid of colored cards (or search across all tools). Muxr has a light and a dark theme that follow the system setting (or can be chosen in
+from a grid of colored cards (or search across all tools). FMX has a light and a dark theme that follow the system setting (or can be chosen in
 Settings), with smooth hover and press animations, gliding progress bars that show the time left,
 status chips, and toast notifications. "Reduce motion" in Settings turns the animations off.
 
@@ -39,26 +39,26 @@ overwrite existing files, and failed jobs leave no partial files behind.
 ## Install
 
 Download the file for your system from the
-[latest release](https://github.com/sudo-py-dev/muxr/releases/latest):
+[latest release](https://github.com/sudo-py-dev/fmx/releases/latest):
 
 | System | File |
 |---|---|
-| Windows 10/11 (64-bit) | `muxr-<version>-windows-x64-setup.exe` (installs for you or all users) |
-| macOS 11+ (Intel and Apple silicon) | `muxr-<version>-macos-universal.dmg` (drag Muxr to Applications) |
-| Ubuntu / Debian (64-bit) | `muxr_<version>_amd64.deb` (`sudo apt install ./muxr_<version>_amd64.deb`) |
-| Other Linux (64-bit) | `muxr-<version>-linux-x86_64.tar.gz` (portable, run `./muxr`) |
+| Windows 10/11 (64-bit) | `fmx-<version>-windows-x64-setup.exe` (installs for you or all users) |
+| macOS 11+ (Intel and Apple silicon) | `fmx-<version>-macos-universal.dmg` (drag FMX to Applications) |
+| Ubuntu / Debian (64-bit) | `fmx_<version>_amd64.deb` (`sudo apt install ./fmx_<version>_amd64.deb`) |
+| Other Linux (64-bit) | `fmx-<version>-linux-x86_64.tar.gz` (portable, run `./fmx`) |
 
-The macOS build is not notarized yet: the first time, right-click Muxr and choose **Open**.
+The macOS build is not notarized yet: the first time, right-click FMX and choose **Open**.
 
 ## Updates
 
-Muxr checks GitHub once a day for a newer release (turn this off, or **Check now**, in
+FMX checks GitHub once a day for a newer release (turn this off, or **Check now**, in
 Settings → Updates) and offers it in a banner. Updates are safe by design:
 
-- Muxr only talks to this repository's GitHub releases, over HTTPS, and never offers an older
+- FMX only talks to this repository's GitHub releases, over HTTPS, and never offers an older
   version, a draft or a pre-release.
-- Every release file is signed with Muxr's release key (minisign / Ed25519). The public key is
-  built into Muxr (`packaging/update-key.pub`), and the signature must name the exact file and
+- Every release file is signed with FMX's release key (minisign / Ed25519). The public key is
+  built into FMX (`packaging/update-key.pub`), and the signature must name the exact file and
   version. A file that fails the check is deleted and never run.
 - The Windows installer and the `.deb`/`.dmg` open in the system installer; the portable Linux
   build replaces itself and asks you to restart.
@@ -67,16 +67,16 @@ Settings → Updates) and offers it in a banner. Updates are safe by design:
 
 **Nothing has to be installed.**
 
-- **ffmpeg:** media tools use ffmpeg, which Muxr finds in this order: the path set in Settings, next
-  to the `muxr` executable, on `PATH`, then Muxr's own copy. If none exists, Muxr offers to
+- **ffmpeg:** media tools use ffmpeg, which FMX finds in this order: the path set in Settings, next
+  to the `fmx` executable, on `PATH`, then FMX's own copy. If none exists, FMX offers to
   download a static ffmpeg 6.1.1 build (about 20–30 MB) into its data folder
-  (`~/.local/share/muxr` on Linux). The download is checked against its published SHA-256 before
+  (`~/.local/share/fmx` on Linux). The download is checked against its published SHA-256 before
   use, and nothing is installed system-wide.
-- **yt-dlp (video downloader):** the first time you open the video downloader, Muxr offers to
+- **yt-dlp (video downloader):** the first time you open the video downloader, FMX offers to
   download the official standalone yt-dlp (about 40 MB on Linux) from yt-dlp's latest GitHub
   release into the same data folder. It is checked against the SHA-256 list published with that
   release. Video sites change often, so Settings → Programs has **Update yt-dlp**, and a failed
-  download suggests it. Muxr's own copy is preferred over a system `yt-dlp`, which is often too
+  download suggests it. FMX's own copy is preferred over a system `yt-dlp`, which is often too
   old for YouTube.
 - **Documents:** Office → PDF is built in. It reads DOCX, ODT, PPTX, ODP, XLSX, XLS, ODS, CSV,
   Markdown, HTML, RTF and text, and writes PDFs with an embedded Unicode font. PDF → Word writes
@@ -99,7 +99,7 @@ Formats your ffmpeg build cannot encode, such as AMR without `libopencore_amrnb`
 On Wayland the screen recorder can only capture X11 (XWayland) windows, because ffmpeg has no
 Wayland capture. Log in to an X11 session to record the whole desktop.
 
-You can open files straight from a file manager or the command line: `muxr video.mp4 photo.png`.
+You can open files straight from a file manager or the command line: `fmx video.mp4 photo.png`.
 A file-name tag (Settings) is appended to every output name, and a desktop notification appears
 when the queue finishes.
 
@@ -116,7 +116,7 @@ cargo run --release
 2. Tag and push: `git tag v0.0.3 && git push origin master v0.0.3`.
 3. The [release workflow](.github/workflows/release.yml) checks that the tag matches
    `Cargo.toml`, tests and builds on Linux, Windows and macOS, signs every file with the
-   `MUXR_SIGNING_KEY` repository secret, verifies the signatures against
+   `FMX_SIGNING_KEY` repository secret, verifies the signatures against
    `packaging/update-key.pub`, and publishes the release.
 
 Packaging files live in `packaging/`: icons (`make-icons.py`), the Debian desktop entry, the
@@ -128,19 +128,19 @@ Inno Setup script for Windows, and the macOS app bundle script.
 cargo test
 ```
 
-End-to-end tests run every tool against the real helper programs when `MUXR_FFMPEG` is set:
+End-to-end tests run every tool against the real helper programs when `FMX_FFMPEG` is set:
 
 ```bash
-MUXR_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture
+FMX_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture
 ```
 
 ## Configuration
 
-- `MUXR_LANG=es|fr|de|en` overrides the UI language; it can also be changed in **Settings**.
+- `FMX_LANG=es|fr|de|en` overrides the UI language; it can also be changed in **Settings**.
   To add a language, add `locales/xx.json` and register it in `src/i18n.rs`.
-- `MUXR_LOG=debug` prints every command line Muxr runs.
+- `FMX_LOG=debug` prints every command line FMX runs.
 
 ## Not covered
 
 - Copy-protected discs: ffmpeg's DVD and Blu-ray readers do not decrypt CSS or AACS.
-- A built-in media player. Muxr opens finished files in your default player instead.
+- A built-in media player. FMX opens finished files in your default player instead.

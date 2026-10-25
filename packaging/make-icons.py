@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Draws Muxr's app icon (the blue clapperboard tile from the app) in every
+"""Draws Fmx's app icon (the blue clapperboard tile from the app) in every
 size the installers need. Run from the repository root:
 
     python3 packaging/make-icons.py
 
-Needs Pillow. Writes packaging/icons/: muxr.png (512 px), muxr-<n>.png,
-muxr.ico (Windows) and muxr.icns (macOS).
+Needs Pillow. Writes packaging/icons/: Fmx.png (512 px), Fmx-<n>.png,
+Fmx.ico (Windows) and Fmx.icns (macOS).
 """
 
 from pathlib import Path
@@ -46,10 +46,10 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     base = draw(BASE)
     for n in PNG_SIZES:
-        draw(n).save(OUT / f"muxr-{n}.png")
-    draw(512).save(OUT / "muxr.png")
-    base.save(OUT / "muxr.ico", sizes=[(n, n) for n in [16, 24, 32, 48, 64, 128, 256]])
-    base.save(OUT / "muxr.icns")
+        draw(n).save(OUT / f"Fmx-{n}.png")
+    draw(512).save(OUT / "Fmx.png")
+    base.save(OUT / "Fmx.ico", sizes=[(n, n) for n in [16, 24, 32, 48, 64, 128, 256]])
+    base.save(OUT / "Fmx.icns")
     print(f"icons written to {OUT}")
 
 

@@ -1,12 +1,12 @@
 [package]
-name = "muxr"
+name = "fmx"
 version = "0.0.4"
 edition = "2024"
 rust-version = "1.88"
-description = "A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
+description = "Free Media Xpress (FMX) - A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sudo-py-dev/muxr"
-homepage = "https://github.com/sudo-py-dev/muxr"
+repository = "https://github.com/sudo-py-dev/fmx"
+homepage = "https://github.com/sudo-py-dev/fmx"
 
 [dependencies]
 calamine = "0.37.0"
@@ -64,18 +64,18 @@ priority = "optional"
 depends = "$auto"
 suggests = "ffmpeg, poppler-utils, ghostscript, xorriso, calibre"
 extended-description = """\
-Muxr converts video, audio, images, documents and discs from one simple \
-window. It finds or downloads its own ffmpeg and yt-dlp, so nothing else \
-has to be installed."""
+Free Media Xpress (FMX) converts video, audio, images, documents and discs \
+from one simple window. It finds or downloads its own ffmpeg and yt-dlp, \
+so nothing else has to be installed."""
 assets = [
-    ["target/release/muxr", "usr/bin/", "755"],
-    ["packaging/linux/muxr.desktop", "usr/share/applications/", "644"],
-    ["packaging/icons/muxr-16.png", "usr/share/icons/hicolor/16x16/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-24.png", "usr/share/icons/hicolor/24x24/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-32.png", "usr/share/icons/hicolor/32x32/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-48.png", "usr/share/icons/hicolor/48x48/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-64.png", "usr/share/icons/hicolor/64x64/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-128.png", "usr/share/icons/hicolor/128x128/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-256.png", "usr/share/icons/hicolor/256x256/apps/muxr.png", "644"],
-    ["packaging/icons/muxr-512.png", "usr/share/icons/hicolor/512x512/apps/muxr.png", "644"],
+    ["target/release/fmx", "usr/bin/", "755"],
+    ["packaging/linux/fmx.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/fmx-16.png", "usr/share/icons/hicolor/16x16/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-24.png", "usr/share/icons/hicolor/24x24/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-32.png", "usr/share/icons/hicolor/32x32/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-48.png", "usr/share/icons/hicolor/48x48/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-64.png", "usr/share/icons/hicolor/64x64/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-128.png", "usr/share/icons/hicolor/128x128/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-256.png", "usr/share/icons/hicolor/256x256/apps/fmx.png", "644"],
+    ["packaging/icons/fmx-512.png", "usr/share/icons/hicolor/512x512/apps/fmx.png", "644"],
 ]
