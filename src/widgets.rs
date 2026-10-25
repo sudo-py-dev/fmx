@@ -753,3 +753,203 @@ impl Toasts {
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
+
+/// Paints a sleek, modern chevron that rotates smoothly from pointing right (0°) to pointing down (90°).
+pub fn paint_chevron(
+    painter: &egui::Painter,
+    center: Pos2,
+    size: f32,
+    openness: f32,
+    stroke: Stroke,
+) {
+    let angle = openness * (std::f32::consts::PI * 0.5);
+    let cos = angle.cos();
+    let sin = angle.sin();
+    let rotate = |x: f32, y: f32| -> Vec2 {
+        Vec2::new(x * cos - y * sin, x * sin + y * cos)
+    };
+    let half_w = size * 0.35;
+    let half_h = size * 0.6;
+    let p1 = center + rotate(-half_w, -half_h);
+    let apex = center + rotate(half_w, 0.0);
+    let p2 = center + rotate(-half_w, half_h);
+    painter.line_segment([p1, apex], stroke);
+    painter.line_segment([apex, p2], stroke);
+}
+
+/// A modern collapsible section card with a sleek rotating chevron, clean hover states,
+/// and border framing to replace archaic disclosure triangles and vertical tree lines.
+pub fn collapsible_section<R>(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    icon: Option<&str>,
+    title: &str,
+    badge: Option<&str>,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    let p = theme::palette(ui);
+    let id = ui.make_persistent_id(id_salt);
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let is_open = state.is_open();
+    let openness = state.openness(ui.ctx());
+
+    let header_height = 38.0;
+    let (header_rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), header_height),
+        Sense::click(),
+    );
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
+
+    if response.clicked() {
+        state.set_open(!is_open);
+    }
+
+    if ui.is_rect_visible(header_rect) {
+        let hover = animate(ui, id.with("hover"), response.hovered(), MOTION);
+        let painter = ui.painter();
+
+        // Header background card
+        let r = RADIUS;
+        let corners = if openness > 0.05 {
+            CornerRadius { nw: r, ne: r, sw: 0, se: 0 }
+        } else {
+            CornerRadius::same(r)
+        };
+        let fill = mix(
+            p.control.gamma_multiply(0.4),
+            p.control_hover,
+            hover.max(openness * 0.3),
+        );
+        let border = mix(
+            p.border,
+            p.accent.gamma_multiply(0.6),
+            hover.max(openness * 0.7),
+        );
+        painter.rect(header_rect, corners, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+
+        // Modern Chevron arrow on the left (clean, no box)
+        let chevron_center = Pos2::new(header_rect.min.x + 18.0, header_rect.center().y);
+        let chevron_color = mix(p.text_weak, p.accent, hover.max(openness));
+        paint_chevron(
+            painter,
+            chevron_center,
+            9.0,
+            openness,
+            Stroke::new(2.0, chevron_color),
+        );
+
+        // Icon (if present)
+        let mut text_x = header_rect.min.x + 34.0;
+        if let Some(ic) = icon {
+            let icon_font = FontId::proportional(15.0);
+            let icon_galley = painter.layout_no_wrap(ic.to_owned(), icon_font, p.accent);
+            painter.galley(
+                Pos2::new(text_x, header_rect.center().y - icon_galley.size().y / 2.0),
+                icon_galley,
+                p.accent,
+            );
+            text_x += 22.0;
+        }
+
+        // Title text
+        let title_font = FontId::proportional(14.5);
+        let title_galley = painter.layout_no_wrap(title.to_owned(), title_font, p.text);
+        painter.galley(
+            Pos2::new(text_x, header_rect.center().y - title_galley.size().y / 2.0),
+            title_galley,
+            p.text,
+        );
+
+        // Optional badge on the right
+        if let Some(b) = badge {
+            let badge_font = TextStyle::Small.resolve(ui.style());
+            let badge_galley = painter.layout_no_wrap(b.to_owned(), badge_font, p.accent);
+            let badge_pad = Vec2::new(12.0, 4.0);
+            let badge_size = badge_galley.size() + badge_pad;
+            let badge_rect = Rect::from_min_size(
+                Pos2::new(
+                    header_rect.max.x - badge_size.x - 10.0,
+                    header_rect.center().y - badge_size.y / 2.0,
+                ),
+                badge_size,
+            );
+            painter.rect_filled(
+                badge_rect,
+                CornerRadius::same(255),
+                p.accent.gamma_multiply(0.15),
+            );
+            painter.galley(
+                badge_rect.center() - badge_galley.size() / 2.0,
+                badge_galley,
+                p.accent,
+            );
+        }
+    }
+    response.on_hover_cursor(CursorIcon::PointingHand);
+
+    let result = state.show_body_unindented(ui, |ui| {
+        let p = theme::palette(ui);
+        let frame = egui::Frame::new()
+            .fill(p.surface)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: RADIUS,
+                se: RADIUS,
+            })
+            .inner_margin(egui::Margin::symmetric(14, 12));
+        frame.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            content(ui)
+        }).inner
+    });
+    state.store(ui.ctx());
+    ui.add_space(6.0);
+
+    result.map(|res| res.inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collapsible_section_runs_in_context() {
+        let ctx = egui::Context::default();
+        let mut called = false;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            collapsible_section(
+                ui,
+                "test_section",
+                Some(crate::icons::SLIDERS),
+                "Output settings",
+                Some("Badge"),
+                |_ui| {
+                    called = true;
+                },
+            );
+        })
+        .textures_delta
+        .clear();
+        // By default closed, so closure was not called yet.
+        assert!(!called);
+    }
+
+    #[test]
+    fn paint_chevron_runs_without_panic() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            paint_chevron(
+                painter,
+                Pos2::new(50.0, 50.0),
+                10.0,
+                0.5,
+                Stroke::new(1.8, Color32::WHITE),
+            );
+        })
+        .textures_delta
+        .clear();
+    }
+}

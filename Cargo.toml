@@ -1,6 +1,6 @@
 [package]
 name = "muxr"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 rust-version = "1.88"
 description = "A lightweight, fast all-in-one media, document and disc converter with a clean GUI"

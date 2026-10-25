@@ -2416,9 +2416,13 @@ impl MuxrApp {
     fn advanced_video(&mut self, ui: &mut egui::Ui, format: VideoFormat) {
         let toolbox = &self.toolbox;
         let opts = &mut self.settings.options;
-        egui::CollapsingHeader::new(icons::label(icons::SLIDERS, tr("section.output_settings")))
-            .id_salt("adv_video")
-            .show(ui, |ui| {
+        widgets::collapsible_section(
+            ui,
+            "adv_video",
+            Some(icons::SLIDERS),
+            tr("section.output_settings"),
+            None,
+            |ui| {
                 egui::Grid::new("adv_video_grid")
                     .striped(false)
                     .num_columns(2)
@@ -2470,24 +2474,39 @@ impl MuxrApp {
                         });
                     });
                 if !format.is_animation() {
+                    ui.add_space(8.0);
                     audio_grid(ui, &mut opts.audio, true);
                 }
-            });
+            },
+        );
     }
 
     fn advanced_audio(&mut self, ui: &mut egui::Ui, lossy: bool) {
         let opts = &mut self.settings.options;
-        egui::CollapsingHeader::new(icons::label(icons::SLIDERS, tr("section.output_settings")))
-            .id_salt("adv_audio")
-            .show(ui, |ui| audio_grid(ui, &mut opts.audio, lossy));
+        widgets::collapsible_section(
+            ui,
+            "adv_audio",
+            Some(icons::SLIDERS),
+            tr("section.output_settings"),
+            None,
+            |ui| audio_grid(ui, &mut opts.audio, lossy),
+        );
     }
 
     fn edit_panel(&mut self, ui: &mut egui::Ui, video: bool) {
         let edit = &mut self.settings.options.edit;
-        egui::CollapsingHeader::new(icons::label(icons::SCISSORS, tr("section.edit")))
-            .id_salt("edit_panel")
-            .show(ui, |ui| {
-                ui.label(RichText::new(tr("hint.edit_applies")).weak());
+        widgets::collapsible_section(
+            ui,
+            "edit_panel",
+            Some(icons::SCISSORS),
+            tr("section.edit"),
+            None,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icons::INFO).color(theme::palette(ui).accent));
+                    ui.label(RichText::new(tr("hint.edit_applies")).weak());
+                });
+                ui.add_space(6.0);
                 egui::Grid::new("edit_grid")
                     .striped(false)
                     .num_columns(2)
@@ -2535,7 +2554,8 @@ impl MuxrApp {
                             }
                         });
                     });
-            });
+            },
+        );
     }
 
     // ── Queue ───────────────────────────────────────────────────────────
