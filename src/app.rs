@@ -1260,6 +1260,7 @@ impl MuxrApp {
             Tool::Trim => Some((tr("step.trim"), tr("help.trim"))),
             Tool::Crop => Some((tr("step.crop"), tr("help.crop"))),
             Tool::Delogo => Some((tr("step.delogo"), tr("help.delogo"))),
+            Tool::Rotate => Some((tr("step.rotate"), tr("help.rotate"))),
             tool if has_options(tool) => Some((tr("step.settings"), tr("help.settings"))),
             _ => None,
         }
@@ -1335,13 +1336,25 @@ impl MuxrApp {
         let opts = &mut self.settings.options;
         if self.tool == Tool::Delogo {
             let mut area = Some(opts.delogo);
-            preview.inline(ui, &mut opts.edit, &mut area, mode, max_height);
+            preview.inline(ui, &mut opts.edit, &mut area, mode, max_height, None);
             if let Some(area) = area {
                 opts.delogo = area;
             }
-        } else {
+        } else if self.tool == Tool::Rotate {
             let mut crop = opts.edit.crop.take();
-            preview.inline(ui, &mut opts.edit, &mut crop, mode, max_height);
+            preview.inline(
+                ui,
+                &mut opts.edit,
+                &mut crop,
+                mode,
+                max_height,
+                Some(opts.rotation),
+            );
+            opts.edit.crop = crop;
+        } else {
+            let rotation = opts.edit.rotation;
+            let mut crop = opts.edit.crop.take();
+            preview.inline(ui, &mut opts.edit, &mut crop, mode, max_height, rotation);
             opts.edit.crop = crop;
         }
     }
@@ -2249,8 +2262,95 @@ impl MuxrApp {
         if tool == Tool::Rotate {
             row(ui, tr("option.rotation"), |ui| {
                 ui.vertical(|ui| {
-                    for rotation in Rotation::ALL {
-                        ui.radio_value(&mut opts.rotation, rotation, rotation.label());
+                    ui.horizontal(|ui| {
+                        if widgets::button(
+                            ui,
+                            Some(icons::ARROW_COUNTER_CLOCKWISE),
+                            tr("rotation.rotate_ccw"),
+                            Kind::Secondary,
+                            Size::Regular,
+                            true,
+                        )
+                        .on_hover_text(tr("rotation.ccw"))
+                        .clicked()
+                        {
+                            opts.rotation = opts.rotation.next_ccw();
+                        }
+                        if widgets::button(
+                            ui,
+                            Some(icons::ARROW_CLOCKWISE),
+                            tr("rotation.rotate_cw"),
+                            Kind::Secondary,
+                            Size::Regular,
+                            true,
+                        )
+                        .on_hover_text(tr("rotation.cw"))
+                        .clicked()
+                        {
+                            opts.rotation = opts.rotation.next_cw();
+                        }
+                        if widgets::button(
+                            ui,
+                            Some(icons::ARROWS_HORIZONTAL),
+                            tr("rotation.flip_h"),
+                            if opts.rotation == Rotation::FlipHorizontal {
+                                Kind::Primary
+                            } else {
+                                Kind::Secondary
+                            },
+                            Size::Regular,
+                            true,
+                        )
+                        .on_hover_text(tr("rotation.flip_h"))
+                        .clicked()
+                        {
+                            opts.rotation = Rotation::FlipHorizontal;
+                        }
+                        if widgets::button(
+                            ui,
+                            Some(icons::ARROWS_VERTICAL),
+                            tr("rotation.flip_v"),
+                            if opts.rotation == Rotation::FlipVertical {
+                                Kind::Primary
+                            } else {
+                                Kind::Secondary
+                            },
+                            Size::Regular,
+                            true,
+                        )
+                        .on_hover_text(tr("rotation.flip_v"))
+                        .clicked()
+                        {
+                            opts.rotation = Rotation::FlipVertical;
+                        }
+                    });
+
+                    ui.add_space(4.0);
+
+                    let choices = [
+                        (Rotation::Clockwise, tr("rotation.cw")),
+                        (Rotation::CounterClockwise, tr("rotation.ccw")),
+                        (Rotation::UpsideDown, tr("rotation.180")),
+                        (Rotation::FlipHorizontal, tr("rotation.flip_h")),
+                        (Rotation::FlipVertical, tr("rotation.flip_v")),
+                    ];
+                    widgets::segmented(ui, &mut opts.rotation, &choices);
+
+                    if let Some(preview) = &self.preview
+                        && let Some((w, h)) = preview.source_size()
+                    {
+                        let (out_w, out_h) = opts.rotation.transformed_size(w, h);
+                        let is_portrait = out_h > out_w;
+                        let orientation_badge = if is_portrait {
+                            tr("rotation.portrait")
+                        } else {
+                            tr("rotation.landscape")
+                        };
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let text = format!("{w} × {h}  ➜  {out_w} × {out_h} ({orientation_badge})");
+                            widgets::chip(ui, icons::INFO, &text, theme::palette(ui).accent);
+                        });
                     }
                 });
             });
@@ -3315,6 +3415,7 @@ fn inline_preview_mode(tool: Tool) -> Option<PreviewMode> {
     match tool {
         Tool::Trim => Some(PreviewMode::CLIP),
         Tool::Crop | Tool::Delogo => Some(PreviewMode::AREA),
+        Tool::Rotate => Some(PreviewMode::ROTATION),
         _ => None,
     }
 }
@@ -4211,5 +4312,10 @@ mod tests {
             Some(Duration::from_secs(10))
         );
         assert_eq!(time_left(Duration::from_secs(10), 1.0), None);
+    }
+
+    #[test]
+    fn rotate_tool_has_inline_preview() {
+        assert_eq!(inline_preview_mode(Tool::Rotate), Some(PreviewMode::ROTATION));
     }
 }

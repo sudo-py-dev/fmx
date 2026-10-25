@@ -14,7 +14,7 @@ use eframe::egui::{
 
 use crate::i18n::{tr, trf};
 use crate::icons;
-use crate::options::{Edit, Rect, display_time, format_timestamp, parse_timestamp};
+use crate::options::{Edit, Rect, Rotation, display_time, format_timestamp, parse_timestamp};
 use crate::plan::input_url;
 use crate::probe::MediaInfo;
 use crate::process::{KillOnDrop, command};
@@ -44,20 +44,30 @@ pub struct Mode {
     pub clip: bool,
     /// A rectangle drawn on the picture (crop or logo area).
     pub area: bool,
+    /// Show live rotation transformation.
+    pub rotate: bool,
 }
 
 impl Mode {
     pub const CLIP: Self = Self {
         clip: true,
         area: false,
+        rotate: false,
     };
     pub const AREA: Self = Self {
         clip: false,
         area: true,
+        rotate: false,
+    };
+    pub const ROTATION: Self = Self {
+        clip: false,
+        area: false,
+        rotate: true,
     };
     const BOTH: Self = Self {
         clip: true,
         area: true,
+        rotate: true,
     };
 }
 
@@ -157,6 +167,70 @@ fn to_screen(rect: Rect, shown: ScreenRect, source: (u32, u32)) -> ScreenRect {
     )
 }
 
+fn paint_rotated_image(
+    painter: &egui::Painter,
+    texture_id: egui::TextureId,
+    rect: ScreenRect,
+    rotation: Rotation,
+) {
+    let mut mesh = egui::Mesh::with_texture(texture_id);
+    let (tl_uv, tr_uv, br_uv, bl_uv) = match rotation {
+        Rotation::Clockwise => (
+            Pos2::new(0.0, 1.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(1.0, 1.0),
+        ),
+        Rotation::CounterClockwise => (
+            Pos2::new(1.0, 0.0),
+            Pos2::new(1.0, 1.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(0.0, 0.0),
+        ),
+        Rotation::UpsideDown => (
+            Pos2::new(1.0, 1.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+        ),
+        Rotation::FlipHorizontal => (
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+        ),
+        Rotation::FlipVertical => (
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 0.0),
+        ),
+    };
+    let c = Color32::WHITE;
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_top(),
+        uv: tl_uv,
+        color: c,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_top(),
+        uv: tr_uv,
+        color: c,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_bottom(),
+        uv: br_uv,
+        color: c,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_bottom(),
+        uv: bl_uv,
+        color: c,
+    });
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 impl Preview {
     pub fn open(path: PathBuf, ffmpeg: PathBuf, ctx: &egui::Context) -> Self {
         let (tx, rx) = mpsc::channel();
@@ -189,7 +263,7 @@ impl Preview {
         self.info.as_ref().and_then(|i| i.duration_s).unwrap_or(0.0)
     }
 
-    fn source_size(&self) -> Option<(u32, u32)> {
+    pub fn source_size(&self) -> Option<(u32, u32)> {
         let info = self.info.as_ref()?;
         Some((info.width?, info.height?))
     }
@@ -258,7 +332,7 @@ impl Preview {
             .default_width(DISPLAY_MAX_WIDTH + 32.0)
             .resizable(false)
             .show(ctx, |ui| {
-                self.contents(ui, edit, rect, Mode::BOTH, DISPLAY_MAX_HEIGHT);
+                self.contents(ui, edit, rect, Mode::BOTH, DISPLAY_MAX_HEIGHT, edit.rotation);
             });
         open
     }
@@ -272,9 +346,10 @@ impl Preview {
         rect: &mut Option<Rect>,
         mode: Mode,
         max_height: f32,
+        rotation: Option<Rotation>,
     ) {
         self.poll(ui.ctx());
-        self.contents(ui, edit, rect, mode, max_height);
+        self.contents(ui, edit, rect, mode, max_height, rotation);
     }
 
     fn contents(
@@ -284,6 +359,7 @@ impl Preview {
         rect: &mut Option<Rect>,
         mode: Mode,
         max_height: f32,
+        rotation: Option<Rotation>,
     ) {
         let p = theme::palette(ui);
         if let Some(error) = &self.error {
@@ -298,7 +374,13 @@ impl Preview {
             }
             return;
         };
-        let aspect = source.0.max(1) as f32 / source.1.max(1) as f32;
+        let swaps = rotation.is_some_and(|r| r.swaps_dimensions());
+        let (src_w, src_h) = if swaps {
+            (source.1, source.0)
+        } else {
+            (source.0, source.1)
+        };
+        let aspect = src_w.max(1) as f32 / src_h.max(1) as f32;
         let width = ui
             .available_width()
             .min(DISPLAY_MAX_WIDTH)
@@ -313,12 +395,16 @@ impl Preview {
         let painter = ui.painter_at(shown);
         painter.rect_filled(shown, CornerRadius::same(6), p.sunken);
         if let Some(texture) = &self.texture {
-            painter.image(
-                texture.id(),
-                shown,
-                ScreenRect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            if let Some(rot) = rotation {
+                paint_rotated_image(&painter, texture.id(), shown, rot);
+            } else {
+                painter.image(
+                    texture.id(),
+                    shown,
+                    ScreenRect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
         }
         if self.frame_rx.is_some() {
             painter.text(
@@ -436,23 +522,25 @@ impl Preview {
                     edit.trim_end = format_timestamp(self.time);
                 }
             }
-            let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
-            if widgets::button(
-                ui,
-                Some(icons::X),
-                tr("preview.clear"),
-                Kind::Ghost,
-                Size::Regular,
-                has_edit,
-            )
-            .clicked()
-            {
-                if mode.clip {
-                    edit.trim_start.clear();
-                    edit.trim_end.clear();
-                }
-                if mode.area {
-                    *rect = None;
+            if mode.clip || mode.area {
+                let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
+                if widgets::button(
+                    ui,
+                    Some(icons::X),
+                    tr("preview.clear"),
+                    Kind::Ghost,
+                    Size::Regular,
+                    has_edit,
+                )
+                .clicked()
+                {
+                    if mode.clip {
+                        edit.trim_start.clear();
+                        edit.trim_end.clear();
+                    }
+                    if mode.area {
+                        *rect = None;
+                    }
                 }
             }
         });
@@ -477,6 +565,18 @@ impl Preview {
                 ),
                 None => tr("preview.draw_hint").to_owned(),
             });
+        }
+        if mode.rotate {
+            let (out_w, out_h) =
+                rotation.map_or(source, |r| r.transformed_size(source.0, source.1));
+            let is_portrait = out_h > out_w;
+            let orientation = if is_portrait {
+                tr("rotation.portrait")
+            } else {
+                tr("rotation.landscape")
+            };
+            let rot_label = rotation.map_or("—", |r| r.label());
+            lines.push(format!("{rot_label}  •  {out_w} × {out_h} ({orientation})"));
         }
         for line in lines {
             ui.label(RichText::new(line).color(p.text_weak));

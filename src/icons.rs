@@ -18,7 +18,10 @@ pub fn fill(size: f32) -> egui::FontId {
 }
 
 pub const ARROW_CLOCKWISE: &str = "\u{E036}";
+pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
 pub const ARROW_RIGHT: &str = "\u{E06C}";
+pub const ARROWS_HORIZONTAL: &str = "\u{E098}";
+pub const ARROWS_VERTICAL: &str = "\u{E09C}";
 pub const ARROW_SQUARE_OUT: &str = "\u{E5DE}";
 pub const BROOM: &str = "\u{EC54}";
 pub const CARET_DOWN: &str = "\u{E136}";
@@ -90,7 +93,10 @@ mod tests {
         install(&ctx);
         let icons = [
             ARROW_CLOCKWISE,
+            ARROW_COUNTER_CLOCKWISE,
             ARROW_RIGHT,
+            ARROWS_HORIZONTAL,
+            ARROWS_VERTICAL,
             ARROW_SQUARE_OUT,
             BROOM,
             CARET_DOWN,

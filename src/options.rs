@@ -116,6 +116,36 @@ impl Rotation {
             Self::FlipVertical => "vflip",
         }
     }
+
+    pub fn swaps_dimensions(self) -> bool {
+        matches!(self, Self::Clockwise | Self::CounterClockwise)
+    }
+
+    pub fn transformed_size(self, width: u32, height: u32) -> (u32, u32) {
+        if self.swaps_dimensions() {
+            (height, width)
+        } else {
+            (width, height)
+        }
+    }
+
+    pub fn next_cw(self) -> Self {
+        match self {
+            Self::Clockwise => Self::UpsideDown,
+            Self::UpsideDown => Self::CounterClockwise,
+            Self::CounterClockwise => Self::Clockwise,
+            Self::FlipHorizontal | Self::FlipVertical => Self::Clockwise,
+        }
+    }
+
+    pub fn next_ccw(self) -> Self {
+        match self {
+            Self::Clockwise => Self::CounterClockwise,
+            Self::CounterClockwise => Self::UpsideDown,
+            Self::UpsideDown => Self::Clockwise,
+            Self::FlipHorizontal | Self::FlipVertical => Self::CounterClockwise,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -678,5 +708,27 @@ mod tests {
             serde_json::from_str(r#"{"quality":"High","trim_start":"1"}"#).expect("parse");
         assert_eq!(opts.quality, Quality::High);
         assert_eq!(opts.video, VideoSettings::default());
+    }
+
+    #[test]
+    fn rotation_helpers_and_cycling() {
+        assert!(Rotation::Clockwise.swaps_dimensions());
+        assert!(Rotation::CounterClockwise.swaps_dimensions());
+        assert!(!Rotation::UpsideDown.swaps_dimensions());
+        assert!(!Rotation::FlipHorizontal.swaps_dimensions());
+        assert!(!Rotation::FlipVertical.swaps_dimensions());
+
+        assert_eq!(Rotation::Clockwise.transformed_size(1920, 1080), (1080, 1920));
+        assert_eq!(Rotation::UpsideDown.transformed_size(1920, 1080), (1920, 1080));
+
+        assert_eq!(Rotation::Clockwise.next_cw(), Rotation::UpsideDown);
+        assert_eq!(Rotation::UpsideDown.next_cw(), Rotation::CounterClockwise);
+        assert_eq!(Rotation::CounterClockwise.next_cw(), Rotation::Clockwise);
+        assert_eq!(Rotation::FlipHorizontal.next_cw(), Rotation::Clockwise);
+
+        assert_eq!(Rotation::Clockwise.next_ccw(), Rotation::CounterClockwise);
+        assert_eq!(Rotation::CounterClockwise.next_ccw(), Rotation::UpsideDown);
+        assert_eq!(Rotation::UpsideDown.next_ccw(), Rotation::Clockwise);
+        assert_eq!(Rotation::FlipVertical.next_ccw(), Rotation::CounterClockwise);
     }
 }
