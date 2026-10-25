@@ -113,7 +113,7 @@ cargo run --release
 
 1. Set the new `version` in `Cargo.toml` (the only place the version is written; the app,
    installers and updater all read it from there) and commit.
-2. Tag and push: `git tag v0.0.3 && git push origin master v0.0.3`.
+2. Tag and push: `git tag v0.0.5 && git push origin master v0.0.5`.
 3. The [release workflow](.github/workflows/release.yml) checks that the tag matches
    `Cargo.toml`, tests and builds on Linux, Windows and macOS, signs every file with the
    `FMX_SIGNING_KEY` repository secret, verifies the signatures against
