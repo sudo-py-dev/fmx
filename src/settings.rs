@@ -53,6 +53,20 @@ fn default_cd_device() -> &'static str {
     if cfg!(windows) { "D:" } else { "/dev/cdrom" }
 }
 
+impl Settings {
+    pub fn sanitize(&mut self) {
+        self.parallel_jobs = self.parallel_jobs.clamp(1, MAX_PARALLEL_JOBS);
+        self.cd_device.retain(|c| !c.is_control());
+        if self.cd_device.trim().is_empty() {
+            self.cd_device = default_cd_device().to_owned();
+        }
+        self.options.delogo.w = self.options.delogo.w.min(16_384);
+        self.options.delogo.h = self.options.delogo.h.min(16_384);
+        self.options.delogo.x = self.options.delogo.x.min(16_384);
+        self.options.delogo.y = self.options.delogo.y.min(16_384);
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {

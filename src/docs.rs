@@ -146,14 +146,22 @@ pub fn xorriso_progress(line: &str) -> Option<f32> {
         .map(|p| (p / 100.0).clamp(0.0, 1.0))
 }
 
-/// Only plain web addresses are passed to yt-dlp (no search terms or local files).
+/// Only plain web addresses are passed to yt-dlp (no search terms, control chars or local files).
 pub fn is_web_url(text: &str) -> bool {
     let text = text.trim();
+    if text.is_empty()
+        || text.len() > 2048
+        || text.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\0')
+    {
+        return false;
+    }
     let rest = text
         .strip_prefix("https://")
         .or_else(|| text.strip_prefix("http://"));
     rest.is_some_and(|r| {
-        !r.is_empty() && !r.starts_with('/') && !text.contains(char::is_whitespace)
+        let host_end = r.find(['/', ':', '?', '#']).unwrap_or(r.len());
+        let host = &r[..host_end];
+        !host.is_empty() && !host.starts_with('.') && !host.ends_with('.') && !host.contains('/')
     })
 }
 
@@ -228,7 +236,13 @@ mod tests {
         assert!(!is_web_url("ytsearch:cats"));
         assert!(!is_web_url("/etc/passwd"));
         assert!(!is_web_url("https://"));
+        assert!(!is_web_url("https:///"));
+        assert!(!is_web_url("https://?query=1"));
+        assert!(!is_web_url("https://:8080"));
         assert!(!is_web_url("https://a.com/x y"));
+        assert!(!is_web_url("https://example.com\0/bad"));
+        assert!(!is_web_url("https://example.com\n/bad"));
+        assert!(!is_web_url(&format!("https://example.com/{}", "a".repeat(3000))));
         assert!(!is_web_url("file:///etc/passwd"));
     }
 }

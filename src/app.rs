@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align, ComboBox, CornerRadius, DragValue, Id, Key, KeyboardShortcut, Label, Layout,
-    Margin, Modifiers, RichText, ScrollArea, Slider, Stroke, TextEdit,
+    Margin, Modifiers, RichText, ScrollArea, Slider, Stroke, StrokeKind, TextEdit,
 };
 
 use crate::art;
@@ -299,6 +299,7 @@ impl MuxrApp {
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE_KEY))
             .unwrap_or_default();
+        settings.sanitize();
         theme::apply(&cc.egui_ctx, settings.theme, settings.reduce_motion);
         // Clip/crop/subtitle edits belong to one batch, not to the next session.
         settings.options.edit = Edit::default();
@@ -577,10 +578,15 @@ impl MuxrApp {
         }
         self.unavailable_reason(self.tool)
             .or_else(|| self.input_missing())
-            .or_else(|| {
-                (self.tool == Tool::AddSubtitles && self.settings.options.edit.subtitle.is_none())
-                    .then(|| tr("error.no_subtitle_file").to_owned())
-            })
+            .or_else(|| self.options_error())
+    }
+
+    fn options_error(&self) -> Option<String> {
+        self.settings
+            .options
+            .validate(self.tool)
+            .err()
+            .map(|e| e.to_string())
     }
 
     /// What the first step still needs, if anything.
@@ -588,11 +594,16 @@ impl MuxrApp {
         let kind = self.tool.input_kind();
         let count = self.files.len();
         match kind {
-            InputKind::Url => self
-                .url
-                .trim()
-                .is_empty()
-                .then(|| tr("need.url").to_owned()),
+            InputKind::Url => {
+                let trimmed = self.url.trim();
+                if trimmed.is_empty() {
+                    Some(tr("need.url").to_owned())
+                } else if !docs::is_web_url(trimmed) {
+                    Some(tr("error.bad_url").to_owned())
+                } else {
+                    None
+                }
+            }
             InputKind::Device => self
                 .settings
                 .cd_device
@@ -600,17 +611,25 @@ impl MuxrApp {
                 .is_empty()
                 .then(|| tr("need.device").to_owned()),
             InputKind::Capture => None,
-            _ => match self.tool.arity() {
-                InputArity::Exactly(n) if count != n => {
-                    Some(trf("need.exactly", &[("count", &n), ("got", &count)]))
+            _ => {
+                if let Some(missing) = self.files.iter().find(|p| !p.exists()) {
+                    return Some(trf(
+                        "error.io",
+                        &[("error", &format!("file not found: {}", missing.display()))],
+                    ));
                 }
-                InputArity::AllAtLeast(n) if n > 1 && count < n => {
-                    Some(trf("need.at_least", &[("count", &n)]))
+                match self.tool.arity() {
+                    InputArity::Exactly(n) if count != n => {
+                        Some(trf("need.exactly", &[("count", &n), ("got", &count)]))
+                    }
+                    InputArity::AllAtLeast(n) if n > 1 && count < n => {
+                        Some(trf("need.at_least", &[("count", &n)]))
+                    }
+                    _ if count == 0 && kind.picks_folders() => Some(tr("need.folder").to_owned()),
+                    _ if count == 0 => Some(tr("need.file").to_owned()),
+                    _ => None,
                 }
-                _ if count == 0 && kind.picks_folders() => Some(tr("need.folder").to_owned()),
-                _ if count == 0 => Some(tr("need.file").to_owned()),
-                _ => None,
-            },
+            }
         }
     }
 
@@ -729,6 +748,12 @@ impl MuxrApp {
             });
         match parsed {
             Ok(specs) => {
+                for spec in &specs {
+                    if let Err(e) = spec.validate() {
+                        self.toasts.push(ToastKind::Error, e.to_string());
+                        return;
+                    }
+                }
                 let mut claimed: HashSet<PathBuf> = self.queue.claimed_outputs().cloned().collect();
                 let count = specs.len();
                 for mut spec in specs {
@@ -1425,13 +1450,25 @@ impl MuxrApp {
                 )
                 .on_hover_text(tr("hint.paste_url"))
                 .clicked();
-                let edit = ui.add(
+                let trimmed = self.url.trim();
+                let invalid_url = !trimmed.is_empty() && !docs::is_web_url(trimmed);
+                let mut edit = ui.add(
                     TextEdit::singleline(&mut self.url)
                         .hint_text("https://…")
                         .font(egui::FontId::proportional(16.0))
                         .margin(Margin::symmetric(10, 8))
                         .desired_width(f32::INFINITY),
                 );
+                if invalid_url {
+                    let p = theme::palette(ui);
+                    ui.painter().rect_stroke(
+                        edit.rect,
+                        CornerRadius::same(theme::RADIUS),
+                        Stroke::new(1.5, p.danger),
+                        StrokeKind::Inside,
+                    );
+                    edit = edit.on_hover_text(tr("error.bad_url"));
+                }
                 if edit.changed() {
                     self.url_edited = Some(Instant::now());
                 }
@@ -2076,13 +2113,12 @@ impl MuxrApp {
             Tool::Trim => {
                 row_hint(ui, tr("option.clip_times"), tr("hint.timestamp"), |ui| {
                     let edit = &mut opts.edit;
-                    for (label, text) in [
-                        (tr("option.start"), &mut edit.trim_start),
-                        (tr("option.end_short"), &mut edit.trim_end),
-                    ] {
-                        ui.label(RichText::new(label).weak());
-                        ui.add(TextEdit::singleline(text).desired_width(110.0));
-                    }
+                    ui.label(RichText::new(tr("option.start")).weak());
+                    let end_clone = edit.trim_end.clone();
+                    time_input(ui, &mut edit.trim_start, 110.0, "", Some((&end_clone, false)));
+                    ui.label(RichText::new(tr("option.end_short")).weak());
+                    let start_clone = edit.trim_start.clone();
+                    time_input(ui, &mut edit.trim_end, 110.0, "", Some((&start_clone, true)));
                 });
                 row_hint(ui, tr("option.mode"), tr("hint.stream_copy"), |ui| {
                     ui.checkbox(&mut opts.stream_copy, tr("option.stream_copy"));
@@ -3882,19 +3918,91 @@ fn volume_row(ui: &mut egui::Ui, db: &mut f32) {
     });
 }
 
-fn trim_rows(ui: &mut egui::Ui, edit: &mut Edit) {
-    for (label, text) in [
-        (tr("option.start"), &mut edit.trim_start),
-        (tr("option.end"), &mut edit.trim_end),
-    ] {
-        row(ui, label, |ui| {
-            ui.add(
-                TextEdit::singleline(text)
-                    .hint_text(tr("hint.timestamp"))
-                    .desired_width(140.0),
-            );
-        });
+fn time_input(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    desired_width: f32,
+    hint_text: &str,
+    other_time: Option<(&str, bool)>,
+) {
+    let p = theme::palette(ui);
+    let trimmed = text.trim().to_owned();
+    let is_malformed = !trimmed.is_empty()
+        && (trimmed.len() > 32
+            || trimmed.chars().any(|c| c.is_control())
+            || options::parse_timestamp(&trimmed).is_err());
+
+    let is_empty_window = if !is_malformed && !trimmed.is_empty() {
+        if let Some((other_str, is_other_start)) = other_time {
+            let other_trimmed = other_str.trim();
+            if !other_trimmed.is_empty() {
+                if let (Ok(Some(my_val)), Ok(Some(other_val))) = (
+                    options::parse_timestamp(&trimmed),
+                    options::parse_timestamp(other_trimmed),
+                ) {
+                    if is_other_start {
+                        my_val <= other_val
+                    } else {
+                        my_val >= other_val
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let mut widget = TextEdit::singleline(text).desired_width(desired_width);
+    if !hint_text.is_empty() {
+        widget = widget.hint_text(hint_text);
     }
+    let response = ui.add(widget);
+    if is_malformed {
+        ui.painter().rect_stroke(
+            response.rect,
+            CornerRadius::same(theme::RADIUS),
+            Stroke::new(1.5, p.danger),
+            StrokeKind::Inside,
+        );
+        let _ = response.on_hover_text(trf("error.bad_timestamp", &[("value", &trimmed)]));
+    } else if is_empty_window {
+        ui.painter().rect_stroke(
+            response.rect,
+            CornerRadius::same(theme::RADIUS),
+            Stroke::new(1.5, p.danger),
+            StrokeKind::Inside,
+        );
+        let _ = response.on_hover_text(tr("error.empty_trim"));
+    }
+}
+
+fn trim_rows(ui: &mut egui::Ui, edit: &mut Edit) {
+    row(ui, tr("option.start"), |ui| {
+        let end_clone = edit.trim_end.clone();
+        time_input(
+            ui,
+            &mut edit.trim_start,
+            140.0,
+            tr("hint.timestamp"),
+            Some((&end_clone, false)),
+        );
+    });
+    row(ui, tr("option.end"), |ui| {
+        let start_clone = edit.trim_start.clone();
+        time_input(
+            ui,
+            &mut edit.trim_end,
+            140.0,
+            tr("hint.timestamp"),
+            Some((&start_clone, true)),
+        );
+    });
 }
 
 fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {

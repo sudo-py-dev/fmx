@@ -44,6 +44,8 @@ pub enum PlanError {
     NoSubtitleFile,
     NoSubtitleStream,
     UnsupportedTool,
+    InvalidWatermark,
+    InvalidValue(String),
 }
 
 impl fmt::Display for PlanError {
@@ -65,6 +67,10 @@ impl fmt::Display for PlanError {
             Self::NoSubtitleFile => f.write_str(tr("error.no_subtitle_file")),
             Self::NoSubtitleStream => f.write_str(tr("error.no_subtitle_stream")),
             Self::UnsupportedTool => f.write_str(tr("error.unsupported_tool")),
+            Self::InvalidWatermark => f.write_str(tr("error.invalid_watermark")),
+            Self::InvalidValue(name) => {
+                f.write_str(&trf("error.invalid_value", &[("name", name)]))
+            }
         }
     }
 }
@@ -170,6 +176,7 @@ fn strings(items: &[&str]) -> Vec<OsString> {
 /// Escapes a value for an ffmpeg filter option, then for the filtergraph
 /// (the two quoting levels described in the ffmpeg-filters manual).
 pub fn escape_filter_value(value: &str) -> String {
+    let clean: String = value.chars().filter(|c| !c.is_control()).collect();
     let escape = |text: &str, special: &[char]| {
         text.chars().fold(String::new(), |mut out, c| {
             if special.contains(&c) {
@@ -179,7 +186,7 @@ pub fn escape_filter_value(value: &str) -> String {
             out
         })
     };
-    let option_level = escape(value, &['\\', '\'', ':']);
+    let option_level = escape(&clean, &['\\', '\'', ':']);
     escape(&option_level, &['\\', '\'', '[', ']', ',', ';'])
 }
 
@@ -626,7 +633,10 @@ pub fn copy_container_ext(path: &Path) -> &'static str {
 
 /// Splits a speed factor into `atempo` stages, each within ffmpeg's 0.5–2.0 range.
 pub fn atempo_chain(speed: f64) -> String {
-    let mut remaining = speed;
+    let mut remaining = speed.clamp(f64::from(options::MIN_SPEED), f64::from(options::MAX_SPEED));
+    if !remaining.is_finite() || remaining <= 0.0 {
+        remaining = 1.0;
+    }
     let mut stages = Vec::new();
     while remaining > 2.0 {
         stages.push(2.0);
@@ -655,17 +665,171 @@ pub fn target_video_bps(target_mb: u32, duration_s: f64, has_audio: bool) -> Opt
     (video >= MIN_VIDEO_BPS).then_some(video)
 }
 
-/// Parses a clip window; `end` is `None` when it runs to the end of the file.
-fn trim_window(edit: &Edit, duration: Option<f64>) -> Result<(f64, Option<f64>), PlanError> {
+/// Validates an [`Edit`], ensuring clip times, crop areas and file paths are valid.
+pub fn validate_edit(edit: &Edit, duration: Option<f64>) -> Result<(), PlanError> {
     let parse = |text: &str| {
-        parse_timestamp(text).map_err(|()| PlanError::BadTimestamp(text.trim().to_owned()))
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        if trimmed.len() > 32 || trimmed.chars().any(|c| c.is_control()) {
+            return Err(PlanError::BadTimestamp(trimmed.to_owned()));
+        }
+        parse_timestamp(trimmed).map_err(|()| PlanError::BadTimestamp(trimmed.to_owned()))
     };
     let start = parse(&edit.trim_start)?.unwrap_or(0.0);
     let end = parse(&edit.trim_end)?;
+    if duration.is_some_and(|d| start >= d) {
+        return Err(PlanError::EmptyTrimWindow);
+    }
     let stop = end.or(duration);
     if stop.is_some_and(|stop| stop <= start) {
         return Err(PlanError::EmptyTrimWindow);
     }
+    if let Some(crop) = edit.crop
+        && (crop.w < 2 || crop.h < 2)
+    {
+        return Err(PlanError::InvalidRect);
+    }
+    if let Some(sub) = &edit.subtitle {
+        let s = sub.to_string_lossy();
+        if s.is_empty() || s.contains('\0') || s.chars().any(|c| c.is_control()) {
+            return Err(PlanError::NoSubtitleFile);
+        }
+    }
+    if let Some(wm) = &edit.watermark {
+        let s = wm.to_string_lossy();
+        if s.is_empty() || s.contains('\0') || s.chars().any(|c| c.is_control()) {
+            return Err(PlanError::InvalidWatermark);
+        }
+    }
+    Ok(())
+}
+
+/// Validates [`Options`] for the given [`Tool`].
+pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
+    opts.edit.validate(None)?;
+    match tool {
+        Tool::Crop => {
+            let rect = opts.edit.crop.ok_or(PlanError::NoCropArea)?;
+            if rect.w < 2 || rect.h < 2 {
+                return Err(PlanError::InvalidRect);
+            }
+        }
+        Tool::Delogo => {
+            if opts.delogo.w < 2 || opts.delogo.h < 2 {
+                return Err(PlanError::InvalidRect);
+            }
+        }
+        Tool::AddSubtitles => {
+            let sub = opts.edit.subtitle.as_ref().ok_or(PlanError::NoSubtitleFile)?;
+            let s = sub.to_string_lossy();
+            if s.is_empty() || s.contains('\0') || s.chars().any(|c| c.is_control()) {
+                return Err(PlanError::NoSubtitleFile);
+            }
+        }
+        Tool::Split => {
+            if opts.split_by_parts {
+                if opts.split_parts < 2 || opts.split_parts > options::MAX_SPLIT_PARTS {
+                    return Err(PlanError::InvalidValue(tr("option.parts").to_owned()));
+                }
+            } else if !opts.split_secs.is_finite()
+                || opts.split_secs < options::MIN_SPLIT_SECS
+                || opts.split_secs > 86_400.0
+            {
+                return Err(PlanError::InvalidValue(tr("option.segment_length").to_owned()));
+            }
+        }
+        Tool::Speed => {
+            if !opts.speed.is_finite()
+                || opts.speed < options::MIN_SPEED
+                || opts.speed > options::MAX_SPEED
+            {
+                return Err(PlanError::InvalidValue(tr("option.speed").to_owned()));
+            }
+        }
+        Tool::Compress => {
+            if opts.target_size_mb < options::MIN_TARGET_MB
+                || opts.target_size_mb > options::MAX_TARGET_MB
+            {
+                return Err(PlanError::TargetTooSmall);
+            }
+        }
+        Tool::ExtractFrames => {
+            if !opts.frame_interval_s.is_finite()
+                || opts.frame_interval_s < options::MIN_FRAME_INTERVAL_S
+                || opts.frame_interval_s > options::MAX_FRAME_INTERVAL_S
+            {
+                return Err(PlanError::InvalidValue(tr("option.interval").to_owned()));
+            }
+        }
+        Tool::Volume => {
+            if !opts.audio.volume_db.is_finite()
+                || opts.audio.volume_db < -options::MAX_VOLUME_DB
+                || opts.audio.volume_db > options::MAX_VOLUME_DB
+            {
+                return Err(PlanError::InvalidValue(tr("option.volume").to_owned()));
+            }
+        }
+        Tool::PdfToImages => {
+            if opts.pdf_dpi < options::MIN_PDF_DPI || opts.pdf_dpi > options::MAX_PDF_DPI {
+                return Err(PlanError::InvalidValue(tr("option.dpi").to_owned()));
+            }
+        }
+        Tool::IsoToCso => {
+            if opts.cso_level == 0 || opts.cso_level > options::MAX_CSO_LEVEL {
+                return Err(PlanError::InvalidValue(tr("option.compression").to_owned()));
+            }
+        }
+        Tool::Record if opts.record_fps == 0 || opts.record_fps > options::MAX_RECORD_FPS => {
+            return Err(PlanError::InvalidValue(tr("option.fps").to_owned()));
+        }
+        _ => {}
+    }
+    if let Some(fps) = opts.video.fps
+        && (fps == 0 || fps > 240)
+    {
+        return Err(PlanError::InvalidValue(tr("option.fps").to_owned()));
+    }
+    if let Some(bitrate) = opts.video.bitrate_kbps
+        && (bitrate == 0 || bitrate > options::MAX_VIDEO_KBPS)
+    {
+        return Err(PlanError::InvalidValue(tr("option.video_bitrate").to_owned()));
+    }
+    if let Some(bitrate) = opts.audio.bitrate_kbps
+        && (bitrate == 0 || bitrate > options::MAX_AUDIO_KBPS)
+    {
+        return Err(PlanError::InvalidValue(tr("option.audio_bitrate").to_owned()));
+    }
+    if opts.name_tag.len() > options::MAX_NAME_TAG_LEN
+        || opts.name_tag.chars().any(|c| c.is_control())
+    {
+        return Err(PlanError::InvalidValue(tr("settings.name_tag").to_owned()));
+    }
+    if opts.iso_label.len() > 32 || opts.iso_label.chars().any(|c| c.is_control()) {
+        return Err(PlanError::InvalidValue(tr("option.volume_label").to_owned()));
+    }
+    if opts.download.subtitle_langs.len() > options::MAX_SUBTITLE_LANGS_LEN
+        || opts.download.subtitle_langs.chars().any(|c| c.is_control())
+    {
+        return Err(PlanError::InvalidValue(tr("download.subtitles_label").to_owned()));
+    }
+    if let Some(limit) = opts.download.rate_limit_kbps
+        && (limit == 0 || limit > options::MAX_RATE_LIMIT_KBPS)
+    {
+        return Err(PlanError::InvalidValue(tr("download.speed_label").to_owned()));
+    }
+    Ok(())
+}
+
+/// Parses a clip window; `end` is `None` when it runs to the end of the file.
+fn trim_window(edit: &Edit, duration: Option<f64>) -> Result<(f64, Option<f64>), PlanError> {
+    edit.validate(duration)?;
+    let start = parse_timestamp(&edit.trim_start)
+        .map_err(|()| PlanError::BadTimestamp(edit.trim_start.trim().to_owned()))?
+        .unwrap_or(0.0);
+    let end = parse_timestamp(&edit.trim_end)
+        .map_err(|()| PlanError::BadTimestamp(edit.trim_end.trim().to_owned()))?;
     Ok((start, end))
 }
 
@@ -1621,6 +1785,12 @@ mod tests {
         assert_eq!(atempo_chain(1.5), "atempo=1.5");
         assert_eq!(atempo_chain(4.0), "atempo=2,atempo=2");
         assert_eq!(atempo_chain(0.25), "atempo=0.5,atempo=0.5");
+        // Evil inputs: non-positive, out of range, NaN, and Infinity should never infinite-loop.
+        assert_eq!(atempo_chain(0.0), "atempo=0.5,atempo=0.5");
+        assert_eq!(atempo_chain(-5.0), "atempo=0.5,atempo=0.5");
+        assert_eq!(atempo_chain(f64::NAN), "atempo=1");
+        assert_eq!(atempo_chain(f64::INFINITY), "atempo=2,atempo=2");
+        assert_eq!(atempo_chain(f64::NEG_INFINITY), "atempo=0.5,atempo=0.5");
     }
 
     #[test]

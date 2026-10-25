@@ -250,6 +250,8 @@
   "error.invalid_rect": "Das Rechteck liegt außerhalb des Bildes.",
   "error.not_cso": "Dies ist kein CSO-Abbild.",
   "error.corrupt_cso": "Das CSO-Abbild ist beschädigt.",
+  "error.invalid_watermark": "Wählen Sie eine vorhandene Wasserzeichen-Bilddatei.",
+  "error.invalid_value": "Ungültiger Wert für „{name}“.",
   "tool.ebook_epub": "E-Book → EPUB",
   "tool.ebook_mobi": "E-Book → MOBI",
   "tool.ebook_azw3": "E-Book → AZW3",

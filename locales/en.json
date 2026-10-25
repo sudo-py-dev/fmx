@@ -251,6 +251,8 @@
   "error.invalid_rect": "The rectangle lies outside the video frame.",
   "error.not_cso": "This is not a CSO image.",
   "error.corrupt_cso": "The CSO image is damaged.",
+  "error.invalid_watermark": "Choose an existing watermark image file.",
+  "error.invalid_value": "Invalid value for “{name}”.",
   "tool.ebook_epub": "eBook → EPUB",
   "tool.ebook_mobi": "eBook → MOBI",
   "tool.ebook_azw3": "eBook → AZW3",

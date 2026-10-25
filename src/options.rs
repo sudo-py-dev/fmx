@@ -493,6 +493,10 @@ impl Edit {
     pub fn has_trim(&self) -> bool {
         !self.trim_start.trim().is_empty() || !self.trim_end.trim().is_empty()
     }
+
+    pub fn validate(&self, duration: Option<f64>) -> Result<(), crate::plan::PlanError> {
+        crate::plan::validate_edit(self, duration)
+    }
 }
 
 pub const MIN_SPEED: f32 = 0.25;
@@ -592,6 +596,12 @@ impl Default for Options {
             join_layout: JoinLayout::Vertical,
             name_tag: String::new(),
         }
+    }
+}
+
+impl Options {
+    pub fn validate(&self, tool: crate::catalog::Tool) -> Result<(), crate::plan::PlanError> {
+        crate::plan::validate_options(self, tool)
     }
 }
 
@@ -730,5 +740,56 @@ mod tests {
         assert_eq!(Rotation::CounterClockwise.next_ccw(), Rotation::UpsideDown);
         assert_eq!(Rotation::UpsideDown.next_ccw(), Rotation::Clockwise);
         assert_eq!(Rotation::FlipVertical.next_ccw(), Rotation::CounterClockwise);
+    }
+
+    #[test]
+    fn edit_validation_catches_bad_and_empty_timestamps() {
+        use crate::plan::PlanError;
+
+        let mut edit = Edit::default();
+        assert!(edit.validate(None).is_ok());
+
+        edit.trim_start = "vmm".into();
+        assert_eq!(edit.validate(None), Err(PlanError::BadTimestamp("vmm".into())));
+
+        edit.trim_start = "10".into();
+        edit.trim_end = "5".into();
+        assert_eq!(edit.validate(None), Err(PlanError::EmptyTrimWindow));
+
+        edit.trim_end = "20".into();
+        assert!(edit.validate(None).is_ok());
+
+        // Stop after duration
+        assert_eq!(edit.validate(Some(5.0)), Err(PlanError::EmptyTrimWindow));
+    }
+
+    #[test]
+    fn options_validation_catches_invalid_tool_inputs() {
+        use crate::catalog::Tool;
+        use crate::plan::PlanError;
+
+        let mut opts = Options::default();
+        opts.edit.trim_start = "vmm".into();
+        assert_eq!(
+            opts.validate(Tool::Trim),
+            Err(PlanError::BadTimestamp("vmm".into()))
+        );
+
+        opts.edit.trim_start.clear();
+        assert_eq!(opts.validate(Tool::Crop), Err(PlanError::NoCropArea));
+
+        opts.edit.crop = Some(Rect { x: 0, y: 0, w: 1, h: 100 });
+        assert_eq!(opts.validate(Tool::Crop), Err(PlanError::InvalidRect));
+
+        opts.edit.crop = Some(Rect { x: 0, y: 0, w: 100, h: 100 });
+        assert!(opts.validate(Tool::Crop).is_ok());
+
+        opts.speed = 0.0;
+        assert!(matches!(opts.validate(Tool::Speed), Err(PlanError::InvalidValue(_))));
+
+        opts.speed = 1.0;
+        opts.split_by_parts = true;
+        opts.split_parts = 1;
+        assert!(matches!(opts.validate(Tool::Split), Err(PlanError::InvalidValue(_))));
     }
 }

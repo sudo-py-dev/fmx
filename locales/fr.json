@@ -250,6 +250,8 @@
   "error.invalid_rect": "Le rectangle sort de l’image.",
   "error.not_cso": "Ce n’est pas une image CSO.",
   "error.corrupt_cso": "L’image CSO est endommagée.",
+  "error.invalid_watermark": "Choisissez un fichier image de filigrane existant.",
+  "error.invalid_value": "Valeur invalide pour « {name} ».",
   "tool.ebook_epub": "eBook → EPUB",
   "tool.ebook_mobi": "eBook → MOBI",
   "tool.ebook_azw3": "eBook → AZW3",

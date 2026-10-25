@@ -250,6 +250,8 @@
   "error.invalid_rect": "El rectángulo queda fuera del fotograma.",
   "error.not_cso": "No es una imagen CSO.",
   "error.corrupt_cso": "La imagen CSO está dañada.",
+  "error.invalid_watermark": "Elige un archivo de imagen de marca de agua existente.",
+  "error.invalid_value": "Valor no válido para «{name}».",
   "tool.ebook_epub": "eBook → EPUB",
   "tool.ebook_mobi": "eBook → MOBI",
   "tool.ebook_azw3": "eBook → AZW3",

@@ -30,6 +30,50 @@ pub struct JobSpec {
     pub options: Options,
 }
 
+impl JobSpec {
+    pub fn validate(&self) -> Result<(), JobError> {
+        self.options.validate(self.tool)?;
+        if self.tool == Tool::Download {
+            let url = self.url.as_deref().ok_or(JobError::BadUrl)?;
+            if !docs::is_web_url(url) {
+                return Err(JobError::BadUrl);
+            }
+        } else {
+            let count = self.inputs.len();
+            let arity = self.tool.arity();
+            let count_error = |needed| {
+                JobError::Plan(PlanError::WrongInputCount {
+                    needed,
+                    got: count,
+                })
+            };
+            match arity {
+                InputArity::EachFile if count != 1 => return Err(count_error(1)),
+                InputArity::AllAtLeast(n) if count < n => return Err(count_error(n)),
+                InputArity::Exactly(n) if count != n => return Err(count_error(n)),
+                _ => {}
+            }
+            for input in &self.inputs {
+                let s = input.to_string_lossy();
+                if s.is_empty() || s.contains('\0') || s.chars().any(|c| c.is_control()) {
+                    return Err(JobError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid input path",
+                    )));
+                }
+            }
+        }
+        let out_str = self.output.to_string_lossy();
+        if out_str.is_empty() || out_str.contains('\0') || out_str.chars().any(|c| c.is_control()) {
+            return Err(JobError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid output path",
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub enum JobError {
     Missing(External),
@@ -207,6 +251,7 @@ pub fn plan_jobs(
     sel: &Selection<'_>,
     claimed: &mut HashSet<PathBuf>,
 ) -> Result<Vec<JobSpec>, JobError> {
+    sel.options.validate(sel.tool)?;
     let tool = sel.tool;
     let spec = |inputs: Vec<PathBuf>, url: Option<String>, output: PathBuf| JobSpec {
         tool,
@@ -472,5 +517,48 @@ mod tests {
         let text = serde_json::to_string(&jobs).expect("serialize");
         let back: Vec<JobSpec> = serde_json::from_str(&text).expect("parse");
         assert_eq!(back[0].output, jobs[0].output);
+    }
+
+    #[test]
+    fn plan_jobs_rejects_invalid_inputs_and_options() {
+        let files = vec![PathBuf::from("/a/x.mkv")];
+        let mut opts = Options::default();
+        opts.edit.trim_start = "vmm".into();
+        let err = plan_jobs(
+            &select(Tool::Trim, &files, None, &opts),
+            &mut HashSet::new(),
+        );
+        assert!(matches!(err, Err(JobError::Plan(PlanError::BadTimestamp(_)))));
+    }
+
+    #[test]
+    fn job_spec_validate_catches_evil_inputs() {
+        let mut spec = JobSpec {
+            tool: Tool::Trim,
+            inputs: vec![PathBuf::from("/a/x.mkv")],
+            url: None,
+            output: PathBuf::from("/a/x_trim.mkv"),
+            options: Options::default(),
+        };
+        assert!(spec.validate().is_ok());
+
+        spec.options.edit.trim_start = "vmm".into();
+        assert!(spec.validate().is_err());
+
+        spec.options.edit.trim_start.clear();
+        spec.inputs = vec![PathBuf::from("/a/x\0evil.mkv")];
+        assert!(spec.validate().is_err());
+
+        spec.inputs = vec![PathBuf::from("/a/x.mkv")];
+        spec.output = PathBuf::from("/a/x\0out.mkv");
+        assert!(spec.validate().is_err());
+
+        spec.output = PathBuf::from("/a/out.mkv");
+        spec.tool = Tool::Download;
+        spec.url = Some("not-a-url".into());
+        assert!(spec.validate().is_err());
+
+        spec.url = Some("https://example.com/video.mp4".into());
+        assert!(spec.validate().is_ok());
     }
 }
