@@ -15,6 +15,8 @@ use crate::art;
 use crate::catalog::{
     AudioFormat, Category, ImageFormat, InputArity, InputKind, Tool, VideoFormat,
 };
+use crate::docs;
+use crate::download;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::ffmpeg_setup;
@@ -58,6 +60,9 @@ const STACKED_PREVIEW_HEIGHT: f32 = 260.0;
 const PREVIEW_RESERVE_CLIP: f32 = 250.0;
 const PREVIEW_RESERVE_AREA: f32 = 230.0;
 const MIN_PREVIEW_HEIGHT: f32 = 140.0;
+/// How long typing must pause before a pasted link is looked up.
+const LINK_LOOKUP_DELAY: Duration = Duration::from_millis(700);
+const THUMBNAIL_WIDTH: f32 = 200.0;
 const FILE_TILE: f32 = 32.0;
 /// Only this many files of one batch are probed for their length.
 const MAX_PROBED_FILES: usize = 200;
@@ -68,11 +73,13 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "mka", "wv", "mp2", "mmf", "m4r",
 ];
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
-const SETTINGS_WIDTH: f32 = 520.0;
+const SETTINGS_WIDTH: f32 = 820.0;
+const SETTINGS_HEIGHT: f32 = 540.0;
+const SETTINGS_NAV_WIDTH: f32 = 190.0;
 /// Every settings grid uses this label width, so all controls line up.
 const SETTINGS_LABEL_WIDTH: f32 = 210.0;
-/// Space kept free above and below the Settings window.
-const SETTINGS_SCREEN_MARGIN: f32 = 140.0;
+/// Space kept free around the Settings window on small screens.
+const SETTINGS_SCREEN_MARGIN: f32 = 80.0;
 /// Task-list files larger than this are refused.
 const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
 /// Folder scans stop after this many files.
@@ -141,6 +148,21 @@ impl Helper {
     }
 }
 
+/// What a pasted link points to, fetched with yt-dlp before downloading.
+struct LinkPreview {
+    url: String,
+    playlist: bool,
+    state: LinkState,
+    thumbnail: Option<egui::TextureHandle>,
+    thumbnail_rx: Option<mpsc::Receiver<Result<image::RgbaImage, String>>>,
+}
+
+enum LinkState {
+    Loading(mpsc::Receiver<Result<download::LinkInfo, String>>),
+    Ready(download::LinkInfo),
+    Failed(String),
+}
+
 /// Where Muxr is with its own updates.
 enum UpdateState {
     Idle,
@@ -178,6 +200,38 @@ struct HelperInstall {
     rx: mpsc::Receiver<Result<PathBuf, String>>,
 }
 
+/// A section of the Settings window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    Queue,
+    Updates,
+    Programs,
+}
+
+impl SettingsTab {
+    const ALL: [Self; 4] = [Self::General, Self::Queue, Self::Updates, Self::Programs];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => tr("settings.section_general_title"),
+            Self::Queue => tr("settings.section_queue_title"),
+            Self::Updates => tr("settings.section_updates_title"),
+            Self::Programs => tr("settings.section_programs_title"),
+        }
+    }
+
+    fn art(self) -> art::Art {
+        let (glyph, hue) = match self {
+            Self::General => (art::glyph::SLIDERS, art::hue::BLUE),
+            Self::Queue => (art::glyph::STACK, art::hue::VIOLET),
+            Self::Updates => (art::glyph::DOWNLOAD, art::hue::GREEN),
+            Self::Programs => (art::glyph::WRENCH, art::hue::AMBER),
+        };
+        art::Art { glyph, hue }
+    }
+}
+
 /// What happens once the whole queue has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterDone {
@@ -207,6 +261,7 @@ pub struct MuxrApp {
     url: String,
     toasts: Toasts,
     show_settings: bool,
+    settings_tab: SettingsTab,
     media_info: Option<(String, String)>,
     preview: Option<Preview>,
     /// The category shown in the tool grid.
@@ -216,6 +271,9 @@ pub struct MuxrApp {
     search: String,
     /// Put the keyboard in the web-address box on the next frame.
     focus_url: bool,
+    /// When the web address last changed, to wait for typing to pause.
+    url_edited: Option<Instant>,
+    link: Option<LinkPreview>,
     /// Helper programs being downloaded right now.
     installs: Vec<HelperInstall>,
     /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
@@ -262,12 +320,15 @@ impl MuxrApp {
             url: String::new(),
             toasts: Toasts::default(),
             show_settings: false,
+            settings_tab: SettingsTab::General,
             media_info: None,
             preview: None,
             category: settings.last_tool.category(),
             in_editor: false,
             search: String::new(),
             focus_url: false,
+            url_edited: None,
+            link: None,
             installs: Vec::new(),
             preview_index: 0,
             details: HashMap::new(),
@@ -468,7 +529,18 @@ impl MuxrApp {
         match plan_jobs(&selection, &mut claimed) {
             Ok(specs) => {
                 let count = specs.len();
-                specs.into_iter().for_each(|s| self.queue.push(s));
+                // Downloads are listed under the video's title once it is known.
+                let title = match self.link.as_ref().map(|l| (&l.url, &l.state)) {
+                    Some((url, LinkState::Ready(info)))
+                        if self.tool == Tool::Download && *url == self.url.trim() =>
+                    {
+                        Some(info.title.clone()).filter(|t| !t.is_empty())
+                    }
+                    _ => None,
+                };
+                specs
+                    .into_iter()
+                    .for_each(|s| self.queue.push_titled(s, title.clone()));
                 self.files.clear();
                 self.url.clear();
                 self.settings.options.edit = Edit::default();
@@ -553,10 +625,12 @@ impl MuxrApp {
 
     /// One sentence telling the user what pressing the main button will do.
     fn ready_summary(&self) -> String {
-        let place = self.settings.output_dir.as_deref().map_or_else(
-            || tr("ready.beside_source").to_owned(),
-            |dir| trf("ready.in_folder", &[("folder", &file_name(dir))]),
-        );
+        let place = match (self.settings.output_dir.as_deref(), self.tool) {
+            (Some(dir), _) => trf("ready.in_folder", &[("folder", &file_name(dir))]),
+            // Downloads have no source file; they go to the Downloads folder.
+            (None, Tool::Download) => tr("ready.in_downloads").to_owned(),
+            (None, _) => tr("ready.beside_source").to_owned(),
+        };
         match self.job_count() {
             1 => trf("ready.summary_one", &[("where", &place)]),
             count => trf("ready.summary", &[("count", &count), ("where", &place)]),
@@ -1345,6 +1419,9 @@ impl MuxrApp {
                         .margin(Margin::symmetric(10, 8))
                         .desired_width(f32::INFINITY),
                 );
+                if edit.changed() {
+                    self.url_edited = Some(Instant::now());
+                }
                 if paste {
                     // Replace whatever was there with the clipboard's address.
                     self.url.clear();
@@ -1356,6 +1433,196 @@ impl MuxrApp {
                 }
             });
         });
+        ui.add_space(12.0);
+        self.link_card(ui);
+    }
+
+    // ── Link details (video downloader) ─────────────────────────────────
+
+    /// Looks up a pasted link once typing pauses, and collects the answers.
+    fn poll_link(&mut self, ctx: &egui::Context) {
+        if !self.in_editor || self.tool != Tool::Download {
+            return;
+        }
+        let url = self.url.trim().to_owned();
+        let playlist = self.settings.options.download.playlist;
+        let Some(ytdlp) = self.toolbox.get(External::YtDlp).map(Path::to_path_buf) else {
+            self.link = None;
+            return;
+        };
+        if !docs::is_web_url(&url) {
+            self.link = None;
+            return;
+        }
+        let current = self
+            .link
+            .as_ref()
+            .is_some_and(|l| l.url == url && l.playlist == playlist);
+        if !current {
+            let waited = self.url_edited.map_or(LINK_LOOKUP_DELAY, |t| t.elapsed());
+            if waited < LINK_LOOKUP_DELAY {
+                ctx.request_repaint_after(LINK_LOOKUP_DELAY - waited);
+                return;
+            }
+            let (tx, rx) = mpsc::channel();
+            let (thread_url, thread_ctx) = (url.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(download::fetch_info(&ytdlp, &thread_url, playlist));
+                thread_ctx.request_repaint();
+            });
+            self.link = Some(LinkPreview {
+                url,
+                playlist,
+                state: LinkState::Loading(rx),
+                thumbnail: None,
+                thumbnail_rx: None,
+            });
+            return;
+        }
+        let Some(link) = &mut self.link else { return };
+        if let LinkState::Loading(rx) = &link.state {
+            match rx.try_recv() {
+                Ok(Ok(info)) => {
+                    if let Some(thumb) = info.thumbnail.clone() {
+                        let (tx, rx) = mpsc::channel();
+                        let thread_ctx = ctx.clone();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(download::fetch_thumbnail(&thumb));
+                            thread_ctx.request_repaint();
+                        });
+                        link.thumbnail_rx = Some(rx);
+                    }
+                    link.state = LinkState::Ready(info);
+                }
+                Ok(Err(message)) => link.state = LinkState::Failed(message),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    link.state = LinkState::Failed(tr("download.info_failed").to_owned());
+                }
+            }
+        }
+        if let Some(rx) = &link.thumbnail_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            link.thumbnail_rx = None;
+            match result {
+                Ok(image) => {
+                    let size = [image.width() as usize, image.height() as usize];
+                    let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+                    link.thumbnail = Some(ctx.load_texture(
+                        "link_thumbnail",
+                        pixels,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+                Err(e) => tracing::debug!(error = %e, "thumbnail unavailable"),
+            }
+        }
+    }
+
+    /// The link's thumbnail, title, channel, length and best quality.
+    fn link_card(&self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let Some(link) = &self.link else {
+            if self.toolbox.get(External::YtDlp).is_some() {
+                ui.label(RichText::new(tr("download.paste_hint")).color(p.text_weak));
+            }
+            return;
+        };
+        egui::Frame::new()
+            .fill(p.sunken)
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                match &link.state {
+                    LinkState::Loading(_) => {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new());
+                            ui.label(RichText::new(tr("download.looking_up")).color(p.text_weak));
+                        });
+                    }
+                    LinkState::Failed(message) => {
+                        widgets::chip(ui, icons::WARNING, tr("download.lookup_failed"), p.warning);
+                        ui.add(
+                            Label::new(RichText::new(message).small().color(p.text_weak)).wrap(),
+                        );
+                    }
+                    LinkState::Ready(info) => {
+                        let thumb_width = (ui.available_width() * 0.42).min(THUMBNAIL_WIDTH);
+                        let thumb = egui::vec2(thumb_width, thumb_width * 9.0 / 16.0);
+                        ui.horizontal_top(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(thumb, egui::Sense::hover());
+                            match &link.thumbnail {
+                                Some(texture) => {
+                                    ui.painter().image(
+                                        texture.id(),
+                                        rect,
+                                        egui::Rect::from_min_max(
+                                            egui::Pos2::ZERO,
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                                None => {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        CornerRadius::same(6),
+                                        p.control,
+                                    );
+                                    ui.painter().text(
+                                        rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        icons::PLAY,
+                                        egui::FontId::proportional(26.0),
+                                        p.text_weak,
+                                    );
+                                }
+                            }
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 3.0;
+                                ui.add(Label::new(RichText::new(&info.title).strong()).wrap());
+                                let by: Vec<&str> = [info.channel.as_deref(), info.site.as_deref()]
+                                    .into_iter()
+                                    .flatten()
+                                    .collect();
+                                if !by.is_empty() {
+                                    ui.label(
+                                        RichText::new(by.join(" · ")).small().color(p.text_weak),
+                                    );
+                                }
+                                ui.horizontal_wrapped(|ui| {
+                                    if let Some(count) = info.playlist_count {
+                                        widgets::chip(
+                                            ui,
+                                            icons::LIST_PLUS,
+                                            &trf("download.playlist_count", &[("count", &count)]),
+                                            p.accent,
+                                        );
+                                    }
+                                    if let Some(secs) = info.duration {
+                                        widgets::chip(
+                                            ui,
+                                            icons::PLAY,
+                                            &download::clock(secs),
+                                            p.text_weak,
+                                        );
+                                    }
+                                    if let Some(h) = info.max_height {
+                                        widgets::chip(
+                                            ui,
+                                            icons::EYE,
+                                            &trf("download.up_to", &[("height", &h)]),
+                                            p.success,
+                                        );
+                                    }
+                                });
+                            });
+                        });
+                    }
+                }
+            });
     }
 
     /// The add buttons, then the files, or a drop zone while there are none.
@@ -1964,10 +2231,11 @@ impl MuxrApp {
                 });
             }
             Tool::Download => {
-                row(ui, tr("option.download_kind"), |ui| {
-                    let choices = DownloadKind::ALL.map(|k| (k, k.label()));
-                    widgets::segmented(ui, &mut opts.download_kind, &choices);
-                });
+                let best = match self.link.as_ref().map(|l| &l.state) {
+                    Some(LinkState::Ready(info)) => info.max_height,
+                    _ => None,
+                };
+                download_rows(ui, &mut opts.download, best);
             }
             Tool::Record => {
                 row(ui, tr("option.fps"), |ui| {
@@ -2178,7 +2446,7 @@ impl MuxrApp {
                     .show(ui, |ui| {
                         for job in self.queue.jobs() {
                             ui.label(RichText::new(job.spec.tool.label()).strong());
-                            ui.label(job_source(&job.spec))
+                            ui.label(job.title.clone().unwrap_or_else(|| job_source(&job.spec)))
                                 .on_hover_text(job.spec.output.display().to_string());
                             status_cell(ui, job);
                             ui.horizontal(|ui| match job.state {
@@ -2274,99 +2542,131 @@ impl MuxrApp {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        let mut theme_changed = false;
-        let max_height = (ctx.content_rect().height() - SETTINGS_SCREEN_MARGIN).max(200.0);
+        let screen = ctx.content_rect().size();
+        let size = egui::vec2(
+            SETTINGS_WIDTH.min(screen.x - SETTINGS_SCREEN_MARGIN),
+            SETTINGS_HEIGHT.min(screen.y - SETTINGS_SCREEN_MARGIN),
+        )
+        .max(egui::vec2(480.0, 320.0));
         egui::Window::new(icons::label(icons::GEAR, tr("settings.title")))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
+            .fixed_size(size)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ScrollArea::vertical()
-                    .max_height(max_height)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.set_width(SETTINGS_WIDTH);
-                        settings_section(ui, tr("settings.section_general"), true);
-                        settings_grid(ui, "settings_general", |ui| {
-                            row(ui, tr("settings.language"), |ui| self.language_picker(ui));
-                            row(ui, tr("settings.theme"), |ui| {
-                                let choices = ThemeChoice::ALL.map(|t| (t, t.label()));
-                                theme_changed |=
-                                    widgets::segmented(ui, &mut self.settings.theme, &choices);
-                            });
-                            row(ui, tr("settings.motion"), |ui| {
-                                theme_changed |= ui
-                                    .checkbox(
-                                        &mut self.settings.reduce_motion,
-                                        tr("settings.reduce_motion"),
-                                    )
-                                    .changed();
-                            });
-                        });
-                        settings_section(ui, tr("settings.section_queue"), false);
-                        settings_grid(ui, "settings_queue", |ui| {
-                            row_hint(
+                ui.horizontal_top(|ui| {
+                    // Section list on the left, like most apps' preferences.
+                    ui.vertical(|ui| {
+                        ui.set_width(SETTINGS_NAV_WIDTH);
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        for tab in SettingsTab::ALL {
+                            if widgets::nav_item(
                                 ui,
-                                tr("settings.parallel"),
-                                tr("settings.parallel_hint"),
-                                |ui| {
-                                    ui.add(
-                                        DragValue::new(&mut self.settings.parallel_jobs)
-                                            .range(1..=MAX_PARALLEL_JOBS),
-                                    );
-                                },
-                            );
-                            row(ui, tr("settings.start_label"), |ui| {
-                                ui.checkbox(
-                                    &mut self.settings.start_on_add,
-                                    tr("settings.auto_start"),
-                                );
-                            });
-                            row(ui, tr("settings.notify_label"), |ui| {
-                                ui.checkbox(
-                                    &mut self.settings.notify_when_done,
-                                    tr("settings.notify"),
-                                );
-                            });
-                            row_hint(
-                                ui,
-                                tr("settings.name_tag"),
-                                tr("settings.name_tag_hint"),
-                                |ui| {
-                                    ui.add(
-                                        TextEdit::singleline(&mut self.settings.options.name_tag)
-                                            .hint_text("_converted")
-                                            .char_limit(options::MAX_NAME_TAG_LEN)
-                                            .desired_width(180.0),
-                                    );
-                                },
-                            );
-                        });
-                        settings_section(ui, tr("settings.section_updates"), false);
-                        self.update_settings(ui);
-                        settings_section(ui, tr("settings.section_programs"), false);
-                        ui.label(RichText::new(tr("settings.ffmpeg")).strong());
-                        ui.add_space(2.0);
-                        self.ffmpeg_setting(ui);
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("yt-dlp").strong());
-                        ui.add_space(2.0);
-                        self.ytdlp_setting(ui);
-                        ui.add_space(12.0);
-                        ui.label(RichText::new(tr("settings.programs")).strong());
-                        ui.label(
-                            RichText::new(tr("settings.programs_hint"))
-                                .small()
-                                .color(theme::palette(ui).text_weak),
-                        );
-                        ui.add_space(4.0);
-                        self.programs_list(ui);
+                                Some(tab.art()),
+                                tab.label(),
+                                self.settings_tab == tab,
+                                false,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.settings_tab = tab;
+                            }
+                        }
                     });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(self.settings_tab.label()).heading().strong());
+                        ui.add_space(8.0);
+                        ScrollArea::vertical()
+                            .id_salt(("settings_page", self.settings_tab as u8))
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| self.settings_page(ui, ctx));
+                    });
+                });
             });
         self.show_settings = open;
-        if theme_changed {
-            self.apply_theme(ctx);
+    }
+
+    /// The controls of the selected Settings section.
+    fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let p = theme::palette(ui);
+        match self.settings_tab {
+            SettingsTab::General => {
+                let mut theme_changed = false;
+                settings_grid(ui, "settings_general", |ui| {
+                    row(ui, tr("settings.language"), |ui| self.language_picker(ui));
+                    row(ui, tr("settings.theme"), |ui| {
+                        let choices = ThemeChoice::ALL.map(|t| (t, t.label()));
+                        theme_changed |= widgets::segmented(ui, &mut self.settings.theme, &choices);
+                    });
+                    row(ui, tr("settings.motion"), |ui| {
+                        theme_changed |= ui
+                            .checkbox(
+                                &mut self.settings.reduce_motion,
+                                tr("settings.reduce_motion"),
+                            )
+                            .changed();
+                    });
+                    row_hint(
+                        ui,
+                        tr("settings.name_tag"),
+                        tr("settings.name_tag_hint"),
+                        |ui| {
+                            ui.add(
+                                TextEdit::singleline(&mut self.settings.options.name_tag)
+                                    .hint_text("_converted")
+                                    .char_limit(options::MAX_NAME_TAG_LEN)
+                                    .desired_width(180.0),
+                            );
+                        },
+                    );
+                });
+                if theme_changed {
+                    self.apply_theme(ctx);
+                }
+            }
+            SettingsTab::Queue => {
+                settings_grid(ui, "settings_queue", |ui| {
+                    row_hint(
+                        ui,
+                        tr("settings.parallel"),
+                        tr("settings.parallel_hint"),
+                        |ui| {
+                            ui.add(
+                                DragValue::new(&mut self.settings.parallel_jobs)
+                                    .range(1..=MAX_PARALLEL_JOBS),
+                            );
+                        },
+                    );
+                    row(ui, tr("settings.start_label"), |ui| {
+                        ui.checkbox(&mut self.settings.start_on_add, tr("settings.auto_start"));
+                    });
+                    row(ui, tr("settings.notify_label"), |ui| {
+                        ui.checkbox(&mut self.settings.notify_when_done, tr("settings.notify"));
+                    });
+                });
+            }
+            SettingsTab::Updates => self.update_settings(ui),
+            SettingsTab::Programs => {
+                ui.label(RichText::new(tr("settings.ffmpeg")).strong());
+                ui.add_space(2.0);
+                self.ffmpeg_setting(ui);
+                ui.add_space(14.0);
+                ui.label(RichText::new("yt-dlp").strong());
+                ui.add_space(2.0);
+                self.ytdlp_setting(ui);
+                ui.add_space(14.0);
+                ui.label(RichText::new(tr("settings.programs")).strong());
+                ui.label(
+                    RichText::new(tr("settings.programs_hint"))
+                        .small()
+                        .color(p.text_weak),
+                );
+                ui.add_space(4.0);
+                self.programs_list(ui);
+            }
         }
     }
 
@@ -3113,22 +3413,6 @@ fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: 
     });
 }
 
-/// A titled group of settings, with a divider above all but the first.
-fn settings_section(ui: &mut egui::Ui, title: &str, first: bool) {
-    if !first {
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(6.0);
-    }
-    ui.label(
-        RichText::new(title)
-            .small()
-            .strong()
-            .color(theme::palette(ui).accent),
-    );
-    ui.add_space(6.0);
-}
-
 /// A settings grid whose labels share one fixed-width column.
 fn settings_grid(ui: &mut egui::Ui, id: &str, rows: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(id)
@@ -3352,6 +3636,114 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
     ui.label(RichText::new(label).color(theme::palette(ui).text_weak));
     ui.horizontal(content);
     ui.end_row();
+}
+
+/// The video downloader's options. `best` is the link's tallest picture, if known.
+fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Option<u32>) {
+    row(ui, tr("option.download_kind"), |ui| {
+        let choices = DownloadKind::ALL.map(|k| (k, k.label()));
+        widgets::segmented(ui, &mut d.kind, &choices);
+    });
+    if d.kind == DownloadKind::Video {
+        let hint = best.map_or_else(
+            || tr("download.quality_hint").to_owned(),
+            |h| trf("download.quality_hint_best", &[("height", &h)]),
+        );
+        row_hint(ui, tr("option.quality"), &hint, |ui| {
+            let mut choices: Vec<Option<u32>> = vec![None];
+            choices.extend(options::DOWNLOAD_HEIGHTS.map(Some));
+            combo(
+                ui,
+                "download_height",
+                &mut d.max_height,
+                &choices,
+                |h| match h {
+                    None => tr("download.best").to_owned(),
+                    Some(h) => height_label(h),
+                },
+            );
+        });
+        let format_hint = match d.container {
+            options::DownloadContainer::Mp4 => tr("download.container_mp4_hint"),
+            options::DownloadContainer::Mkv => tr("download.container_mkv_hint"),
+            options::DownloadContainer::Webm => tr("download.container_webm_hint"),
+        };
+        row_hint(ui, tr("option.output_format"), format_hint, |ui| {
+            let choices = options::DownloadContainer::ALL.map(|c| (c, c.label()));
+            widgets::segmented(ui, &mut d.container, &choices);
+        });
+    } else {
+        row(ui, tr("option.output_format"), |ui| {
+            combo(
+                ui,
+                "download_audio",
+                &mut d.audio_format,
+                &options::DownloadAudio::ALL,
+                |a| a.label().to_owned(),
+            );
+        });
+    }
+    row_hint(
+        ui,
+        tr("download.playlist_label"),
+        tr("download.playlist_hint"),
+        |ui| {
+            ui.checkbox(&mut d.playlist, tr("download.playlist"));
+        },
+    );
+    if d.kind == DownloadKind::Video {
+        row(ui, tr("download.subtitles_label"), |ui| {
+            ui.checkbox(&mut d.subtitles, tr("download.subtitles"));
+            if d.subtitles {
+                ui.add(
+                    TextEdit::singleline(&mut d.subtitle_langs)
+                        .hint_text("en")
+                        .char_limit(options::MAX_SUBTITLE_LANGS_LEN)
+                        .desired_width(90.0),
+                )
+                .on_hover_text(tr("download.subtitle_langs_hint"));
+            }
+        });
+    }
+    row(ui, tr("download.extras_label"), |ui| {
+        ui.vertical(|ui| {
+            let cover = download::supports_cover(d);
+            ui.add_enabled(
+                cover,
+                egui::Checkbox::new(&mut d.embed_thumbnail, tr("download.cover")),
+            )
+            .on_disabled_hover_text(tr("download.cover_unsupported"));
+            ui.checkbox(&mut d.embed_metadata, tr("download.metadata"));
+        });
+    });
+    row_hint(
+        ui,
+        tr("download.speed_label"),
+        tr("download.speed_hint"),
+        |ui| {
+            optional_number(
+                ui,
+                &mut d.rate_limit_kbps,
+                2000,
+                50..=options::MAX_RATE_LIMIT_KBPS,
+                " KB/s",
+                tr("download.unlimited"),
+            );
+        },
+    );
+}
+
+/// `1080p (Full HD)` and the like.
+fn height_label(height: u32) -> String {
+    let name = match height {
+        4320 => " (8K)",
+        2160 => " (4K)",
+        1440 => " (2K)",
+        1080 => " (Full HD)",
+        720 => " (HD)",
+        _ => "",
+    };
+    format!("{height}p{name}")
 }
 
 /// A grid row with a short explanation under the control.
@@ -3584,6 +3976,15 @@ fn status_cell(ui: &mut egui::Ui, job: &Job) {
             progress: Some(fraction),
         } => {
             let percent = format!("{:.0}%", fraction * 100.0);
+            // A tool's own detail (download size, speed, time left) beats our estimate.
+            if let Some(detail) = &job.detail {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    widgets::progress(ui, bar_id, *fraction, percent, PROGRESS_WIDTH);
+                    ui.label(RichText::new(detail).small().color(p.text_weak));
+                });
+                return;
+            }
             let text = match job.elapsed().and_then(|e| time_left(e, *fraction)) {
                 Some(left) => trf(
                     "status.eta",
@@ -3594,10 +3995,11 @@ fn status_cell(ui: &mut egui::Ui, job: &Job) {
             widgets::progress(ui, bar_id, *fraction, text, PROGRESS_WIDTH);
         }
         JobState::Running { progress: None } => {
+            let text = job.detail.as_deref().unwrap_or(tr("status.running"));
             ui.add(
                 egui::ProgressBar::new(0.0)
                     .animate(true)
-                    .text(tr("status.running"))
+                    .text(text)
                     .desired_width(PROGRESS_WIDTH)
                     .desired_height(20.0)
                     .corner_radius(CornerRadius::same(255))
@@ -3703,6 +4105,7 @@ impl eframe::App for MuxrApp {
         self.check_after_done(&ctx);
         self.poll_installs();
         self.poll_update(&ctx);
+        self.poll_link(&ctx);
         self.poll_details();
         let p = theme::palette(ui);
 

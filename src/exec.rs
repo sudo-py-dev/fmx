@@ -8,6 +8,7 @@ use crate::catalog::{AudioFormat, Tool};
 use crate::cso;
 use crate::disc;
 use crate::docs;
+use crate::download;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::imaging;
@@ -19,16 +20,28 @@ use crate::process::{self, RunError, StopMode, Watch};
 use crate::sheet;
 
 /// Runs a job to completion, reporting progress in `0.0..=1.0`.
+#[cfg(test)]
 pub fn execute(
     spec: &JobSpec,
     toolbox: &Toolbox,
     cancel: &AtomicBool,
+    on_progress: impl FnMut(f32),
+) -> Result<(), JobError> {
+    execute_with_detail(spec, toolbox, cancel, on_progress, |_| {})
+}
+
+/// Like [`execute`], also reporting a line of detail such as download speed.
+pub fn execute_with_detail(
+    spec: &JobSpec,
+    toolbox: &Toolbox,
+    cancel: &AtomicBool,
     mut on_progress: impl FnMut(f32),
+    mut on_detail: impl FnMut(String),
 ) -> Result<(), JobError> {
     if let Some(missing) = toolbox.missing(spec.tool.requires()) {
         return Err(JobError::Missing(missing));
     }
-    let result = run_tool(spec, toolbox, cancel, &mut on_progress);
+    let result = run_tool(spec, toolbox, cancel, &mut on_progress, &mut on_detail);
     match &result {
         Ok(()) => on_progress(1.0),
         // Downloads write into a folder the user owns; never delete it.
@@ -62,6 +75,7 @@ fn run_tool(
     toolbox: &Toolbox,
     cancel: &AtomicBool,
     on_progress: &mut dyn FnMut(f32),
+    on_detail: &mut dyn FnMut(String),
 ) -> Result<(), JobError> {
     let opts = &spec.options;
     let out = spec.output.as_path();
@@ -163,15 +177,18 @@ fn run_tool(
                 .ok_or(JobError::BadUrl)?;
             let ffmpeg = need(toolbox, External::Ffmpeg)?;
             std::fs::create_dir_all(out).map_err(JobError::Io)?;
-            let args = docs::download(url, out, ffmpeg, opts.download_kind);
+            let args = download::args(url, out, ffmpeg, &opts.download);
             process::run(
                 need(toolbox, External::YtDlp)?,
                 &args,
                 StopMode::Kill,
                 cancel,
                 |line| {
-                    if let Some(p) = docs::download_progress(line) {
-                        on_progress(p);
+                    if let Some(progress) = download::parse_progress(line) {
+                        if let Some(fraction) = progress.fraction {
+                            on_progress(fraction);
+                        }
+                        on_detail(progress.detail);
                     }
                 },
             )

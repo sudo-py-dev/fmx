@@ -35,12 +35,17 @@ pub struct Job {
     pub id: JobId,
     pub spec: JobSpec,
     pub state: JobState,
+    /// The latest line of detail while running, such as download speed.
+    pub detail: Option<String>,
+    /// A friendly name for the queue, such as a downloaded video's title.
+    pub title: Option<String>,
     cancel: Arc<AtomicBool>,
     started: Option<Instant>,
 }
 
 enum Event {
     Progress(JobId, f32),
+    Detail(JobId, String),
     Finished(JobId, Result<(), JobError>),
 }
 
@@ -88,10 +93,17 @@ impl Queue {
     }
 
     pub fn push(&mut self, spec: JobSpec) {
+        self.push_titled(spec, None);
+    }
+
+    /// Queues a job shown under `title` instead of its file or address.
+    pub fn push_titled(&mut self, spec: JobSpec, title: Option<String>) {
         self.jobs.push(Job {
             id: self.next_id,
             spec,
             state: JobState::Queued,
+            detail: None,
+            title,
             cancel: Arc::new(AtomicBool::new(false)),
             started: None,
         });
@@ -155,6 +167,7 @@ impl Queue {
         for job in &mut self.jobs {
             if matches!(job.state, JobState::Failed(_) | JobState::Cancelled) {
                 job.state = JobState::Queued;
+                job.detail = None;
                 job.cancel.store(false, Ordering::Relaxed);
             }
         }
@@ -191,12 +204,20 @@ impl Queue {
 
     fn apply(&mut self, event: Event) {
         let id = match &event {
-            Event::Progress(id, _) | Event::Finished(id, _) => *id,
+            Event::Progress(id, _) | Event::Detail(id, _) | Event::Finished(id, _) => *id,
         };
         let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) else {
             return;
         };
+        if matches!(event, Event::Finished(..)) {
+            job.detail = None;
+        }
         job.state = match event {
+            Event::Detail(_, _) if job.state.is_finished() => return,
+            Event::Detail(_, text) => {
+                job.detail = Some(text);
+                return;
+            }
             // A late progress tick must not resurrect a job that already finished.
             Event::Progress(_, _) if job.state.is_finished() => return,
             Event::Progress(_, p) => JobState::Running { progress: Some(p) },
@@ -225,10 +246,20 @@ impl Queue {
             .spawn(move || {
                 let progress_tx = tx.clone();
                 let progress_notify = Arc::clone(&notify);
-                let result = exec::execute(&spec, &toolbox, &cancel, move |p| {
-                    let _ = progress_tx.send(Event::Progress(id, p));
-                    progress_notify();
-                });
+                let (detail_tx, detail_notify) = (tx.clone(), Arc::clone(&notify));
+                let result = exec::execute_with_detail(
+                    &spec,
+                    &toolbox,
+                    &cancel,
+                    move |p| {
+                        let _ = progress_tx.send(Event::Progress(id, p));
+                        progress_notify();
+                    },
+                    move |text| {
+                        let _ = detail_tx.send(Event::Detail(id, text));
+                        detail_notify();
+                    },
+                );
                 let _ = tx.send(Event::Finished(id, result));
                 notify();
             });

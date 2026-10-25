@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use crate::catalog::ImageFormat;
-use crate::options::{DownloadKind, Quality};
+use crate::options::Quality;
 
 fn os(items: &[&str]) -> Vec<OsString> {
     items.iter().map(OsString::from).collect()
@@ -157,44 +157,6 @@ pub fn is_web_url(text: &str) -> bool {
     })
 }
 
-/// yt-dlp downloading one URL into `out_dir`, using our ffmpeg for merging.
-pub fn download(url: &str, out_dir: &Path, ffmpeg: &Path, kind: DownloadKind) -> Vec<OsString> {
-    let mut template = out_dir.as_os_str().to_owned();
-    template.push(format!(
-        "{}%(title).150B [%(id)s].%(ext)s",
-        std::path::MAIN_SEPARATOR
-    ));
-    let mut args = os(&[
-        "--newline",
-        "--no-playlist",
-        "--no-mtime",
-        "--restrict-filenames",
-    ]);
-    args.extend([
-        "--ffmpeg-location".into(),
-        ffmpeg.into(),
-        "-o".into(),
-        template,
-    ]);
-    args.extend(match kind {
-        DownloadKind::Video => os(&["-f", "bv*+ba/b", "--merge-output-format", "mp4"]),
-        DownloadKind::AudioMp3 => os(&["-x", "--audio-format", "mp3", "--audio-quality", "0"]),
-    });
-    args.extend(["--".into(), url.trim().into()]);
-    args
-}
-
-/// Parses `[download]  42.7% of …` lines.
-pub fn download_progress(line: &str) -> Option<f32> {
-    let rest = line.strip_prefix("[download]")?.trim_start();
-    let (number, _) = rest.split_once('%')?;
-    number
-        .trim()
-        .parse::<f32>()
-        .ok()
-        .map(|p| (p / 100.0).clamp(0.0, 1.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,17 +214,12 @@ mod tests {
     }
 
     #[test]
-    fn progress_parsers() {
+    fn xorriso_progress_is_read() {
         assert_eq!(
             xorriso_progress("xorriso : UPDATE :  45.50% done"),
             Some(0.455)
         );
         assert_eq!(xorriso_progress("xorriso : NOTE : nothing"), None);
-        assert_eq!(
-            download_progress("[download]  42.5% of ~10.00MiB at 1MiB/s"),
-            Some(0.425)
-        );
-        assert_eq!(download_progress("[info] something"), None);
     }
 
     #[test]
@@ -273,17 +230,5 @@ mod tests {
         assert!(!is_web_url("https://"));
         assert!(!is_web_url("https://a.com/x y"));
         assert!(!is_web_url("file:///etc/passwd"));
-    }
-
-    #[test]
-    fn download_ends_options_before_url() {
-        let t = text(&download(
-            "https://e.com/v",
-            Path::new("/o"),
-            Path::new("/usr/bin/ffmpeg"),
-            DownloadKind::AudioMp3,
-        ));
-        assert!(t.ends_with("-- https://e.com/v"));
-        assert!(t.contains("-x --audio-format mp3"));
     }
 }

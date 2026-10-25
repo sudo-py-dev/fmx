@@ -8,6 +8,7 @@ mod catalog;
 mod cso;
 mod disc;
 mod docs;
+mod download;
 mod exec;
 mod externals;
 mod ffmpeg;

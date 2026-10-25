@@ -255,16 +255,126 @@ impl JoinLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadKind {
     Video,
-    AudioMp3,
+    /// Audio only (saved by older versions as `AudioMp3`).
+    #[serde(alias = "AudioMp3")]
+    Audio,
 }
 
 impl DownloadKind {
-    pub const ALL: [Self; 2] = [Self::Video, Self::AudioMp3];
+    pub const ALL: [Self; 2] = [Self::Video, Self::Audio];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Video => tr("download.video"),
-            Self::AudioMp3 => tr("download.audio"),
+            Self::Audio => tr("download.audio"),
+        }
+    }
+}
+
+/// The container a downloaded video is saved in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadContainer {
+    Mp4,
+    Mkv,
+    Webm,
+}
+
+impl DownloadContainer {
+    pub const ALL: [Self; 3] = [Self::Mp4, Self::Mkv, Self::Webm];
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Mp4 => "mp4",
+            Self::Mkv => "mkv",
+            Self::Webm => "webm",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mp4 => tr("download.container_mp4"),
+            Self::Mkv => tr("download.container_mkv"),
+            Self::Webm => tr("download.container_webm"),
+        }
+    }
+}
+
+/// The format of a downloaded soundtrack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadAudio {
+    Mp3,
+    M4a,
+    Opus,
+    Flac,
+    Wav,
+}
+
+impl DownloadAudio {
+    pub const ALL: [Self; 5] = [Self::Mp3, Self::M4a, Self::Opus, Self::Flac, Self::Wav];
+
+    /// yt-dlp's name for the format, which is also the file extension.
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Mp3 => "mp3",
+            Self::M4a => "m4a",
+            Self::Opus => "opus",
+            Self::Flac => "flac",
+            Self::Wav => "wav",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mp3 => tr("download.audio_mp3"),
+            Self::M4a => tr("download.audio_m4a"),
+            Self::Opus => tr("download.audio_opus"),
+            Self::Flac => tr("download.audio_flac"),
+            Self::Wav => tr("download.audio_wav"),
+        }
+    }
+}
+
+/// Picture heights offered as the downloader's quality limit.
+pub const DOWNLOAD_HEIGHTS: [u32; 7] = [4320, 2160, 1440, 1080, 720, 480, 360];
+/// Longest subtitle-language list passed to yt-dlp.
+pub const MAX_SUBTITLE_LANGS_LEN: usize = 64;
+pub const MAX_RATE_LIMIT_KBPS: u32 = 1_000_000;
+
+/// The video downloader's choices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DownloadOptions {
+    pub kind: DownloadKind,
+    /// Tallest picture to fetch; `None` takes the best available.
+    pub max_height: Option<u32>,
+    pub container: DownloadContainer,
+    pub audio_format: DownloadAudio,
+    /// For links to a playlist (or a video in one): fetch every item.
+    pub playlist: bool,
+    pub subtitles: bool,
+    /// Subtitle languages for yt-dlp, e.g. `en` or `en,es`.
+    pub subtitle_langs: String,
+    /// Store the video's thumbnail as cover art.
+    pub embed_thumbnail: bool,
+    /// Store title, artist, description and chapters in the file.
+    pub embed_metadata: bool,
+    /// Download speed limit; `None` is unlimited.
+    pub rate_limit_kbps: Option<u32>,
+}
+
+impl Default for DownloadOptions {
+    fn default() -> Self {
+        Self {
+            kind: DownloadKind::Video,
+            max_height: None,
+            container: DownloadContainer::Mp4,
+            audio_format: DownloadAudio::Mp3,
+            playlist: false,
+            subtitles: false,
+            subtitle_langs: "en".to_owned(),
+            embed_thumbnail: true,
+            embed_metadata: true,
+            rate_limit_kbps: None,
         }
     }
 }
@@ -410,7 +520,7 @@ pub struct Options {
     pub cso_level: u32,
     pub record_fps: u32,
     pub record_audio: bool,
-    pub download_kind: DownloadKind,
+    pub download: DownloadOptions,
     pub join_layout: JoinLayout,
     /// Text appended to every output file name, e.g. `_converted`.
     pub name_tag: String,
@@ -448,7 +558,7 @@ impl Default for Options {
             cso_level: 9,
             record_fps: 30,
             record_audio: true,
-            download_kind: DownloadKind::Video,
+            download: DownloadOptions::default(),
             join_layout: JoinLayout::Vertical,
             name_tag: String::new(),
         }
