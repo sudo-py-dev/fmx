@@ -108,15 +108,15 @@ jobs:
       - run: cargo install rsign2 --locked --version 0.6.7
       - name: Sign and verify every file
         env:
-          SIGNING_KEY: ${{ secrets.FMX_SIGNING_KEY || secrets.Fmx_SIGNING_KEY }}
+          SIGNING_KEY: ${{ secrets.FMX_SIGNING_KEY }}
         run: |
-          if [ -z "$FMX_SIGNING_KEY" ]; then
-            echo "::error::The FMX_SIGNING_KEY or Fmx_SIGNING_KEY secret is not set"
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::The FMX_SIGNING_KEY secret is not set"
             exit 1
           fi
           key=$(mktemp)
           trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$FMX_SIGNING_KEY" > "$key"
+          printf '%s\n' "$SIGNING_KEY" > "$key"
           cd dist
           for file in *; do
             # The updater requires exactly this trusted comment.
