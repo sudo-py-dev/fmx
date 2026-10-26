@@ -11,6 +11,23 @@ use crate::theme::ThemeChoice;
 pub const STORAGE_KEY: &str = "fmx.settings.v1";
 pub const MAX_PARALLEL_JOBS: usize = 16;
 
+/// Which sound to play when the queue finishes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionSound {
+    /// Play the system's default completion sound.
+    #[default]
+    Default,
+    /// A gentle bell tone.
+    Bell,
+    /// An upbeat victory jingle.
+    Victory,
+    /// A user-supplied audio file (played with ffmpeg or paplay).
+    Custom(PathBuf),
+    /// Silent — do not play anything.
+    Off,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -39,6 +56,8 @@ pub struct Settings {
     pub last_update_check: u64,
     /// A release the user chose to skip; it is not offered again.
     pub skipped_version: Option<String>,
+    /// Sound to play when all jobs finish; `Off` is silent.
+    pub completion_sound: CompletionSound,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -84,6 +103,7 @@ impl Default for Settings {
             check_updates: true,
             last_update_check: 0,
             skipped_version: None,
+            completion_sound: CompletionSound::Default,
         }
     }
 }

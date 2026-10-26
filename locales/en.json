@@ -475,5 +475,11 @@
   "download.step_cover": "Adding cover art…",
   "download.step_metadata": "Adding title and chapters…",
   "download.step_convert": "Converting the video…",
-  "ready.in_downloads": "in your Downloads folder"
+  "ready.in_downloads": "in your Downloads folder",
+  "settings.sound_label": "Completion sound",
+  "settings.sound_off": "Off",
+  "settings.sound_default": "Default (complete)",
+  "settings.sound_bell": "Bell",
+  "settings.sound_victory": "Victory",
+  "settings.sound_custom": "Custom file…"
 }

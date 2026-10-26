@@ -474,5 +474,11 @@
   "download.step_cover": "Añadiendo portada…",
   "download.step_metadata": "Añadiendo título y capítulos…",
   "download.step_convert": "Convirtiendo el vídeo…",
-  "ready.in_downloads": "en tu carpeta Descargas"
+  "ready.in_downloads": "en tu carpeta Descargas",
+  "settings.sound_label": "Sonido al terminar",
+  "settings.sound_off": "Desactivado",
+  "settings.sound_default": "Predeterminado (complete)",
+  "settings.sound_bell": "Campana",
+  "settings.sound_victory": "Victoria",
+  "settings.sound_custom": "Archivo personalizado…"
 }

@@ -781,6 +781,7 @@ impl FmxApp {
             if self.settings.notify_when_done {
                 desktop_notification(tr("app.name"), tr("notice.all_done"));
             }
+            play_completion_sound(&self.settings.completion_sound);
             match self.after_done {
                 AfterDone::Nothing => {}
                 AfterDone::OpenFolder => {
@@ -2805,6 +2806,67 @@ impl FmxApp {
                     row(ui, tr("settings.notify_label"), |ui| {
                         ui.checkbox(&mut self.settings.notify_when_done, tr("settings.notify"));
                     });
+                    row(ui, tr("settings.sound_label"), |ui| {
+                        use crate::settings::CompletionSound;
+                        let label_for = |s: &CompletionSound| match s {
+                            CompletionSound::Off     => tr("settings.sound_off"),
+                            CompletionSound::Default => tr("settings.sound_default"),
+                            CompletionSound::Bell    => tr("settings.sound_bell"),
+                            CompletionSound::Victory => tr("settings.sound_victory"),
+                            CompletionSound::Custom(_) => tr("settings.sound_custom"),
+                        };
+                        ComboBox::from_id_salt("completion_sound")
+                            .selected_text(label_for(&self.settings.completion_sound))
+                            .show_ui(ui, |ui| {
+                                for choice in [
+                                    CompletionSound::Default,
+                                    CompletionSound::Bell,
+                                    CompletionSound::Victory,
+                                    CompletionSound::Custom(std::path::PathBuf::new()),
+                                    CompletionSound::Off,
+                                ] {
+                                    let is_custom_variant = matches!(choice, CompletionSound::Custom(_));
+                                    let text = label_for(&choice);
+                                    let currently_custom = matches!(
+                                        self.settings.completion_sound, CompletionSound::Custom(_)
+                                    );
+                                    let selected = if is_custom_variant {
+                                        currently_custom
+                                    } else {
+                                        self.settings.completion_sound == choice
+                                    };
+                                    if ui.selectable_label(selected, text).clicked() {
+                                        if is_custom_variant && !currently_custom {
+                                            self.settings.completion_sound =
+                                                CompletionSound::Custom(std::path::PathBuf::new());
+                                        } else if !is_custom_variant {
+                                            self.settings.completion_sound = choice;
+                                        }
+                                    }
+                                }
+                            });
+                        // When Custom is active, show a browse button and the chosen path.
+                        if let CompletionSound::Custom(ref mut path) = self.settings.completion_sound {
+                            if ui.button(tr("action.browse")).clicked() {
+                                if let Some(picked) = rfd::FileDialog::new()
+                                    .add_filter("Audio", &["mp3", "wav", "ogg", "oga", "flac", "aiff", "m4a"])
+                                    .pick_file()
+                                {
+                                    *path = picked;
+                                }
+                            }
+                            if !path.as_os_str().is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        path.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("…"),
+                                    )
+                                    .small(),
+                                );
+                            }
+                        }
+                    });
                 });
             }
             SettingsTab::Updates => self.update_settings(ui),
@@ -4317,6 +4379,79 @@ fn desktop_notification(title: &str, body: &str) {
     };
     if let Err(e) = result {
         tracing::debug!(error = %e, "desktop notification unavailable");
+    }
+}
+
+/// Plays the user's chosen completion sound in the background.
+///
+/// Uses only programs already present on typical systems:
+/// - Linux: `paplay` (PulseAudio/PipeWire) with XDG sound names, or `aplay` as fallback.
+/// - macOS: `afplay` with a bundled system sound file.
+/// - Windows: PowerShell `[System.Media.SystemSounds]::Exclamation.Play()`.
+/// No extra crate dependencies are needed.
+fn play_completion_sound(sound: &crate::settings::CompletionSound) {
+    use crate::settings::CompletionSound;
+    // Map our enum to what each platform knows about.
+    match sound {
+        CompletionSound::Off => return,
+        CompletionSound::Default => {
+            play_sound_by_name("complete", "/System/Library/Sounds/Glass.aiff");
+        }
+        CompletionSound::Bell => {
+            play_sound_by_name("bell", "/System/Library/Sounds/Ping.aiff");
+        }
+        CompletionSound::Victory => {
+            play_sound_by_name("dialog-information", "/System/Library/Sounds/Hero.aiff");
+        }
+        CompletionSound::Custom(path) => {
+            let result = if cfg!(target_os = "macos") {
+                spawn_detached("afplay", [path.as_os_str()])
+            } else if cfg!(windows) {
+                let ps = format!(
+                    "(New-Object Media.SoundPlayer '{}').PlaySync()",
+                    path.display()
+                );
+                spawn_detached("powershell", ["-NoProfile", "-Command", &ps])
+            } else {
+                // Try paplay first (PulseAudio/PipeWire), fall back to aplay.
+                spawn_detached("paplay", [path.as_os_str()])
+                    .or_else(|_| spawn_detached("aplay", [path.as_os_str()]))
+            };
+            if let Err(e) = result {
+                tracing::debug!(error = %e, path = %path.display(), "completion sound unavailable");
+            }
+        }
+    }
+}
+
+/// Plays a named XDG sound on Linux, a file path on macOS, and the Exclamation
+/// beep on Windows. `xdg_name` is the freedesktop sound-theme event name
+/// (e.g. `"complete"`); `mac_path` is an absolute path to an `.aiff` file.
+fn play_sound_by_name(xdg_name: &str, mac_path: &str) {
+    let result = if cfg!(target_os = "macos") {
+        spawn_detached("afplay", [mac_path])
+    } else if cfg!(windows) {
+        // Play the system Exclamation sound via PowerShell (no extra deps).
+        spawn_detached(
+            "powershell",
+            ["-NoProfile", "-Command",
+             "[System.Media.SystemSounds]::Exclamation.Play()"],
+        )
+    } else {
+        // paplay with an XDG sound-theme event name (PulseAudio / PipeWire).
+        spawn_detached("paplay", ["--property=media.role=notification",
+                                  &format!("--event={xdg_name}")])
+            .or_else(|_| {
+                // Fallback: look for the .oga file in the freedesktop theme.
+                let path = format!(
+                    "/usr/share/sounds/freedesktop/stereo/{xdg_name}.oga"
+                );
+                spawn_detached("paplay", [path.as_str()])
+                    .or_else(|_| spawn_detached("aplay", [path.as_str()]))
+            })
+    };
+    if let Err(e) = result {
+        tracing::debug!(error = %e, sound = xdg_name, "completion sound unavailable");
     }
 }
 

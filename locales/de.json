@@ -474,5 +474,11 @@
   "download.step_cover": "Cover wird eingefügt…",
   "download.step_metadata": "Titel und Kapitel werden eingefügt…",
   "download.step_convert": "Video wird umgewandelt…",
-  "ready.in_downloads": "in deinem Downloads-Ordner"
+  "ready.in_downloads": "in deinem Downloads-Ordner",
+  "settings.sound_label": "Abschlusston",
+  "settings.sound_off": "Aus",
+  "settings.sound_default": "Standard (complete)",
+  "settings.sound_bell": "Glocke",
+  "settings.sound_victory": "Sieg",
+  "settings.sound_custom": "Eigene Datei…"
 }

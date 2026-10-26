@@ -474,5 +474,11 @@
   "download.step_cover": "Ajout de la pochette…",
   "download.step_metadata": "Ajout du titre et des chapitres…",
   "download.step_convert": "Conversion de la vidéo…",
-  "ready.in_downloads": "dans votre dossier Téléchargements"
+  "ready.in_downloads": "dans votre dossier Téléchargements",
+  "settings.sound_label": "Son de fin",
+  "settings.sound_off": "Désactivé",
+  "settings.sound_default": "Par défaut (complete)",
+  "settings.sound_bell": "Cloche",
+  "settings.sound_victory": "Victoire",
+  "settings.sound_custom": "Fichier personnalisé…"
 }
