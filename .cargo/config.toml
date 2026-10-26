@@ -1,0 +1,12 @@
+# Statically link the MSVC C runtime on Windows so the released fmx.exe
+# does not depend on VCRUNTIME140.dll being installed on the user's machine.
+# Without this flag, users without the Visual C++ Redistributable installed
+# see "VCRUNTIME140.dll was not found" when launching fmx.exe.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
