@@ -37,53 +37,76 @@ jobs:
   linux:
     needs: version
     runs-on: ubuntu-22.04 # older glibc, so the build runs on more distributions
+    timeout-minutes: 30
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
-      - run: cargo install cargo-deb --locked --version 3.8.0
       - name: Package
         run: |
-          mkdir -p dist
-          cargo deb --no-build --output "dist/fmx_${VERSION}_amd64.deb"
-          tar -czf "dist/fmx-${VERSION}-linux-x86_64.tar.gz" -C target/release fmx -C "$PWD" README.md
+          name="fmx-${VERSION}-linux-x86_64"
+          mkdir -p "out/$name"
+          cp target/release/fmx README.md LICENSE-MIT LICENSE-APACHE "out/$name/"
+          tar -C out -czf "out/${name}.tar.gz" "$name"
+          packaging/linux/build-deb.sh "$VERSION" target/release out
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/*
+          path: |
+            out/*.tar.gz
+            out/*.deb
           if-no-files-found: error
 
   windows:
     needs: version
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal; rustup default stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
-      - name: Build the setup wizard (Inno Setup)
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "fmx-$env:VERSION-windows-x64"
+          New-Item -ItemType Directory -Force "out/$name" | Out-Null
+          Copy-Item target/release/fmx.exe, README.md, LICENSE-MIT, LICENSE-APACHE "out/$name"
+          Compress-Archive -Path "out/$name/*" -DestinationPath "out/$name.zip"
+      - name: Setup wizard (Inno Setup)
+        shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DBinDir=$pwd\target\release" "/DOutDir=$pwd\dist" packaging\windows\fmx.iss
+          & $iscc /Qp "/DAppVersion=$env:VERSION" "/DBinDir=$pwd\target\release" "/DOutDir=$pwd\out" packaging\windows\fmx.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/*.exe
+          path: |
+            out/*.zip
+            out/*-setup.exe
           if-no-files-found: error
 
   macos:
     needs: version
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: packaging/macos/build-dmg.sh
       - uses: actions/upload-artifact@v4

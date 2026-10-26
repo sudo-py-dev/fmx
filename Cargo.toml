@@ -1,6 +1,6 @@
 [package]
 name = "fmx"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 rust-version = "1.88"
 description = "Free Media Xpress (FMX) - A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
@@ -54,28 +54,4 @@ panic = "abort"
 [target."cfg(windows)".build-dependencies]
 winresource = "0.1.34"
 
-# Debian package (built with `cargo deb`); the version comes from [package].
-[package.metadata.deb]
-maintainer = "sudo-py-dev"
-copyright = "sudo-py-dev"
-revision = ""
-section = "video"
-priority = "optional"
-depends = "$auto"
-suggests = "ffmpeg, poppler-utils, ghostscript, xorriso, calibre"
-extended-description = """\
-Free Media Xpress (FMX) converts video, audio, images, documents and discs \
-from one simple window. It finds or downloads its own ffmpeg and yt-dlp, \
-so nothing else has to be installed."""
-assets = [
-    ["target/release/fmx", "usr/bin/", "755"],
-    ["packaging/linux/fmx.desktop", "usr/share/applications/", "644"],
-    ["packaging/icons/fmx-16.png", "usr/share/icons/hicolor/16x16/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-24.png", "usr/share/icons/hicolor/24x24/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-32.png", "usr/share/icons/hicolor/32x32/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-48.png", "usr/share/icons/hicolor/48x48/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-64.png", "usr/share/icons/hicolor/64x64/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-128.png", "usr/share/icons/hicolor/128x128/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-256.png", "usr/share/icons/hicolor/256x256/apps/fmx.png", "644"],
-    ["packaging/icons/fmx-512.png", "usr/share/icons/hicolor/512x512/apps/fmx.png", "644"],
-]
+
