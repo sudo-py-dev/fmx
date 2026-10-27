@@ -82,6 +82,31 @@ jobs:
       - run: cargo build --release --locked
       - name: Bundle ffmpeg, ffprobe and yt-dlp
         run: python packaging/fetch-bundled.py target/release/tools win64
+      # The runner has no GPU, like many PCs where OpenGL apps fail to start.
+      - name: Smoke test (the window opens and draws)
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $run = Start-Process target/release/fmx.exe -ArgumentList '--self-test' -PassThru -Wait
+          $logs = Join-Path $env:APPDATA 'fmx/logs'
+          Get-Content (Join-Path $logs 'fmx.log') -ErrorAction SilentlyContinue
+          Get-Content (Join-Path $logs 'crash-*.txt') -ErrorAction SilentlyContinue
+          if ($run.ExitCode -ne 0) {
+            Write-Error "fmx.exe --self-test exited with $($run.ExitCode)"
+            exit 1
+          }
+      - name: Right-click menu (registers, then removes itself)
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $key = 'HKCU\Software\Classes\SystemFileAssociations\.mp4\shell\FMX.Convert'
+          Start-Process target/release/fmx.exe -ArgumentList '--register-shell' -Wait
+          reg query $key /s
+          if ($LASTEXITCODE -ne 0) { Write-Error 'the menu was not added'; exit 1 }
+          Start-Process target/release/fmx.exe -ArgumentList '--unregister-shell' -Wait
+          reg query $key 2>$null
+          if ($LASTEXITCODE -eq 0) { Write-Error 'the menu was not removed'; exit 1 }
+          exit 0
       - name: Package
         shell: pwsh
         run: |

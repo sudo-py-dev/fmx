@@ -671,6 +671,12 @@ pub enum InputArity {
 }
 
 /// What the user supplies as input.
+/// Audio file extensions, a subset of [`InputKind::Media`]'s.
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "aac", "m4a", "flac", "wav", "ogg", "opus", "wma", "aiff", "aif", "ac3", "amr", "ape",
+    "mka", "wv", "mp2", "mmf", "m4r",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputKind {
     Media,

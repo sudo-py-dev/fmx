@@ -57,6 +57,11 @@ fn catalogs() -> &'static [HashMap<String, String>] {
     })
 }
 
+/// The active language's code, such as `en`.
+pub fn active_language() -> &'static str {
+    LOCALES[ACTIVE.load(Ordering::Relaxed)].0
+}
+
 /// Whether the active language is written right to left.
 pub fn is_rtl() -> bool {
     RTL_LANGUAGES.contains(&LOCALES[ACTIVE.load(Ordering::Relaxed)].0)

@@ -465,5 +465,19 @@
   "settings.sound_default": "Default (complete)",
   "settings.sound_bell": "Bell",
   "settings.sound_victory": "Victory",
-  "settings.sound_custom": "Custom file…"
+  "settings.sound_custom": "Custom file…",
+  "settings.diagnostics": "Diagnostics",
+  "settings.debug_logging": "Debug logging",
+  "settings.debug_hint": "Records everything FMX does in a log file. Turn it on if something goes wrong, then send the files from the logs folder with your report.",
+  "settings.open_logs": "Open logs folder",
+  "crash.last_time": "FMX closed unexpectedly last time. A report was saved in the logs folder (Settings → General).",
+  "shell.menu": "Convert with FMX",
+  "shell.open": "Open in FMX",
+  "shell.to": "To {format}",
+  "shell.images": "Images",
+  "settings.shell_label": "Right-click menu",
+  "settings.shell_toggle": "Show “Convert with FMX” for files",
+  "settings.shell_hint": "Right-click video, audio, image, PDF or Office files to convert them in one click. On Windows 11 it is under “Show more options”.",
+  "settings.shell_failed": "Could not change the right-click menu: {error}",
+  "settings.sound_test": "Play"
 }

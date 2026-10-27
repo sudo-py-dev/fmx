@@ -29,6 +29,7 @@
 - **Light & dark theme** — follows system preference; smooth hover/press animations; "Reduce motion" option
 - **5 languages** — English, Spanish, French, German and Hebrew, with a fully mirrored right-to-left layout for Hebrew (or set `FMX_LANG=xx`)
 - **Drag & drop everywhere** — files, folders and links; open files directly from the command line
+- **Right-click to convert** — "Convert with FMX" in Windows Explorer, Dolphin, Nemo, Nautilus and Caja turns a selection into MP4, MP3, JPG, PDF and more in one click (Settings → General)
 
 ---
 
@@ -167,7 +168,7 @@ cargo test
 FMX_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture
 ```
 
-Rust 1.88+ is required (`rust-version` in `Cargo.toml`).
+Rust 1.89+ is required (`rust-version` in `Cargo.toml`).
 
 ---
 
@@ -187,8 +188,27 @@ Rust 1.88+ is required (`rust-version` in `Cargo.toml`).
 | Variable | Effect |
 |---|---|
 | `FMX_LANG=es\|fr\|de\|he\|en` | Override UI language (also changeable in Settings) |
-| `FMX_LOG=debug` | Print every command FMX runs |
+| `FMX_LOG=<filter>` | Log level filter, e.g. `debug` (overrides the Settings switch) |
 | `FMX_FFMPEG=<path>` | Force a specific ffmpeg binary |
+| `FMX_RENDERER=glow` | Windows: use OpenGL instead of Direct3D/Vulkan |
+
+| Option | Effect |
+|---|---|
+| `fmx --debug` | Debug logging for this run, even if FMX can't open its window |
+| `fmx --self-test` | Open the window, draw a few frames and quit (exit code 0 = FMX works here) |
+| `fmx --convert <target> <files…>` | Convert right away, as the right-click menu does (`mp4`, `mkv`, `webm`, `gif`, `mp3`, `m4a`, `flac`, `wav`, `opus`, `jpg`, `png`, `webp`, `pdf`, `word`, `txt`, `images`) |
+| `fmx --register-shell` / `--unregister-shell` | Add or remove the right-click menu for this user, then quit |
+
+Only one FMX window runs at a time: starting FMX again (or converting from the right-click
+menu) hands the files to the open window.
+
+### Logs and crash reports
+
+FMX writes `fmx.log` (and keeps the previous run's `fmx.previous.log`) in its logs folder:
+`%APPDATA%\fmx\logs` on Windows, `~/.local/share/fmx/logs` on Linux and
+`~/Library/Application Support/fmx/logs` on macOS. Turn on **Settings → General →
+Debug logging** to record everything, and use **Open logs folder** to find the files. If FMX
+crashes or can't start, it saves a `crash-<time>.txt` report there with the details and says so.
 
 To add a language, add `locales/xx.json` and register it in `src/i18n.rs`; list it in
 `RTL_LANGUAGES` there too if it is written right to left, and the whole UI mirrors.

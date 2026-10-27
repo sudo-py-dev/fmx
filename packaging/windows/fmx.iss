@@ -1,5 +1,6 @@
-; FMX setup wizard (Inno Setup 6), published with every release as
-; fmx-<version>-windows-x64-setup.exe.
+﻿; FMX setup wizard (Inno Setup 6), published with every release as
+; fmx-<version>-windows-x64-setup.exe. Saved as UTF-8 with a byte-order mark,
+; which Inno Setup needs to read the translated messages below.
 ;
 ;   iscc /DAppVersion=0.0.1 /DBinDir=..\..\target\release /DOutDir=..\..\dist packaging\windows\fmx.iss
 ;
@@ -61,6 +62,7 @@ Name: "he"; MessagesFile: "compiler:Languages\Hebrew.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "contextmenu"; Description: "{cm:ContextMenu}"
 
 [Files]
 Source: "{#BinDir}\fmx.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -84,10 +86,23 @@ Type: files; Name: "{app}\yt-dlp.exe"
 Name: "{autoprograms}\FMX"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Comment: "Free Media Xpress - Video, audio, image, document and disc converter"
 Name: "{autodesktop}\FMX"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Tasks: desktopicon
 
+[CustomMessages]
+ContextMenu=Add "Convert with FMX" to the right-click menu of files
+es.ContextMenu=Añadir "Convertir con FMX" al menú contextual de los archivos
+fr.ContextMenu=Ajouter « Convertir avec FMX » au menu contextuel des fichiers
+de.ContextMenu=„Mit FMX konvertieren“ zum Kontextmenü von Dateien hinzufügen
+he.ContextMenu=הוספת "המרה עם FMX" לתפריט הלחיצה הימנית של קבצים
+
 [Run]
+; FMX writes its right-click menu itself (src/shell.rs); unticking the task removes it.
+Filename: "{app}\fmx.exe"; Parameters: "--register-shell"; Flags: runhidden waituntilterminated; Tasks: contextmenu
+Filename: "{app}\fmx.exe"; Parameters: "--unregister-shell"; Flags: runhidden waituntilterminated; Tasks: not contextmenu
 Filename: "{app}\fmx.exe"; Description: "{cm:LaunchProgram,FMX}"; Flags: nowait postinstall skipifsilent
 ; An update FMX started (silent): FMX closed for it, so start it again.
 Filename: "{app}\fmx.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent
+
+[UninstallRun]
+Filename: "{app}\fmx.exe"; Parameters: "--unregister-shell"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveContextMenu"
 
 [UninstallDelete]
 ; Updates FMX downloaded but did not install yet (dirs::data_dir is %APPDATA%).

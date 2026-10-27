@@ -74,7 +74,9 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: &str) -> Response {
         return ui.checkbox(checked, text);
     }
     ui.with_layout(leading(Align::Center), |ui| {
-        let mut response = ui.checkbox(checked, "");
+        // The box's own padding is the gap, as in egui's checkbox with text.
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut response = ui.add(egui::Checkbox::without_text(checked));
         let label = ui.add(egui::Label::new(text).sense(Sense::click()));
         if label.clicked() {
             *checked = !*checked;

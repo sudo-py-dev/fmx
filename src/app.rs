@@ -13,8 +13,9 @@ use eframe::egui::{
 
 use crate::art;
 use crate::catalog::{
-    AudioFormat, Category, ImageFormat, InputArity, InputKind, Tool, VideoFormat,
+    self, AudioFormat, Category, ImageFormat, InputArity, InputKind, Tool, VideoFormat,
 };
+use crate::diagnostics;
 use crate::dir;
 use crate::docs;
 use crate::download;
@@ -22,15 +23,18 @@ use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
 use crate::icons;
+use crate::instance;
 use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
 use crate::options::{
-    self, Channels, Corner, DownloadKind, Edit, HwAccel, JoinLayout, MixLayout, Quality, Rect,
-    Resolution, Rotation,
+    self, Channels, Corner, DownloadKind, Edit, HwAccel, JoinLayout, MixLayout, Options, Quality,
+    Rect, Resolution, Rotation,
 };
 use crate::preview::{Mode as PreviewMode, Preview};
 use crate::process::spawn_detached;
 use crate::queue::{Job, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
+use crate::shell;
+use crate::sound;
 use crate::theme::{self, MOTION, ThemeChoice};
 use crate::update;
 use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
@@ -67,10 +71,6 @@ const FILE_TILE: f32 = 32.0;
 const MAX_PROBED_FILES: usize = 200;
 /// How many extensions the drop zone lists before "…".
 const SHOWN_EXTENSIONS: usize = 10;
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "aac", "m4a", "flac", "wav", "ogg", "opus", "wma", "aiff", "aif", "ac3", "amr", "ape",
-    "mka", "wv", "mp2", "mmf", "m4r",
-];
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
 const SETTINGS_WIDTH: f32 = 820.0;
 const SETTINGS_HEIGHT: f32 = 540.0;
@@ -83,6 +83,8 @@ const SETTINGS_SCREEN_MARGIN: f32 = 80.0;
 const MAX_TASK_LIST_BYTES: u64 = 10 << 20;
 /// Folder scans stop after this many files.
 const MAX_SCAN_FILES: usize = 10_000;
+/// Frames a `--self-test` run draws before closing.
+const SELF_TEST_FRAMES: u32 = 30;
 /// Progress below this is too early to estimate time left.
 const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
 
@@ -211,14 +213,40 @@ pub struct FmxApp {
     probe_rx: mpsc::Receiver<(PathBuf, Option<f64>)>,
     after_done: AfterDone,
     was_busy: bool,
+    /// Jobs done before the queue last started, so only this run's count.
+    done_before_run: usize,
+    /// "Stop all" was pressed in this run: no sound, notice or shutdown after it.
+    run_stopped: bool,
     shutdown_at: Option<Instant>,
     notifier: Notifier,
     update: UpdateState,
+    /// Debug logging, as switched in Settings (see `diagnostics`).
+    debug_logging: bool,
+    /// Frames left before a `--self-test` run closes itself.
+    self_test_frames: Option<u32>,
+    /// Requests from later starts of FMX (see `instance`).
+    requests: Option<mpsc::Receiver<instance::Request>>,
+    /// The right-click menu, as switched in Settings (see `shell`).
+    shell_menu: bool,
+}
+
+/// How FMX was started.
+pub struct Launch {
+    /// What the command line asked for.
+    pub request: instance::Request,
+    /// Close the window once a few frames were drawn (`--self-test`).
+    pub self_test: bool,
+    /// This is the one running FMX; later starts hand their requests to it.
+    pub single_instance: bool,
 }
 
 impl FmxApp {
-    /// `open_files` are paths given on the command line ("Open with Fmx").
-    pub fn new(cc: &eframe::CreationContext<'_>, open_files: Vec<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
+        let Launch {
+            request,
+            self_test,
+            single_instance,
+        } = launch;
         icons::install(&cc.egui_ctx);
         let mut settings: Settings = cc
             .storage
@@ -261,15 +289,29 @@ impl FmxApp {
             probe_rx,
             after_done: AfterDone::Nothing,
             was_busy: false,
+            done_before_run: 0,
+            run_stopped: false,
             shutdown_at: None,
             notifier: Arc::new(move || ctx.request_repaint()),
             update: UpdateState::Idle,
+            debug_logging: diagnostics::debug_enabled(),
+            self_test_frames: None,
+            requests: None,
+            shell_menu: shell::is_registered(),
             settings,
         };
         let due = now_secs().saturating_sub(app.settings.last_update_check)
             >= update::CHECK_INTERVAL_SECS;
-        if app.settings.check_updates && due {
-            app.start_update_check(&cc.egui_ctx, false);
+        if self_test {
+            app.self_test_frames = Some(SELF_TEST_FRAMES);
+        } else {
+            if app.settings.check_updates && due {
+                app.start_update_check(&cc.egui_ctx, false);
+            }
+            if let Some(report) = diagnostics::take_unseen_crash() {
+                tracing::info!(report = %report.display(), "the last run crashed");
+                app.toasts.push(ToastKind::Error, tr("crash.last_time"));
+            }
         }
         #[cfg(debug_assertions)]
         {
@@ -277,19 +319,137 @@ impl FmxApp {
                 app.update = UpdateState::Available(update::Release::sample());
                 app.settings_tab = SettingsTab::Updates;
             }
-            if crate::devshot::wants_settings() {
+            if let Some(section) = crate::devshot::wants_settings() {
                 app.show_settings = true;
+                app.settings_tab = match section.as_str() {
+                    "queue" => SettingsTab::Queue,
+                    "updates" => SettingsTab::Updates,
+                    "programs" => SettingsTab::Programs,
+                    _ => app.settings_tab,
+                };
             }
         }
-        if !open_files.is_empty() {
-            app.add_files(open_files);
-            app.in_editor = !app.files.is_empty();
+        if !self_test && shell::supported() {
+            app.setup_shell_menu();
+        }
+        if single_instance {
+            app.requests = Some(instance::watch(cc.egui_ctx.clone()));
+            // Through the inbox, so it joins the rest of a multi-file selection.
+            if request != instance::Request::Focus
+                && let Err(e) = instance::forward(&request)
+            {
+                tracing::warn!(error = %e, "could not queue the start request");
+                app.handle_request(&cc.egui_ctx, request);
+            }
+        } else {
+            app.handle_request(&cc.egui_ctx, request);
         }
         #[cfg(debug_assertions)]
         if crate::devshot::wants_enqueue() && app.can_enqueue() {
             app.enqueue();
         }
         app
+    }
+
+    /// Acts on a start of FMX: this one's command line, or a later one's.
+    fn handle_request(&mut self, ctx: &egui::Context, request: instance::Request) {
+        tracing::info!(?request, "request");
+        match request {
+            instance::Request::Focus => {}
+            instance::Request::Open(files) => {
+                // Pick a tool for the files when the current one doesn't take them.
+                if let Some(tool) = files
+                    .first()
+                    .filter(|f| !self.accepts(f))
+                    .and_then(|f| shell::default_tool(f))
+                {
+                    self.select_tool(tool);
+                }
+                self.add_files(files);
+                self.in_editor = !self.files.is_empty();
+            }
+            instance::Request::Convert { target, files } => self.quick_convert(&target, files),
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// A right-click conversion: queues `files` with the current settings and
+    /// starts at once, leaving whatever is open in the editor alone.
+    fn quick_convert(&mut self, target: &str, files: Vec<PathBuf>) {
+        let mut by_tool: Vec<(Tool, Vec<PathBuf>)> = Vec::new();
+        let mut skipped = 0usize;
+        for file in files {
+            match shell::tool_for(target, &file).filter(|_| file.is_file()) {
+                Some(tool) => match by_tool.iter_mut().find(|(t, _)| *t == tool) {
+                    Some((_, list)) => list.push(file),
+                    None => by_tool.push((tool, vec![file])),
+                },
+                None => skipped += 1,
+            }
+        }
+        // No clip, crop or watermark: those were set for some other files.
+        let options = Options {
+            edit: Edit::default(),
+            ..self.settings.options.clone()
+        };
+        let mut claimed: HashSet<PathBuf> = self.queue.claimed_outputs().cloned().collect();
+        let mut queued = 0usize;
+        for (tool, files) in by_tool {
+            if let Some(reason) = self.unavailable_reason(tool) {
+                self.toasts.push(ToastKind::Error, reason);
+                continue;
+            }
+            let selection = Selection {
+                tool,
+                files: &files,
+                url: "",
+                output_dir: self.settings.output_dir.as_deref(),
+                options: &options,
+            };
+            match plan_jobs(&selection, &mut claimed) {
+                Ok(specs) => {
+                    queued += specs.len();
+                    for spec in specs {
+                        self.queue.push_titled(spec, None);
+                    }
+                }
+                Err(e) => self.toasts.push(ToastKind::Error, e.to_string()),
+            }
+        }
+        if queued > 0 {
+            self.queue.is_running = true;
+            self.toasts.push(
+                ToastKind::Success,
+                trf("notice.queued", &[("count", &queued)]),
+            );
+        }
+        if skipped > 0 {
+            self.toasts.push(
+                ToastKind::Error,
+                trf("notice.skipped", &[("count", &skipped)]),
+            );
+        }
+    }
+
+    /// Adds the right-click menu on the first start, and keeps it pointing at
+    /// this FMX in its language. In the background: `reg.exe` takes a moment.
+    /// On Windows the installer asks instead (or Settings, for the zip).
+    fn setup_shell_menu(&mut self) {
+        let first_time = !self.settings.shell_menu_setup && !cfg!(windows);
+        self.settings.shell_menu_setup = true;
+        if first_time {
+            self.shell_menu = true;
+        }
+        std::thread::spawn(move || {
+            if first_time {
+                if let Err(e) = shell::register() {
+                    tracing::warn!(error = %e, "could not add the right-click menu");
+                }
+            } else {
+                shell::refresh();
+            }
+        });
     }
 
     fn select_tool(&mut self, tool: Tool) {
@@ -703,13 +863,23 @@ impl FmxApp {
         let counts = self.queue.counts();
         let busy = counts.running + counts.queued > 0 && self.queue.is_running;
         let just_finished = self.was_busy && !busy && self.queue.is_idle();
+        if busy && !self.was_busy {
+            self.done_before_run = counts.done;
+            self.run_stopped = false;
+        }
         self.was_busy = busy;
-        if just_finished && counts.done > 0 {
+        // Only a run that finished something, and wasn't stopped, ends with the
+        // notice, the sound and the "when done" action.
+        let finished_something = counts.done > self.done_before_run;
+        if just_finished && finished_something && !self.run_stopped {
             self.toasts.push(ToastKind::Success, tr("notice.all_done"));
             if self.settings.notify_when_done {
                 desktop_notification(tr("app.name"), tr("notice.all_done"));
             }
-            play_completion_sound(&self.settings.completion_sound);
+            sound::play(
+                self.settings.completion_sound.clone(),
+                self.toolbox.get(External::Ffmpeg).map(Path::to_path_buf),
+            );
             match self.after_done {
                 AfterDone::Nothing => {}
                 AfterDone::OpenFolder => {
@@ -821,6 +991,7 @@ impl FmxApp {
             .clicked()
             {
                 self.queue.cancel_all();
+                self.run_stopped = true;
             }
             let tool = |ui: &mut egui::Ui, icon, tint, text, enabled| {
                 widgets::button_tinted(
@@ -2749,12 +2920,12 @@ impl FmxApp {
                         theme_changed |= widgets::segmented(ui, &mut self.settings.theme, &choices);
                     });
                     row(ui, tr("settings.motion"), |ui| {
-                        theme_changed |= ui
-                            .checkbox(
-                                &mut self.settings.reduce_motion,
-                                tr("settings.reduce_motion"),
-                            )
-                            .changed();
+                        theme_changed |= dir::checkbox(
+                            ui,
+                            &mut self.settings.reduce_motion,
+                            tr("settings.reduce_motion"),
+                        )
+                        .changed();
                     });
                     row_hint(
                         ui,
@@ -2767,6 +2938,65 @@ impl FmxApp {
                                     .char_limit(options::MAX_NAME_TAG_LEN)
                                     .desired_width(180.0),
                             );
+                        },
+                    );
+                    if shell::supported() {
+                        row_hint(
+                            ui,
+                            tr("settings.shell_label"),
+                            tr("settings.shell_hint"),
+                            |ui| {
+                                if dir::checkbox(
+                                    ui,
+                                    &mut self.shell_menu,
+                                    tr("settings.shell_toggle"),
+                                )
+                                .changed()
+                                {
+                                    let done = if self.shell_menu {
+                                        shell::register()
+                                    } else {
+                                        shell::unregister()
+                                    };
+                                    if let Err(e) = done {
+                                        self.shell_menu = shell::is_registered();
+                                        self.toasts.push(
+                                            ToastKind::Error,
+                                            trf("settings.shell_failed", &[("error", &e)]),
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    }
+                    row_hint(
+                        ui,
+                        tr("settings.diagnostics"),
+                        tr("settings.debug_hint"),
+                        |ui| {
+                            if dir::checkbox(
+                                ui,
+                                &mut self.debug_logging,
+                                tr("settings.debug_logging"),
+                            )
+                            .changed()
+                            {
+                                diagnostics::set_debug(self.debug_logging);
+                            }
+                            if widgets::button(
+                                ui,
+                                Some(icons::FOLDER_OPEN),
+                                tr("settings.open_logs"),
+                                Kind::Secondary,
+                                Size::Small,
+                                true,
+                            )
+                            .clicked()
+                                && let Some(dir) = diagnostics::logs_dir()
+                            {
+                                let _ = std::fs::create_dir_all(&dir);
+                                open_path(&dir);
+                            }
                         },
                     );
                 });
@@ -2834,40 +3064,58 @@ impl FmxApp {
                                             self.settings.completion_sound == choice
                                         };
                                         if ui.selectable_label(selected, text).clicked() {
-                                            if is_custom_variant && !currently_custom {
-                                                self.settings.completion_sound =
-                                                    CompletionSound::Custom(
-                                                        std::path::PathBuf::new(),
-                                                    );
-                                            } else if !is_custom_variant {
+                                            if !is_custom_variant {
                                                 self.settings.completion_sound = choice;
+                                            } else if !currently_custom
+                                                && let Some(file) = pick_sound_file()
+                                            {
+                                                // Picking "Custom file…" asks for the file right away.
+                                                self.settings.completion_sound =
+                                                    CompletionSound::Custom(file);
                                             }
                                         }
                                     }
                                 });
                             });
-                        // When Custom is active, show a browse button and the chosen path.
-                        if let CompletionSound::Custom(ref mut path) =
-                            self.settings.completion_sound
+                        if self.settings.completion_sound != CompletionSound::Off
+                            && widgets::button(
+                                ui,
+                                Some(icons::PLAY),
+                                tr("settings.sound_test"),
+                                Kind::Secondary,
+                                Size::Small,
+                                true,
+                            )
+                            .clicked()
                         {
-                            if ui.button(tr("action.browse")).clicked()
-                                && let Some(picked) = rfd::FileDialog::new()
-                                    .add_filter(
-                                        "Audio",
-                                        &["mp3", "wav", "ogg", "oga", "flac", "aiff", "m4a"],
-                                    )
-                                    .pick_file()
+                            sound::play(
+                                self.settings.completion_sound.clone(),
+                                self.toolbox.get(External::Ffmpeg).map(Path::to_path_buf),
+                            );
+                        }
+                        // A custom sound shows its file, which can be changed.
+                        if let CompletionSound::Custom(path) = &mut self.settings.completion_sound {
+                            if widgets::button(
+                                ui,
+                                Some(icons::FOLDER_OPEN),
+                                tr("action.change"),
+                                Kind::Ghost,
+                                Size::Small,
+                                true,
+                            )
+                            .clicked()
+                                && let Some(file) = pick_sound_file()
                             {
-                                *path = picked;
+                                *path = file;
                             }
-                            if !path.as_os_str().is_empty() {
-                                ui.label(
-                                    RichText::new(
-                                        path.file_name().and_then(|n| n.to_str()).unwrap_or("…"),
-                                    )
-                                    .small(),
-                                );
-                            }
+                            ui.label(
+                                RichText::new(
+                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("…"),
+                                )
+                                .small()
+                                .weak(),
+                            )
+                            .on_hover_text(path.display().to_string());
                         }
                     });
                 });
@@ -3614,7 +3862,7 @@ fn file_art(path: &Path, kind: InputKind) -> art::Art {
     let (glyph, hue) = match (kind, ext) {
         (InputKind::Folder, _) => (glyph::HARD_DRIVE, hue::SLATE),
         (InputKind::Disc, _) | (_, "iso" | "cso") => (glyph::DISC, hue::VIOLET),
-        _ if AUDIO_EXTENSIONS.contains(&ext) => (glyph::FILE_AUDIO, hue::PINK),
+        _ if catalog::AUDIO_EXTENSIONS.contains(&ext) => (glyph::FILE_AUDIO, hue::PINK),
         (InputKind::Media, _) => (glyph::FILE_VIDEO, hue::BLUE),
         (InputKind::Images, _) => (glyph::FILE_IMAGE, hue::GREEN),
         (_, "pdf") => (glyph::FILE_PDF, hue::RED),
@@ -4272,83 +4520,11 @@ fn desktop_notification(title: &str, body: &str) {
     }
 }
 
-/// Plays the user's chosen completion sound in the background.
-///
-/// Uses only programs already present on typical systems:
-/// - Linux: `paplay` (PulseAudio/PipeWire) with XDG sound names, or `aplay` as fallback.
-/// - macOS: `afplay` with a bundled system sound file.
-/// - Windows: PowerShell `[System.Media.SystemSounds]::Exclamation.Play()`.
-///
-/// No extra crate dependencies are needed.
-fn play_completion_sound(sound: &crate::settings::CompletionSound) {
-    use crate::settings::CompletionSound;
-    // Map our enum to what each platform knows about.
-    match sound {
-        CompletionSound::Off => {}
-        CompletionSound::Default => {
-            play_sound_by_name("complete", "/System/Library/Sounds/Glass.aiff");
-        }
-        CompletionSound::Bell => {
-            play_sound_by_name("bell", "/System/Library/Sounds/Ping.aiff");
-        }
-        CompletionSound::Victory => {
-            play_sound_by_name("dialog-information", "/System/Library/Sounds/Hero.aiff");
-        }
-        CompletionSound::Custom(path) => {
-            let result = if cfg!(target_os = "macos") {
-                spawn_detached("afplay", [path.as_os_str()])
-            } else if cfg!(windows) {
-                // Single quotes are doubled so a file name can't end the string.
-                let quoted = path.display().to_string().replace('\'', "''");
-                let ps = format!("(New-Object Media.SoundPlayer '{quoted}').PlaySync()");
-                spawn_detached("powershell", ["-NoProfile", "-Command", &ps])
-            } else {
-                // Try paplay first (PulseAudio/PipeWire), fall back to aplay.
-                spawn_detached("paplay", [path.as_os_str()])
-                    .or_else(|_| spawn_detached("aplay", [path.as_os_str()]))
-            };
-            if let Err(e) = result {
-                tracing::debug!(error = %e, path = %path.display(), "completion sound unavailable");
-            }
-        }
-    }
-}
-
-/// Plays a named XDG sound on Linux, a file path on macOS, and the Exclamation
-/// beep on Windows. `xdg_name` is the freedesktop sound-theme event name
-/// (e.g. `"complete"`); `mac_path` is an absolute path to an `.aiff` file.
-fn play_sound_by_name(xdg_name: &str, mac_path: &str) {
-    let result = if cfg!(target_os = "macos") {
-        spawn_detached("afplay", [mac_path])
-    } else if cfg!(windows) {
-        // Play the system Exclamation sound via PowerShell (no extra deps).
-        spawn_detached(
-            "powershell",
-            [
-                "-NoProfile",
-                "-Command",
-                "[System.Media.SystemSounds]::Exclamation.Play()",
-            ],
-        )
-    } else {
-        // paplay with an XDG sound-theme event name (PulseAudio / PipeWire).
-        spawn_detached(
-            "paplay",
-            [
-                "--property=media.role=notification",
-                &format!("--event={xdg_name}"),
-            ],
-        )
-        .or_else(|_| {
-            // Fallback: look for the .oga file in the freedesktop theme.
-            let path = format!("/usr/share/sounds/freedesktop/stereo/{xdg_name}.oga");
-            spawn_detached("paplay", [path.as_str()])
-                .or_else(|_| spawn_detached("aplay", [path.as_str()]))
-        })
-    };
-    if let Err(e) = result {
-        tracing::debug!(error = %e, sound = xdg_name, "completion sound unavailable");
-    }
+/// Asks for an audio file to use as the completion sound.
+fn pick_sound_file() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter(tr("settings.sound_custom"), sound::CUSTOM_EXTENSIONS)
+        .pick_file()
 }
 
 /// Powers the computer off (the user opted in and saw a countdown).
@@ -4373,6 +4549,27 @@ impl eframe::App for FmxApp {
         let ctx = ui.ctx().clone();
         #[cfg(debug_assertions)]
         crate::devshot::tick(&ctx);
+        // Each call means the previous frame was drawn.
+        match self.self_test_frames {
+            Some(0) => {
+                tracing::info!("self-test passed: the window opened and drew frames");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.self_test_frames = None;
+            }
+            Some(left) => {
+                self.self_test_frames = Some(left - 1);
+                ctx.request_repaint();
+            }
+            None => {}
+        }
+        let requests: Vec<instance::Request> = self
+            .requests
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for request in requests {
+            self.handle_request(&ctx, request);
+        }
         self.handle_input(&ctx);
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);

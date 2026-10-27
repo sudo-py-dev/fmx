@@ -2,12 +2,15 @@
 //! running app as a PNG and quits, for checking layouts (such as right to
 //! left) without clicking through the UI. Files on the command line open the
 //! task editor, and these also set the scene:
-//! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings;
+//! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings (`=queue`, `=updates` or
+//!   `=programs` opens that section);
 //! - `FMX_SCREENSHOT_EXPAND=1` opens every collapsible section;
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue;
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
 //! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`);
 //! - `FMX_SCREENSHOT_UPDATE=1` pretends a newer release was found.
+//!
+//! `FMX_DEBUG_PANIC=1` panics on the tenth frame, to try the crash guard.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -18,9 +21,9 @@ const SETTLE_FRAMES: u32 = 30;
 
 static FRAME: AtomicU32 = AtomicU32::new(0);
 
-/// Whether the screenshot should show the Settings window.
-pub fn wants_settings() -> bool {
-    std::env::var_os("FMX_SCREENSHOT_SETTINGS").is_some()
+/// The Settings section the screenshot should show, if any (`1` = the first).
+pub fn wants_settings() -> Option<String> {
+    std::env::var("FMX_SCREENSHOT_SETTINGS").ok()
 }
 
 /// Whether collapsible sections should start open.
@@ -45,6 +48,13 @@ pub fn wants_menu(id: &str) -> bool {
 
 /// Call once per frame; does nothing unless `FMX_SCREENSHOT` is set.
 pub fn tick(ctx: &egui::Context) {
+    if std::env::var_os("FMX_DEBUG_PANIC").is_some() && FRAME.load(Ordering::Relaxed) == 10 {
+        panic!("FMX_DEBUG_PANIC: a crash on purpose");
+    }
+    if std::env::var_os("FMX_DEBUG_PANIC").is_some() {
+        FRAME.fetch_add(1, Ordering::Relaxed);
+        ctx.request_repaint();
+    }
     let Some(path) = std::env::var_os("FMX_SCREENSHOT") else {
         return;
     };

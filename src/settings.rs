@@ -22,7 +22,7 @@ pub enum CompletionSound {
     Bell,
     /// An upbeat victory jingle.
     Victory,
-    /// A user-supplied audio file (played with ffmpeg or paplay).
+    /// A user-supplied audio file (see `sound::CUSTOM_EXTENSIONS`).
     Custom(PathBuf),
     /// Silent — do not play anything.
     Off,
@@ -58,6 +58,8 @@ pub struct Settings {
     pub skipped_version: Option<String>,
     /// Sound to play when all jobs finish; `Off` is silent.
     pub completion_sound: CompletionSound,
+    /// The right-click menu was added once (first start); later the user decides.
+    pub shell_menu_setup: bool,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -83,6 +85,11 @@ impl Settings {
         self.options.delogo.h = self.options.delogo.h.min(16_384);
         self.options.delogo.x = self.options.delogo.x.min(16_384);
         self.options.delogo.y = self.options.delogo.y.min(16_384);
+        // Older versions could save "custom" before a file was chosen.
+        if matches!(&self.completion_sound, CompletionSound::Custom(p) if p.as_os_str().is_empty())
+        {
+            self.completion_sound = CompletionSound::Default;
+        }
     }
 }
 
@@ -104,6 +111,7 @@ impl Default for Settings {
             last_update_check: 0,
             skipped_version: None,
             completion_sound: CompletionSound::Default,
+            shell_menu_setup: false,
         }
     }
 }

@@ -464,5 +464,19 @@
   "settings.sound_default": "Standard (complete)",
   "settings.sound_bell": "Glocke",
   "settings.sound_victory": "Sieg",
-  "settings.sound_custom": "Eigene Datei…"
+  "settings.sound_custom": "Eigene Datei…",
+  "settings.diagnostics": "Diagnose",
+  "settings.debug_logging": "Debug-Protokoll",
+  "settings.debug_hint": "Zeichnet alles, was FMX tut, in einer Protokolldatei auf. Schalten Sie es bei Problemen ein und senden Sie die Dateien aus dem Protokollordner mit Ihrer Meldung.",
+  "settings.open_logs": "Protokollordner öffnen",
+  "crash.last_time": "FMX wurde beim letzten Mal unerwartet beendet. Ein Bericht wurde im Protokollordner gespeichert (Einstellungen → Allgemein).",
+  "shell.menu": "Mit FMX konvertieren",
+  "shell.open": "In FMX öffnen",
+  "shell.to": "In {format}",
+  "shell.images": "Bilder",
+  "settings.shell_label": "Kontextmenü",
+  "settings.shell_toggle": "„Mit FMX konvertieren“ für Dateien anzeigen",
+  "settings.shell_hint": "Klicken Sie mit der rechten Maustaste auf Video-, Audio-, Bild-, PDF- oder Office-Dateien, um sie mit einem Klick zu konvertieren. Unter Windows 11 unter „Weitere Optionen anzeigen“.",
+  "settings.shell_failed": "Das Kontextmenü konnte nicht geändert werden: {error}",
+  "settings.sound_test": "Abspielen"
 }

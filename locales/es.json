@@ -464,5 +464,19 @@
   "settings.sound_default": "Predeterminado (complete)",
   "settings.sound_bell": "Campana",
   "settings.sound_victory": "Victoria",
-  "settings.sound_custom": "Archivo personalizado…"
+  "settings.sound_custom": "Archivo personalizado…",
+  "settings.diagnostics": "Diagnóstico",
+  "settings.debug_logging": "Registro de depuración",
+  "settings.debug_hint": "Guarda todo lo que hace FMX en un archivo de registro. Actívalo si algo falla y envía los archivos de la carpeta de registros con tu informe.",
+  "settings.open_logs": "Abrir carpeta de registros",
+  "crash.last_time": "FMX se cerró inesperadamente la última vez. Se guardó un informe en la carpeta de registros (Ajustes → General).",
+  "shell.menu": "Convertir con FMX",
+  "shell.open": "Abrir en FMX",
+  "shell.to": "A {format}",
+  "shell.images": "Imágenes",
+  "settings.shell_label": "Menú contextual",
+  "settings.shell_toggle": "Mostrar “Convertir con FMX” en los archivos",
+  "settings.shell_hint": "Haz clic derecho en archivos de vídeo, audio, imagen, PDF u Office para convertirlos con un clic. En Windows 11 está en “Mostrar más opciones”.",
+  "settings.shell_failed": "No se pudo cambiar el menú contextual: {error}",
+  "settings.sound_test": "Reproducir"
 }

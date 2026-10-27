@@ -464,5 +464,19 @@
   "settings.sound_default": "ברירת מחדל (סיום)",
   "settings.sound_bell": "פעמון",
   "settings.sound_victory": "ניצחון",
-  "settings.sound_custom": "קובץ מותאם אישית…"
+  "settings.sound_custom": "קובץ מותאם אישית…",
+  "settings.diagnostics": "אבחון",
+  "settings.debug_logging": "רישום מפורט (Debug)",
+  "settings.debug_hint": "רושם בקובץ יומן כל מה ש-FMX עושה. כדאי להפעיל אם משהו לא עובד, ואז לשלוח את הקבצים מתיקיית היומנים יחד עם הדיווח.",
+  "settings.open_logs": "פתיחת תיקיית היומנים",
+  "crash.last_time": "FMX נסגר באופן לא צפוי בפעם הקודמת. דוח נשמר בתיקיית היומנים (הגדרות → כללי).",
+  "shell.menu": "המרה עם FMX",
+  "shell.open": "פתיחה ב-FMX",
+  "shell.to": "ל-{format}",
+  "shell.images": "תמונות",
+  "settings.shell_label": "תפריט לחיצה ימנית",
+  "settings.shell_toggle": "הצגת \"המרה עם FMX\" בקבצים",
+  "settings.shell_hint": "לוחצים לחיצה ימנית על קובצי וידאו, שמע, תמונה, PDF או Office כדי להמיר אותם בלחיצה אחת. ב-Windows 11 זה נמצא תחת \"הצג אפשרויות נוספות\".",
+  "settings.shell_failed": "לא ניתן לשנות את תפריט הלחיצה הימנית: {error}",
+  "settings.sound_test": "השמעה"
 }
