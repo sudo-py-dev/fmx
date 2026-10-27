@@ -68,9 +68,7 @@ impl fmt::Display for PlanError {
             Self::NoSubtitleStream => f.write_str(tr("error.no_subtitle_stream")),
             Self::UnsupportedTool => f.write_str(tr("error.unsupported_tool")),
             Self::InvalidWatermark => f.write_str(tr("error.invalid_watermark")),
-            Self::InvalidValue(name) => {
-                f.write_str(&trf("error.invalid_value", &[("name", name)]))
-            }
+            Self::InvalidValue(name) => f.write_str(&trf("error.invalid_value", &[("name", name)])),
         }
     }
 }
@@ -722,7 +720,11 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
             }
         }
         Tool::AddSubtitles => {
-            let sub = opts.edit.subtitle.as_ref().ok_or(PlanError::NoSubtitleFile)?;
+            let sub = opts
+                .edit
+                .subtitle
+                .as_ref()
+                .ok_or(PlanError::NoSubtitleFile)?;
             let s = sub.to_string_lossy();
             if s.is_empty() || s.contains('\0') || s.chars().any(|c| c.is_control()) {
                 return Err(PlanError::NoSubtitleFile);
@@ -737,7 +739,9 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
                 || opts.split_secs < options::MIN_SPLIT_SECS
                 || opts.split_secs > 86_400.0
             {
-                return Err(PlanError::InvalidValue(tr("option.segment_length").to_owned()));
+                return Err(PlanError::InvalidValue(
+                    tr("option.segment_length").to_owned(),
+                ));
             }
         }
         Tool::Speed => {
@@ -794,12 +798,16 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
     if let Some(bitrate) = opts.video.bitrate_kbps
         && (bitrate == 0 || bitrate > options::MAX_VIDEO_KBPS)
     {
-        return Err(PlanError::InvalidValue(tr("option.video_bitrate").to_owned()));
+        return Err(PlanError::InvalidValue(
+            tr("option.video_bitrate").to_owned(),
+        ));
     }
     if let Some(bitrate) = opts.audio.bitrate_kbps
         && (bitrate == 0 || bitrate > options::MAX_AUDIO_KBPS)
     {
-        return Err(PlanError::InvalidValue(tr("option.audio_bitrate").to_owned()));
+        return Err(PlanError::InvalidValue(
+            tr("option.audio_bitrate").to_owned(),
+        ));
     }
     if opts.name_tag.len() > options::MAX_NAME_TAG_LEN
         || opts.name_tag.chars().any(|c| c.is_control())
@@ -807,17 +815,23 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
         return Err(PlanError::InvalidValue(tr("settings.name_tag").to_owned()));
     }
     if opts.iso_label.len() > 32 || opts.iso_label.chars().any(|c| c.is_control()) {
-        return Err(PlanError::InvalidValue(tr("option.volume_label").to_owned()));
+        return Err(PlanError::InvalidValue(
+            tr("option.volume_label").to_owned(),
+        ));
     }
     if opts.download.subtitle_langs.len() > options::MAX_SUBTITLE_LANGS_LEN
         || opts.download.subtitle_langs.chars().any(|c| c.is_control())
     {
-        return Err(PlanError::InvalidValue(tr("download.subtitles_label").to_owned()));
+        return Err(PlanError::InvalidValue(
+            tr("download.subtitles_label").to_owned(),
+        ));
     }
     if let Some(limit) = opts.download.rate_limit_kbps
         && (limit == 0 || limit > options::MAX_RATE_LIMIT_KBPS)
     {
-        return Err(PlanError::InvalidValue(tr("download.speed_label").to_owned()));
+        return Err(PlanError::InvalidValue(
+            tr("download.speed_label").to_owned(),
+        ));
     }
     Ok(())
 }

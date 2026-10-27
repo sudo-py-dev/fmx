@@ -13,14 +13,15 @@
 
 use std::fmt;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use minisign_verify::{PublicKey, Signature};
 use serde::Deserialize;
 
-use crate::ffmpeg_setup::agent;
+use crate::externals::TOOLS_DIR;
 use crate::i18n::{tr, trf};
+use crate::net::{agent, persist_executable};
 use crate::process::spawn_detached;
 
 /// The running version, from `Cargo.toml`.
@@ -32,8 +33,8 @@ const RELEASES_PAGE: &str = "https://github.com/sudo-py-dev/fmx/releases";
 const RELEASE_KEY: &str = include_str!("../packaging/update-key.pub");
 const MAX_API_BYTES: u64 = 1 << 20;
 const MAX_SIGNATURE_BYTES: u64 = 4 << 10;
-const MAX_PACKAGE_BYTES: u64 = 300 << 20;
-const MAX_BINARY_BYTES: u64 = 300 << 20;
+const MAX_PACKAGE_BYTES: u64 = 800 << 20;
+const MAX_BINARY_BYTES: u64 = 400 << 20;
 const CHUNK: usize = 64 * 1024;
 /// How often Fmx looks for updates on its own, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
@@ -397,31 +398,59 @@ pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError>
     }
 }
 
-/// Takes the `Fmx` program out of a verified `.tar.gz` and swaps it in for
-/// `exe` in one step (a running program can be replaced on Linux).
+/// Where an archive entry goes: the program itself (top level or inside the
+/// archive's one folder) or a file in its bundled `tools/bin` or `tools/lib`.
+/// Anything else, including `..` or absolute paths, is skipped.
+fn portable_dest(path: &Path, exe: &Path) -> Option<PathBuf> {
+    let parts: Vec<&str> = path
+        .components()
+        .map(|c| match c {
+            Component::Normal(part) => part.to_str(),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let tail = match parts.as_slice() {
+        [_, rest @ ..] if parts.len() > 1 && parts[0] != TOOLS_DIR => rest,
+        all => all,
+    };
+    match tail {
+        ["fmx" | "Fmx"] => Some(exe.to_path_buf()),
+        [tools, sub @ ("bin" | "lib"), name] if *tools == TOOLS_DIR => {
+            Some(exe.parent()?.join(TOOLS_DIR).join(sub).join(name))
+        }
+        _ => None,
+    }
+}
+
+/// Takes `fmx` and its bundled tools out of a verified `.tar.gz` and swaps
+/// each in beside `exe` in one step (a running program can be replaced on Linux).
 fn replace_from_archive(archive: &Path, exe: &Path) -> Result<(), UpdateError> {
-    let dir = exe.parent().ok_or(UpdateError::Unsupported)?;
     let gz = flate2::read::GzDecoder::new(std::fs::File::open(archive)?);
     let mut entries = tar::Archive::new(gz);
+    let mut replaced_app = false;
     for entry in entries.entries()? {
         let mut entry = entry?;
-        let path = entry.path()?;
-        let file_name = path.file_name().and_then(|n| n.to_str());
-        if (file_name != Some("fmx") && file_name != Some("Fmx"))
-            || !entry.header().entry_type().is_file()
-        {
+        let Some(target) = portable_dest(&entry.path()?, exe) else {
+            continue;
+        };
+        if !entry.header().entry_type().is_file() {
             continue;
         }
         if entry.size() > MAX_BINARY_BYTES {
             return Err(UpdateError::TooLarge);
         }
+        let dir = target.parent().ok_or(UpdateError::Unsupported)?;
+        std::fs::create_dir_all(dir)?;
         let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
         std::io::copy(&mut (&mut entry).take(MAX_BINARY_BYTES), tmp.as_file_mut())?;
-        crate::ffmpeg_setup::persist_executable(tmp, exe)
-            .map_err(|e| UpdateError::Io(std::io::Error::other(e.to_string())))?;
-        return Ok(());
+        persist_executable(tmp, &target)?;
+        replaced_app |= target == *exe;
     }
-    Err(UpdateError::BadRelease)
+    if replaced_app {
+        Ok(())
+    } else {
+        Err(UpdateError::BadRelease)
+    }
 }
 
 /// Starts the (updated) program again; the caller then closes this one.
@@ -563,15 +592,57 @@ mod tests {
     }
 
     #[test]
+    fn portable_paths_stay_inside_the_install() {
+        let exe = Path::new("/opt/fmx/fmx");
+        let dest = |p: &str| portable_dest(Path::new(p), exe);
+        assert_eq!(dest("fmx"), Some(exe.to_path_buf()));
+        assert_eq!(dest("fmx-1.0.0/fmx"), Some(exe.to_path_buf()));
+        assert_eq!(
+            dest("fmx-1.0.0/tools/bin/yt-dlp"),
+            Some(PathBuf::from("/opt/fmx/tools/bin/yt-dlp"))
+        );
+        assert_eq!(
+            dest("tools/lib/libavutil.so.60"),
+            Some(PathBuf::from("/opt/fmx/tools/lib/libavutil.so.60"))
+        );
+        for bad in [
+            "a/b/fmx",
+            "fmx-1.0.0/tools/../../fmx",
+            "/etc/fmx",
+            "fmx-1.0.0/tools/bin/../../../x",
+            "fmx-1.0.0/tools/share/x",
+            "fmx-1.0.0/tools/bin/sub/x",
+        ] {
+            assert_eq!(dest(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn portable_update_replaces_the_program() {
         let dir = tempfile::tempdir().expect("tempdir");
         let exe = dir.path().join("Fmx");
         std::fs::write(&exe, b"old program").expect("old");
         let archive = dir.path().join("update.tar.gz");
-        let data = archive_with(&[("README.md", b"readme"), ("Fmx", b"new program")]);
+        let data = archive_with(&[
+            ("fmx-1.0.0/README.md", b"readme"),
+            ("fmx-1.0.0/Fmx", b"new program"),
+            ("fmx-1.0.0/tools/bin/ffmpeg", b"new ffmpeg"),
+            ("fmx-1.0.0/tools/lib/libavcodec.so.62", b"new lib"),
+            ("fmx-1.0.0/tools/share/other", b"ignored"),
+        ]);
         std::fs::write(&archive, data).expect("archive");
         replace_from_archive(&archive, &exe).expect("replace");
         assert_eq!(std::fs::read(&exe).expect("read"), b"new program");
+        let tools = dir.path().join(TOOLS_DIR);
+        assert_eq!(
+            std::fs::read(tools.join("bin/ffmpeg")).expect("ffmpeg"),
+            b"new ffmpeg"
+        );
+        assert_eq!(
+            std::fs::read(tools.join("lib/libavcodec.so.62")).expect("lib"),
+            b"new lib"
+        );
+        assert!(!tools.join("share").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

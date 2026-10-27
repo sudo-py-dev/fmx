@@ -3,8 +3,8 @@
 
   # FMX — Free Media Xpress
 
-  **A single native binary that converts video, audio, images, documents and discs.**  
-  Built in Rust · egui GUI · No installation needed · ~22 MB
+  **A native app that converts video, audio, images, documents and discs.**  
+  Built in Rust · egui GUI · ffmpeg and yt-dlp included · Nothing to download after install
 
   [![Release](https://img.shields.io/github/v/release/sudo-py-dev/fmx?style=flat-square&color=4a90e2)](https://github.com/sudo-py-dev/fmx/releases/latest)
   [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
@@ -23,7 +23,7 @@
 ## ✨ Features at a glance
 
 - **One window, every format** — video, audio, image, document, disc/ISO and utilities all in one place
-- **Zero setup** — ships without ffmpeg; downloads and verifies its own copy on first use
+- **Zero setup** — ffmpeg, ffprobe and yt-dlp ship inside every package; FMX never downloads programs after install
 - **Safe auto-updates** — every release file is Ed25519-signed; unsigned or tampered files are refused
 - **Parallel queue** — jobs run side by side with live progress, cancel and retry
 - **Light & dark theme** — follows system preference; smooth hover/press animations; "Reduce motion" option
@@ -108,7 +108,8 @@ Download the right file from the [**latest release**](https://github.com/sudo-py
 ## 🔄 Updates
 
 FMX checks GitHub once a day and shows a banner when a newer release is available.  
-Updates are safe by design:
+A release is the **only** thing FMX ever downloads: the bundled ffmpeg, ffprobe and
+yt-dlp are updated together with FMX, never on their own. Updates are safe by design:
 
 - Only talks to this repository's GitHub releases, over HTTPS
 - Never offers a downgrade, draft or pre-release
@@ -121,14 +122,21 @@ Turn auto-check off, or hit **Check now**, in **Settings → Updates**.
 
 ## ⚙️ Requirements
 
-**Nothing needs to be installed upfront.**
+**Nothing needs to be installed upfront.** Every release package bundles:
 
-| Tool | How FMX gets it |
+| Program | Source |
 |---|---|
-| **ffmpeg** | Finds it next to the binary, on `PATH`, or in its data dir — otherwise offers to download a verified static build (~25 MB) |
-| **yt-dlp** | Downloaded from yt-dlp's latest GitHub release on first use, SHA-256 verified |
+| **ffmpeg** + **ffprobe** | Pinned FFmpeg 8.1 shared build (Windows, Linux) or FFmpeg 6.1 static build (macOS, ffmpeg only), SHA-256 verified at build time |
+| **yt-dlp** | Official standalone release (no Python needed), SHA-256 verified at build time |
 
-Optional helpers that unlock extra tools when found next to the app or on `PATH`:
+They live in a `tools/` folder beside `fmx` (`/usr/lib/fmx` for the `.deb`), and FMX
+always prefers them over anything on `PATH`. The shared ffmpeg build lets ffmpeg and
+ffprobe reuse one set of libraries, so the bundle is about half the size of two static
+programs. Licenses are listed in
+[`packaging/THIRD-PARTY-NOTICES.md`](packaging/THIRD-PARTY-NOTICES.md).
+
+Optional system programs that unlock extra tools when found next to the app or on `PATH`
+(they are large desktop suites, so FMX uses your installed copy instead of bundling them):
 
 | Helper | Unlocks | Debian/Ubuntu package |
 |---|---|---|
@@ -146,6 +154,9 @@ Optional helpers that unlock extra tools when found next to the app or on `PATH`
 ## 🛠 Build from source
 
 ```bash
+# Fetch the same ffmpeg, ffprobe and yt-dlp a release ships, beside the dev binary
+python3 packaging/fetch-bundled.py target/release/tools
+
 # Run in development mode
 cargo run --release
 

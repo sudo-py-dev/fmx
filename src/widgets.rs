@@ -765,9 +765,7 @@ pub fn paint_chevron(
     let angle = openness * (std::f32::consts::PI * 0.5);
     let cos = angle.cos();
     let sin = angle.sin();
-    let rotate = |x: f32, y: f32| -> Vec2 {
-        Vec2::new(x * cos - y * sin, x * sin + y * cos)
-    };
+    let rotate = |x: f32, y: f32| -> Vec2 { Vec2::new(x * cos - y * sin, x * sin + y * cos) };
     let half_w = size * 0.35;
     let half_h = size * 0.6;
     let p1 = center + rotate(-half_w, -half_h);
@@ -789,7 +787,8 @@ pub fn collapsible_section<R>(
 ) -> Option<R> {
     let p = theme::palette(ui);
     let id = ui.make_persistent_id(id_salt);
-    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let mut state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     let is_open = state.is_open();
     let openness = state.openness(ui.ctx());
 
@@ -811,7 +810,12 @@ pub fn collapsible_section<R>(
         // Header background card
         let r = RADIUS;
         let corners = if openness > 0.05 {
-            CornerRadius { nw: r, ne: r, sw: 0, se: 0 }
+            CornerRadius {
+                nw: r,
+                ne: r,
+                sw: 0,
+                se: 0,
+            }
         } else {
             CornerRadius::same(r)
         };
@@ -825,7 +829,13 @@ pub fn collapsible_section<R>(
             p.accent.gamma_multiply(0.6),
             hover.max(openness * 0.7),
         );
-        painter.rect(header_rect, corners, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+        painter.rect(
+            header_rect,
+            corners,
+            fill,
+            Stroke::new(1.0, border),
+            StrokeKind::Inside,
+        );
 
         // Modern Chevron arrow on the left (clean, no box)
         let chevron_center = Pos2::new(header_rect.min.x + 18.0, header_rect.center().y);
@@ -899,10 +909,12 @@ pub fn collapsible_section<R>(
                 se: RADIUS,
             })
             .inner_margin(egui::Margin::symmetric(14, 12));
-        frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            content(ui)
-        }).inner
+        frame
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                content(ui)
+            })
+            .inner
     });
     state.store(ui.ctx());
     ui.add_space(6.0);

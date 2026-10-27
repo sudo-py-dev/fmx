@@ -41,12 +41,8 @@ impl JobSpec {
         } else {
             let count = self.inputs.len();
             let arity = self.tool.arity();
-            let count_error = |needed| {
-                JobError::Plan(PlanError::WrongInputCount {
-                    needed,
-                    got: count,
-                })
-            };
+            let count_error =
+                |needed| JobError::Plan(PlanError::WrongInputCount { needed, got: count });
             match arity {
                 InputArity::EachFile if count != 1 => return Err(count_error(1)),
                 InputArity::AllAtLeast(n) if count < n => return Err(count_error(n)),
@@ -528,7 +524,10 @@ mod tests {
             &select(Tool::Trim, &files, None, &opts),
             &mut HashSet::new(),
         );
-        assert!(matches!(err, Err(JobError::Plan(PlanError::BadTimestamp(_)))));
+        assert!(matches!(
+            err,
+            Err(JobError::Plan(PlanError::BadTimestamp(_)))
+        ));
     }
 
     #[test]

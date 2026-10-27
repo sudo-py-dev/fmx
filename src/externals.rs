@@ -75,28 +75,42 @@ impl External {
     }
 }
 
-/// Searches beside our executable, then `PATH`, for any of `names`.
-fn find_on_path(names: &[&str]) -> Option<PathBuf> {
-    let with_ext = |name: &str| {
-        if cfg!(windows) {
-            format!("{name}.exe")
-        } else {
-            name.to_owned()
-        }
-    };
-    let beside_exe = std::env::current_exe()
+/// Folder beside the executable that release packages fill with ffmpeg,
+/// ffprobe and yt-dlp (`tools/bin`, plus `tools/lib` on Linux).
+pub const TOOLS_DIR: &str = "tools";
+
+/// Where release packages put FMX's bundled programs: `tools/bin` beside the
+/// executable (portable archive, Windows setup, macOS app bundle, snap) or,
+/// for the Debian package, `/usr/lib/fmx/bin`. The executable's own folder
+/// comes last, for programs a user drops next to a portable copy.
+fn bundled_dirs() -> Vec<PathBuf> {
+    let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    let dirs: Vec<PathBuf> = beside_exe
-        .into_iter()
-        .chain(
-            std::env::var_os("PATH")
-                .iter()
-                .flat_map(std::env::split_paths),
-        )
+    let mut dirs: Vec<PathBuf> = exe_dir
+        .iter()
+        .map(|d| d.join(TOOLS_DIR).join("bin"))
         .collect();
+    if cfg!(target_os = "linux") {
+        dirs.push(PathBuf::from("/usr/lib/fmx/bin"));
+    }
+    dirs.extend(exe_dir);
+    dirs
+}
+
+/// Searches the bundled directories first, then `PATH`, for any of `names`,
+/// so a release always runs the exact tools it shipped with.
+fn find_program(names: &[&str]) -> Option<PathBuf> {
+    let path_dirs = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let dirs: Vec<PathBuf> = bundled_dirs().into_iter().chain(path_dirs).collect();
     names.iter().find_map(|name| {
-        let file = with_ext(name);
+        let file = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            (*name).to_owned()
+        };
         dirs.iter().map(|dir| dir.join(&file)).find(|p| p.is_file())
     })
 }
@@ -109,22 +123,18 @@ pub struct Toolbox {
 }
 
 impl Toolbox {
-    /// Finds every external program; `ffmpeg_override` wins over the search.
+    /// Finds every external program. For ffmpeg, `ffmpeg_override` (from
+    /// Settings) wins, then `FMX_FFMPEG`, then the normal search.
     pub fn detect(ffmpeg_override: Option<&Path>) -> Self {
+        let override_path = ffmpeg_override
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os("FMX_FFMPEG").map(PathBuf::from));
         let paths: HashMap<External, PathBuf> = External::ALL
             .into_iter()
             .filter_map(|ext| {
-                let found = match (ext, ffmpeg_override) {
+                let found = match (ext, override_path.as_deref()) {
                     (External::Ffmpeg, Some(path)) => path.is_file().then(|| path.to_path_buf()),
-                    // Fmx's own copy is the fallback when the system has none.
-                    (External::Ffmpeg, None) => find_on_path(ext.binaries())
-                        .or_else(|| crate::ffmpeg_setup::managed_binary().filter(|p| p.is_file())),
-                    // Fmx's own yt-dlp wins: it is the one kept up to date from
-                    // Settings, while system copies are often too old for YouTube.
-                    (External::YtDlp, _) => crate::ytdlp_setup::managed_binary()
-                        .filter(|p| p.is_file())
-                        .or_else(|| find_on_path(ext.binaries())),
-                    _ => find_on_path(ext.binaries()),
+                    _ => find_program(ext.binaries()),
                 };
                 found.map(|p| (ext, p))
             })

@@ -728,8 +728,14 @@ mod tests {
         assert!(!Rotation::FlipHorizontal.swaps_dimensions());
         assert!(!Rotation::FlipVertical.swaps_dimensions());
 
-        assert_eq!(Rotation::Clockwise.transformed_size(1920, 1080), (1080, 1920));
-        assert_eq!(Rotation::UpsideDown.transformed_size(1920, 1080), (1920, 1080));
+        assert_eq!(
+            Rotation::Clockwise.transformed_size(1920, 1080),
+            (1080, 1920)
+        );
+        assert_eq!(
+            Rotation::UpsideDown.transformed_size(1920, 1080),
+            (1920, 1080)
+        );
 
         assert_eq!(Rotation::Clockwise.next_cw(), Rotation::UpsideDown);
         assert_eq!(Rotation::UpsideDown.next_cw(), Rotation::CounterClockwise);
@@ -739,7 +745,10 @@ mod tests {
         assert_eq!(Rotation::Clockwise.next_ccw(), Rotation::CounterClockwise);
         assert_eq!(Rotation::CounterClockwise.next_ccw(), Rotation::UpsideDown);
         assert_eq!(Rotation::UpsideDown.next_ccw(), Rotation::Clockwise);
-        assert_eq!(Rotation::FlipVertical.next_ccw(), Rotation::CounterClockwise);
+        assert_eq!(
+            Rotation::FlipVertical.next_ccw(),
+            Rotation::CounterClockwise
+        );
     }
 
     #[test]
@@ -750,7 +759,10 @@ mod tests {
         assert!(edit.validate(None).is_ok());
 
         edit.trim_start = "vmm".into();
-        assert_eq!(edit.validate(None), Err(PlanError::BadTimestamp("vmm".into())));
+        assert_eq!(
+            edit.validate(None),
+            Err(PlanError::BadTimestamp("vmm".into()))
+        );
 
         edit.trim_start = "10".into();
         edit.trim_end = "5".into();
@@ -778,18 +790,34 @@ mod tests {
         opts.edit.trim_start.clear();
         assert_eq!(opts.validate(Tool::Crop), Err(PlanError::NoCropArea));
 
-        opts.edit.crop = Some(Rect { x: 0, y: 0, w: 1, h: 100 });
+        opts.edit.crop = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 100,
+        });
         assert_eq!(opts.validate(Tool::Crop), Err(PlanError::InvalidRect));
 
-        opts.edit.crop = Some(Rect { x: 0, y: 0, w: 100, h: 100 });
+        opts.edit.crop = Some(Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        });
         assert!(opts.validate(Tool::Crop).is_ok());
 
         opts.speed = 0.0;
-        assert!(matches!(opts.validate(Tool::Speed), Err(PlanError::InvalidValue(_))));
+        assert!(matches!(
+            opts.validate(Tool::Speed),
+            Err(PlanError::InvalidValue(_))
+        ));
 
         opts.speed = 1.0;
         opts.split_by_parts = true;
         opts.split_parts = 1;
-        assert!(matches!(opts.validate(Tool::Split), Err(PlanError::InvalidValue(_))));
+        assert!(matches!(
+            opts.validate(Tool::Split),
+            Err(PlanError::InvalidValue(_))
+        ));
     }
 }

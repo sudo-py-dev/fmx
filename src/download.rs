@@ -369,7 +369,7 @@ pub fn fetch_thumbnail(url: &str) -> Result<image::RgbaImage, String> {
     if !url.starts_with("https://") {
         return Err("not https".to_owned());
     }
-    let bytes = crate::ffmpeg_setup::agent()
+    let bytes = crate::net::agent()
         .get(url)
         .call()
         .map_err(|e| e.to_string())?

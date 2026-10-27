@@ -37,7 +37,7 @@ jobs:
   linux:
     needs: version
     runs-on: ubuntu-22.04 # older glibc, so the build runs on more distributions
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -50,11 +50,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - name: Bundle ffmpeg, ffprobe and yt-dlp
+        run: python3 packaging/fetch-bundled.py target/release/tools linux64
       - name: Package
         run: |
           name="fmx-${VERSION}-linux-x86_64"
           mkdir -p "out/$name"
-          cp target/release/fmx README.md LICENSE-MIT LICENSE-APACHE "out/$name/"
+          cp -r target/release/fmx target/release/tools README.md LICENSE-MIT \
+            LICENSE-APACHE packaging/THIRD-PARTY-NOTICES.md "out/$name/"
           tar -C out -czf "out/${name}.tar.gz" "$name"
           packaging/linux/build-deb.sh "$VERSION" target/release out
       - uses: actions/upload-artifact@v4
@@ -68,7 +71,7 @@ jobs:
   windows:
     needs: version
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -77,12 +80,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - name: Bundle ffmpeg, ffprobe and yt-dlp
+        run: python packaging/fetch-bundled.py target/release/tools win64
       - name: Package
         shell: pwsh
         run: |
           $name = "fmx-$env:VERSION-windows-x64"
           New-Item -ItemType Directory -Force "out/$name" | Out-Null
-          Copy-Item target/release/fmx.exe, README.md, LICENSE-MIT, LICENSE-APACHE "out/$name"
+          Copy-Item -Recurse target/release/fmx.exe, target/release/tools, README.md, LICENSE-MIT, LICENSE-APACHE, packaging/THIRD-PARTY-NOTICES.md "out/$name"
           Compress-Archive -Path "out/$name/*" -DestinationPath "out/$name.zip"
       - name: Setup wizard (Inno Setup)
         shell: pwsh
@@ -102,7 +107,7 @@ jobs:
   macos:
     needs: version
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

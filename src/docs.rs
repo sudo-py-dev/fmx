@@ -151,7 +151,9 @@ pub fn is_web_url(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty()
         || text.len() > 2048
-        || text.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\0')
+        || text
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\0')
     {
         return false;
     }
@@ -242,7 +244,10 @@ mod tests {
         assert!(!is_web_url("https://a.com/x y"));
         assert!(!is_web_url("https://example.com\0/bad"));
         assert!(!is_web_url("https://example.com\n/bad"));
-        assert!(!is_web_url(&format!("https://example.com/{}", "a".repeat(3000))));
+        assert!(!is_web_url(&format!(
+            "https://example.com/{}",
+            "a".repeat(3000)
+        )));
         assert!(!is_web_url("file:///etc/passwd"));
     }
 }

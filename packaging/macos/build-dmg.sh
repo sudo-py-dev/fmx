@@ -17,7 +17,10 @@ rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create -output "$app/Contents/MacOS/fmx" \
   target/aarch64-apple-darwin/release/fmx target/x86_64-apple-darwin/release/fmx
 cp packaging/icons/fmx.icns "$app/Contents/Resources/fmx.icns"
+cp packaging/THIRD-PARTY-NOTICES.md "$app/Contents/Resources/"
 sed "s/@VERSION@/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+# Bundled ffmpeg and yt-dlp go in tools/bin beside the executable, where FMX looks first.
+python3 packaging/fetch-bundled.py "$app/Contents/MacOS/tools" macos-universal
 # Ad-hoc signature: required on Apple silicon. Not notarized (needs a paid
 # Apple developer ID), so the first launch needs right-click → Open.
 codesign --force --deep --sign - "$app"

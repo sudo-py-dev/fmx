@@ -332,7 +332,14 @@ impl Preview {
             .default_width(DISPLAY_MAX_WIDTH + 32.0)
             .resizable(false)
             .show(ctx, |ui| {
-                self.contents(ui, edit, rect, Mode::BOTH, DISPLAY_MAX_HEIGHT, edit.rotation);
+                self.contents(
+                    ui,
+                    edit,
+                    rect,
+                    Mode::BOTH,
+                    DISPLAY_MAX_HEIGHT,
+                    edit.rotation,
+                );
             });
         open
     }

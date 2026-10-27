@@ -1,6 +1,6 @@
 name: fmx
 base: core24
-version: '0.0.4' # or adopt-info: fmx to extract dynamically
+adopt-info: fmx # version comes from Cargo.toml
 summary: All-in-one media, document and disc converter
 description: |
   fmx converts video, audio, images, documents and discs from one simple
@@ -19,7 +19,7 @@ apps:
       - home
       - removable-media     # Read/write files on USB drives / external media
       - optical-drive       # Rip/read optical CD/DVD drives (xorriso / disc.rs)
-      - network             # yt-dlp / external media downloads
+      - network             # video downloader (bundled yt-dlp) and update checks
       - network-bind
       - audio-playback      # Audio preview
 
@@ -31,15 +31,21 @@ parts:
       - curl
       - build-essential
       - pkg-config
+      - python3
     override-build: |
       # Install the required Rust toolchain (Rust >= 1.88 per Cargo.toml)
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
       . "$HOME/.cargo/env"
 
       cargo build --release --locked
+      craftctl set version="$(cargo metadata --no-deps --format-version 1 \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
 
-      # Install binary
+      # Install binary with its bundled tools in bin/tools beside it
       install -Dm755 target/release/fmx "$CRAFT_PART_INSTALL/bin/fmx"
+      python3 packaging/fetch-bundled.py "$CRAFT_PART_INSTALL/bin/tools" linux64
+      install -Dm644 packaging/THIRD-PARTY-NOTICES.md \
+        "$CRAFT_PART_INSTALL/usr/share/doc/fmx/THIRD-PARTY-NOTICES.md"
 
       # Install desktop file & icons
       install -Dm644 packaging/linux/fmx.desktop "$CRAFT_PART_INSTALL/usr/share/applications/fmx.desktop"
@@ -49,7 +55,6 @@ parts:
       done
 
     stage-packages:
-      - ffmpeg
       - poppler-utils
       - ghostscript
       - xorriso

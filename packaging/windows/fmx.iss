@@ -45,7 +45,7 @@ WizardStyle=modern
 ; A running FMX is closed for the upgrade and started again afterwards.
 CloseApplications=yes
 RestartApplications=yes
-Compression=lzma2/max
+Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir={#OutDir}
 OutputBaseFilename=fmx-{#AppVersion}-windows-x64-setup
@@ -63,10 +63,21 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#BinDir}\fmx.exe"; DestDir: "{app}"; Flags: ignoreversion
+; ffmpeg, ffprobe, yt-dlp and ffmpeg's DLLs, filled by packaging/fetch-bundled.py.
+Source: "{#BinDir}\tools\bin\*"; DestDir: "{app}\tools\bin"; Flags: ignoreversion
 Source: "..\icons\fmx.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE-MIT"; DestDir: "{app}"; DestName: "LICENSE-MIT.txt"; Flags: ignoreversion
 Source: "..\..\LICENSE-APACHE"; DestDir: "{app}"; DestName: "LICENSE-APACHE.txt"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+; An upgrade replaces the bundled tools as a whole, so no outdated DLL is left behind.
+Type: filesandordirs; Name: "{app}\tools"
+; Unreleased 0.0.7 test builds put the tools beside fmx.exe.
+Type: files; Name: "{app}\ffmpeg.exe"
+Type: files; Name: "{app}\ffprobe.exe"
+Type: files; Name: "{app}\yt-dlp.exe"
 
 [Icons]
 Name: "{autoprograms}\FMX"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Comment: "Free Media Xpress - Video, audio, image, document and disc converter"

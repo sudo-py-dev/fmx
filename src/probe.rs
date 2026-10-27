@@ -1,5 +1,5 @@
-//! Media inspection by parsing the stream summary ffmpeg prints for `-i`.
-//! Using ffmpeg itself keeps the app dependent on a single external binary.
+//! Media inspection from ffprobe JSON, with a fallback parser for ffmpeg's `-i`
+//! banner so probing still works when only ffmpeg is present.
 
 /// What we need to know about an input to plan a conversion.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -14,6 +14,78 @@ pub struct MediaInfo {
     pub has_subtitles: bool,
     /// Frame rate of the first video stream.
     pub fps: Option<f64>,
+}
+
+/// Parses `ffprobe -print_format json -show_format -show_streams -show_chapters`.
+pub fn parse_ffprobe_json(text: &str) -> Option<MediaInfo> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let mut info = MediaInfo {
+        duration_s: json_duration(value.pointer("/format/duration")),
+        ..MediaInfo::default()
+    };
+    if let Some(streams) = value.get("streams").and_then(|s| s.as_array()) {
+        for stream in streams {
+            match stream.get("codec_type").and_then(|t| t.as_str()) {
+                Some("audio") => info.has_audio = true,
+                Some("subtitle") => info.has_subtitles = true,
+                // The first real video stream decides size and rate; cover art is skipped.
+                Some("video")
+                    if !info.has_video
+                        && !json_flag(stream.pointer("/disposition/attached_pic")) =>
+                {
+                    info.has_video = true;
+                    info.width = json_u32(stream.get("width"));
+                    info.height = json_u32(stream.get("height"));
+                    info.fps = json_rate(stream.get("avg_frame_rate"))
+                        .or_else(|| json_rate(stream.get("r_frame_rate")));
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(chapters) = value.get("chapters").and_then(|c| c.as_array()) {
+        for chapter in chapters {
+            let start = json_duration(chapter.get("start_time"));
+            let end = json_duration(chapter.get("end_time"));
+            if let (Some(start), Some(end)) = (start, end)
+                && end > start
+            {
+                info.chapters.push((start, end));
+            }
+        }
+    }
+    Some(info)
+}
+
+fn json_duration(value: Option<&serde_json::Value>) -> Option<f64> {
+    let secs = match value? {
+        serde_json::Value::String(s) => s.parse().ok()?,
+        serde_json::Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    (secs.is_finite() && secs >= 0.0).then_some(secs)
+}
+
+fn json_u32(value: Option<&serde_json::Value>) -> Option<u32> {
+    let n = u32::try_from(value?.as_u64()?).ok()?;
+    (n > 0).then_some(n)
+}
+
+fn json_flag(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0) != 0,
+        Some(serde_json::Value::Bool(b)) => *b,
+        _ => false,
+    }
+}
+
+/// Parses ffprobe's `num/den` frame-rate strings.
+fn json_rate(value: Option<&serde_json::Value>) -> Option<f64> {
+    let text = value?.as_str()?;
+    let (num, den) = text.split_once('/')?;
+    let num: f64 = num.parse().ok()?;
+    let den: f64 = den.parse().ok()?;
+    (den > 0.0 && num.is_finite()).then_some(num / den)
 }
 
 /// Parses ffmpeg's banner output (stderr of `ffmpeg -i <file>`).
@@ -134,5 +206,45 @@ At least one output file must be specified";
     fn hex_codec_tags_are_not_frame_sizes() {
         assert_eq!(parse_frame_size("0x31637661"), None);
         assert_eq!(parse_frame_size("640x360"), Some((640, 360)));
+    }
+
+    const FFPROBE_SAMPLE: &str = r#"{
+      "streams": [
+        {"codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "30/1",
+         "disposition": {"attached_pic": 0}},
+        {"codec_type": "audio"},
+        {"codec_type": "subtitle"}
+      ],
+      "format": {"duration": "62.500000"},
+      "chapters": [
+        {"start_time": "0.000000", "end_time": "245.200000"},
+        {"start_time": "245.200000", "end_time": "480.000000"}
+      ]
+    }"#;
+
+    #[test]
+    fn parses_ffprobe_json() {
+        let info = parse_ffprobe_json(FFPROBE_SAMPLE).expect("json");
+        assert_eq!(info.duration_s, Some(62.5));
+        assert!(info.has_video && info.has_audio && info.has_subtitles);
+        assert_eq!((info.width, info.height), (Some(1920), Some(1080)));
+        assert_eq!(info.fps, Some(30.0));
+        assert_eq!(info.chapters, vec![(0.0, 245.2), (245.2, 480.0)]);
+    }
+
+    #[test]
+    fn ffprobe_cover_art_is_not_video() {
+        let text = r#"{"streams":[
+            {"codec_type":"audio"},
+            {"codec_type":"video","width":500,"height":500,"disposition":{"attached_pic":1}}
+        ],"format":{"duration":"180.0"}}"#;
+        let info = parse_ffprobe_json(text).expect("json");
+        assert!(info.has_audio && !info.has_video);
+        assert_eq!(info.width, None);
+    }
+
+    #[test]
+    fn rejects_garbage_ffprobe_json() {
+        assert!(parse_ffprobe_json("not json").is_none());
     }
 }
