@@ -23,13 +23,14 @@
 ## ✨ Features at a glance
 
 - **One window, every format** — video, audio, image, document, disc/ISO and utilities all in one place
+- **Right-click to convert** — "Convert with FMX" in your file manager turns a selection into MP4, MP3, JPG, PDF and more in one click ([details](#right-click-menu))
 - **Zero setup** — ffmpeg, ffprobe and yt-dlp ship inside every package; FMX never downloads programs after install
 - **Safe auto-updates** — every release file is Ed25519-signed; unsigned or tampered files are refused
-- **Parallel queue** — jobs run side by side with live progress, cancel and retry
+- **Parallel queue** — jobs run side by side with live progress, cancel and retry; a sound, a notification, opening the folder or shutting down when everything is done
 - **Light & dark theme** — follows system preference; smooth hover/press animations; "Reduce motion" option
-- **5 languages** — English, Spanish, French, German and Hebrew, with a fully mirrored right-to-left layout for Hebrew (or set `FMX_LANG=xx`)
-- **Drag & drop everywhere** — files, folders and links; open files directly from the command line
-- **Right-click to convert** — "Convert with FMX" in Windows Explorer, Dolphin, Nemo, Nautilus and Caja turns a selection into MP4, MP3, JPG, PDF and more in one click (Settings → General)
+- **5 languages** — English, Spanish, French, German and Hebrew, with a fully mirrored right-to-left layout for Hebrew
+- **Drag & drop everywhere** — files, folders and links; one FMX window takes everything you open
+- **Easy to troubleshoot** — a log file, a debug-logging switch and crash reports ([details](#logs-and-crash-reports))
 
 ---
 
@@ -102,15 +103,52 @@ Download the right file from the [**latest release**](https://github.com/sudo-py
 | **Ubuntu / Debian** (64-bit) | `fmx_<version>_amd64.deb` → `sudo apt install ./fmx_<version>_amd64.deb` |
 | **Other Linux** (64-bit) | `fmx-<version>-linux-x86_64.tar.gz` → portable, just run `./fmx` |
 
+The Windows setup asks whether to add "Convert with FMX" to the right-click menu (on by default)
+and removes it again when you uninstall FMX. FMX installs for the current user and needs no
+administrator rights.
+
+> **Windows note:** SmartScreen may warn about an unknown publisher; choose **More info → Run anyway**.
+>
 > **macOS note:** the build is not yet notarized. First launch: right-click FMX → **Open**.
+
+---
+
+<a id="right-click-menu"></a>
+
+## 🖱️ Right-click menu
+
+Select files in your file manager, right-click, and choose **Convert with FMX**:
+
+| Files | Conversions offered |
+|---|---|
+| Video (MP4, MKV, MOV, AVI, …) | MP4 · MKV · WebM · GIF · MP3 (just the audio) |
+| Audio (MP3, FLAC, WAV, M4A, …) | MP3 · M4A · FLAC · WAV · Opus |
+| Images (PNG, JPG, WebP, HEIC, …) | JPG · PNG · WebP · PDF (all selected images in one PDF) |
+| Office (Word, Excel, PowerPoint, OpenDocument) | PDF |
+| PDF | Word · TXT · Images |
+
+FMX queues the files with your current settings and starts right away; the results are saved
+next to the originals, or in the output folder you chose. **Open in FMX** opens the files in the
+editor instead, to pick another tool or change options first.
+
+| Where | How it appears |
+|---|---|
+| **Windows 10** | In the menu of each supported file type |
+| **Windows 11** | Under **Show more options** (the new short menu only takes packaged extensions) |
+| **Linux** | Dolphin (KDE) and Nemo (Cinnamon) in the menu; Nautilus (GNOME) and Caja (MATE) under **Scripts** |
+
+On Linux FMX adds the menu the first time it starts. Turn it on or off any time in
+**Settings → General → Right-click menu**. It isn't available on macOS or in the snap.
 
 ---
 
 ## 🔄 Updates
 
-FMX checks GitHub once a day and shows a banner when a newer release is available.  
-A release is the **only** thing FMX ever downloads: the bundled ffmpeg, ffprobe and
-yt-dlp are updated together with FMX, never on their own. Updates are safe by design:
+FMX checks GitHub once a day. When a newer release is out, a dot appears on the **Settings**
+button, and **Settings → Updates** shows it with **Update now**, **What's new** and
+**Skip this version**; nothing pops up over your work. A release is the **only** thing FMX
+ever downloads: the bundled ffmpeg, ffprobe and yt-dlp are updated together with FMX, never
+on their own. Updates are safe by design:
 
 - Only talks to this repository's GitHub releases, over HTTPS
 - Never offers a downgrade, draft or pre-release
@@ -150,6 +188,9 @@ Optional system programs that unlock extra tools when found next to the app or o
 
 > Formats unsupported by your ffmpeg build (e.g. AMR without `libopencore_amrnb`) are greyed out automatically.
 
+On Linux the completion sound plays through `pw-play`, `paplay` or `aplay`, one of which every
+desktop has; FMX itself needs no audio libraries.
+
 ---
 
 ## 🛠 Build from source
@@ -166,20 +207,54 @@ cargo test
 
 # End-to-end tests (requires ffmpeg on PATH or FMX_FFMPEG set)
 FMX_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture
+
+# Hear the three built-in completion sounds
+cargo test plays_each_built_in_sound -- --ignored
+
+# Check that FMX opens its window here (exit code 0 = it works)
+cargo run --release -- --self-test
 ```
 
-Rust 1.89+ is required (`rust-version` in `Cargo.toml`).
+Rust 1.89+ is required (`rust-version` in `Cargo.toml`). Building on Linux needs no extra `-dev`
+packages (the release workflow builds on a stock Ubuntu runner).
+
+Debug builds can save a picture of the real window, to check layouts without clicking through
+them: `FMX_SCREENSHOT=shot.png cargo run` (see `src/devshot.rs` for the switches that open
+Settings, the editor, a menu and so on).
+
+### Project layout
+
+| Path | What it holds |
+|---|---|
+| `src/app.rs` | The window: tools, editor, queue and Settings |
+| `src/catalog.rs`, `src/plan.rs`, `src/jobs.rs`, `src/exec.rs` | Which tools exist, and how a tool and files become ffmpeg (or native) jobs |
+| `src/shell.rs`, `src/instance.rs` | The right-click menu, and handing files to the one running window |
+| `src/update.rs` | Signed self-updates |
+| `src/diagnostics.rs`, `src/sound.rs` | Logs and crash reports; the completion sound |
+| `src/i18n.rs`, `src/dir.rs`, `locales/` | Translations, and the mirrored right-to-left layout |
+| `vendor/epaint` | egui's text library with right-to-left text support ([FMX-PATCH.md](vendor/epaint/FMX-PATCH.md)) |
+| `packaging/` | Bundled-tool fetching, installers and packages for each system |
+
+### Adding a language
+
+Add `locales/xx.json` (the English file lists every string) and register it in `src/i18n.rs`.
+If the language is written right to left, list it in `RTL_LANGUAGES` there too, and the whole UI
+mirrors.
 
 ---
 
 ## 🚀 Making a release
 
 1. Bump `version` in `Cargo.toml` (the only place — installers and the updater read it from there).
-2. Tag and push:
+2. Tag and push, with the tag matching that version:
    ```bash
-   git tag v0.0.5 && git push origin master v0.0.5
+   git tag v1.2.3 && git push origin master v1.2.3
    ```
-3. The [release workflow](.github/workflows/release.yml) builds on Linux, Windows and macOS, signs every artifact with `FMX_SIGNING_KEY`, verifies against `packaging/update-key.pub`, and publishes the release.
+3. The [release workflow](.github/workflows/release.yml) builds on Linux, Windows and macOS.
+   On Windows it also starts the real `fmx.exe` (`--self-test`, on a machine without a GPU) and
+   adds and removes the right-click menu; if either fails, nothing is published. It then signs
+   every file with `FMX_SIGNING_KEY`, verifies it against `packaging/update-key.pub`, and
+   publishes the release.
 
 ---
 
@@ -202,16 +277,26 @@ Rust 1.89+ is required (`rust-version` in `Cargo.toml`).
 Only one FMX window runs at a time: starting FMX again (or converting from the right-click
 menu) hands the files to the open window.
 
-### Logs and crash reports
+---
+
+<a id="logs-and-crash-reports"></a>
+
+## 🩺 Logs and crash reports
 
 FMX writes `fmx.log` (and keeps the previous run's `fmx.previous.log`) in its logs folder:
-`%APPDATA%\fmx\logs` on Windows, `~/.local/share/fmx/logs` on Linux and
-`~/Library/Application Support/fmx/logs` on macOS. Turn on **Settings → General →
-Debug logging** to record everything, and use **Open logs folder** to find the files. If FMX
-crashes or can't start, it saves a `crash-<time>.txt` report there with the details and says so.
 
-To add a language, add `locales/xx.json` and register it in `src/i18n.rs`; list it in
-`RTL_LANGUAGES` there too if it is written right to left, and the whole UI mirrors.
+| System | Logs folder |
+|---|---|
+| Windows | `%APPDATA%\fmx\logs` |
+| Linux | `~/.local/share/fmx/logs` |
+| macOS | `~/Library/Application Support/fmx/logs` |
+
+- **Debug logging** in **Settings → General** records everything FMX does; **Open logs folder**
+  takes you there. If FMX won't open at all, start it once with `fmx --debug` instead.
+- If FMX crashes or can't start, it saves a `crash-<time>.txt` report (what happened, where, a
+  backtrace, the version and the system) and tells you where it is. The next start mentions it.
+
+When reporting a problem, attach the files from the logs folder.
 
 ---
 
@@ -220,6 +305,8 @@ To add a language, add `locales/xx.json` and register it in `src/i18n.rs`; list 
 - **Copy-protected discs:** ffmpeg does not decrypt CSS (DVD) or AACS (Blu-ray).
 - **Screen recorder on Wayland:** can only capture XWayland windows; log in to an X11 session to record the full desktop.
 - **No built-in player:** finished files open in your default system player.
+- **Right-click menu:** on Windows 11 it's under **Show more options**; there is none on macOS. Removing the `.deb` can't remove the menu files in your home folder, so turn the menu off in Settings first.
+- **Language on Windows and macOS:** FMX doesn't detect the system language there yet; choose it in **Settings → General**.
 
 ---
 
