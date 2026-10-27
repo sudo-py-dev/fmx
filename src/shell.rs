@@ -8,7 +8,7 @@
 //! FMX writes the entries itself, per user, so installers and the Settings
 //! switch share one source of truth:
 //! - Windows: `HKCU\Software\Classes\SystemFileAssociations\.<ext>\shell`,
-//!   imported with `reg.exe` (Windows 11 lists it under "Show more options");
+//!   written through the registry API (Windows 11 lists it under "Show more options");
 //! - Linux: Dolphin service menus, Nemo actions, and Nautilus and Caja scripts.
 //!
 //! The entries name this executable and are in the UI language, so
@@ -260,86 +260,67 @@ pub fn refresh() {
 
 #[cfg(windows)]
 mod platform {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
     use super::*;
 
-    const ROOT: &str = r"HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations";
+    /// Per-user file-type menus; no administrator rights needed.
+    const ROOT: &str = r"Software\Classes\SystemFileAssociations";
     const VERB: &str = "FMX.Convert";
 
-    /// A `.reg` file string value: backslashes and quotes escaped.
-    fn reg_string(value: &str) -> String {
-        format!("\"{}\"", value.replace('\\', r"\\").replace('"', "\\\""))
-    }
-
-    fn every_extension() -> impl Iterator<Item = &'static str> {
-        GROUPS.iter().flat_map(|g| g.extensions.iter().copied())
-    }
-
-    fn import(text: &str) -> io::Result<()> {
-        let file = tempfile::Builder::new().suffix(".reg").tempfile()?;
-        // `reg import` reads UTF-16 with a byte-order mark.
-        let bytes: Vec<u8> = std::iter::once(0xFEFF_u16)
-            .chain(text.encode_utf16())
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        fs::write(file.path(), bytes)?;
-        let output = crate::process::command(Path::new("reg"))
-            .arg("import")
-            .arg(file.path())
-            .output()?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(
-                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            ))
-        }
+    fn verb_key(ext: &str) -> String {
+        format!(r"{ROOT}\.{ext}\shell\{VERB}")
     }
 
     pub fn register(exe: &Path) -> io::Result<Vec<PathBuf>> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let exe = exe.display().to_string();
-        let icon = reg_string(&format!("{exe},0"));
-        let mut text = String::from("Windows Registry Editor Version 5.00\r\n");
+        let icon = format!("{exe},0");
         for group in GROUPS {
+            // Numbered keys keep the menu in this order.
+            let items: Vec<(String, String)> = group
+                .targets
+                .iter()
+                .map(|(id, _)| {
+                    (
+                        item_label(id),
+                        format!("\"{exe}\" {CONVERT_FLAG} {id} \"%1\""),
+                    )
+                })
+                .chain(std::iter::once((
+                    menu_text("shell.open").to_owned(),
+                    format!("\"{exe}\" \"%1\""),
+                )))
+                .collect();
             for ext in group.extensions {
-                let base = format!(r"{ROOT}\.{ext}\shell\{VERB}");
-                text.push_str(&format!(
-                    "\r\n[{base}]\r\n\"MUIVerb\"={}\r\n\"Icon\"={icon}\r\n\"SubCommands\"=\"\"\r\n",
-                    reg_string(menu_text("shell.menu")),
-                ));
-                // Numbered keys keep the menu in this order.
-                let items = group
-                    .targets
-                    .iter()
-                    .map(|(id, _)| {
-                        (
-                            item_label(id),
-                            format!("\"{exe}\" {CONVERT_FLAG} {id} \"%1\""),
-                        )
-                    })
-                    .chain(std::iter::once((
-                        menu_text("shell.open").to_owned(),
-                        format!("\"{exe}\" \"%1\""),
-                    )));
-                for (i, (label, command)) in items.enumerate() {
-                    text.push_str(&format!(
-                        "\r\n[{base}\\shell\\{i:02}]\r\n\"MUIVerb\"={}\r\n\"Icon\"={icon}\r\n\r\n[{base}\\shell\\{i:02}\\command]\r\n@={}\r\n",
-                        reg_string(&label),
-                        reg_string(&command),
-                    ));
+                let (menu, _) = hkcu.create_subkey(verb_key(ext))?;
+                menu.set_value("MUIVerb", &menu_text("shell.menu"))?;
+                menu.set_value("Icon", &icon)?;
+                // An empty SubCommands makes the entry a submenu of the keys under `shell`.
+                menu.set_value("SubCommands", &"")?;
+                for (i, (label, command)) in items.iter().enumerate() {
+                    let (item, _) = menu.create_subkey(format!(r"shell\{i:02}"))?;
+                    item.set_value("MUIVerb", label)?;
+                    item.set_value("Icon", &icon)?;
+                    let (run, _) = item.create_subkey("command")?;
+                    run.set_value("", command)?;
                 }
             }
         }
-        import(&text)?;
         // Registry keys are removed by name, not from this list.
         Ok(Vec::new())
     }
 
     pub fn unregister(_written: &[PathBuf]) -> io::Result<()> {
-        let mut text = String::from("Windows Registry Editor Version 5.00\r\n");
-        for ext in every_extension() {
-            text.push_str(&format!("\r\n[-{ROOT}\\.{ext}\\shell\\{VERB}]\r\n"));
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        for ext in GROUPS.iter().flat_map(|g| g.extensions) {
+            match hkcu.delete_subkey_all(verb_key(ext)) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
         }
-        import(&text)
+        Ok(())
     }
 }
 
