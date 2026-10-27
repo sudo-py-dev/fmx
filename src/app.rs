@@ -214,8 +214,6 @@ pub struct FmxApp {
     shutdown_at: Option<Instant>,
     notifier: Notifier,
     update: UpdateState,
-    /// The update banner was closed for this session.
-    update_dismissed: bool,
 }
 
 impl FmxApp {
@@ -266,7 +264,6 @@ impl FmxApp {
             shutdown_at: None,
             notifier: Arc::new(move || ctx.request_repaint()),
             update: UpdateState::Idle,
-            update_dismissed: false,
             settings,
         };
         let due = now_secs().saturating_sub(app.settings.last_update_check)
@@ -275,8 +272,14 @@ impl FmxApp {
             app.start_update_check(&cc.egui_ctx, false);
         }
         #[cfg(debug_assertions)]
-        if crate::devshot::wants_settings() {
-            app.show_settings = true;
+        {
+            if crate::devshot::wants_update() {
+                app.update = UpdateState::Available(update::Release::sample());
+                app.settings_tab = SettingsTab::Updates;
+            }
+            if crate::devshot::wants_settings() {
+                app.show_settings = true;
+            }
         }
         if !open_files.is_empty() {
             app.add_files(open_files);
@@ -869,8 +872,36 @@ impl FmxApp {
                 self.load_task_list();
             }
             ui.with_layout(dir::trailing(Align::Center), |ui| {
-                if tool(ui, icons::GEAR, hue::SLATE, tr("action.settings"), true) {
+                let news = self.update_news();
+                let settings = widgets::button_tinted(
+                    ui,
+                    Some(icons::GEAR),
+                    Some(hue::SLATE),
+                    tr("action.settings"),
+                    Kind::Ghost,
+                    Size::Regular,
+                    true,
+                );
+                if news {
+                    // A dot on the button's top end corner: an update is waiting in Settings.
+                    let r = settings.rect;
+                    let x = dir::mirror_x(r, r.max.x - 9.0, 0.0);
+                    let p = theme::palette(ui);
+                    ui.painter()
+                        .circle_filled(egui::pos2(x, r.min.y + 7.0), 4.0, p.accent);
+                }
+                if settings
+                    .on_hover_text_at_pointer(if news {
+                        tr("update.available_hint")
+                    } else {
+                        tr("action.settings")
+                    })
+                    .clicked()
+                {
                     self.show_settings = !self.show_settings;
+                    if news {
+                        self.settings_tab = SettingsTab::Updates;
+                    }
                 }
             });
         });
@@ -2675,13 +2706,14 @@ impl FmxApp {
                 ui.set_width(SETTINGS_NAV_WIDTH);
                 ui.spacing_mut().item_spacing.y = 3.0;
                 for tab in SettingsTab::ALL {
+                    let news = tab == SettingsTab::Updates && self.update_news();
                     if widgets::nav_item(
                         ui,
                         Some(tab.art()),
                         tab.label(),
                         self.settings_tab == tab,
                         false,
-                        None,
+                        news.then_some(1),
                     )
                     .clicked()
                     {
@@ -2937,7 +2969,6 @@ impl FmxApp {
             ctx.request_repaint();
         });
         self.settings.last_update_check = now_secs();
-        self.update_dismissed = false;
         self.update = UpdateState::Checking { manual, rx };
     }
 
@@ -3007,68 +3038,86 @@ impl FmxApp {
             },
             _ => return,
         };
-        self.update_dismissed = false;
         self.update = next;
     }
 
-    /// A strip above the main view while an update is available or underway.
-    fn update_banner(&mut self, ui: &mut egui::Ui) {
-        let shown = matches!(
+    /// Whether there is news about an update that Settings → Updates shows.
+    fn update_news(&self) -> bool {
+        matches!(
             self.update,
             UpdateState::Available(_)
                 | UpdateState::Downloading { .. }
                 | UpdateState::Installed(..)
                 | UpdateState::Failed(_)
-        );
-        if !shown || self.update_dismissed {
-            return;
-        }
+        )
+    }
+
+    /// The update card in Settings → Updates while an update is available or
+    /// underway: what is happening on top, what you can do about it below.
+    fn update_card(&mut self, ui: &mut egui::Ui) {
+        let (glyph, hue, title, detail) = match &self.update {
+            UpdateState::Available(release) => (
+                art::glyph::DOWNLOAD,
+                art::hue::BLUE,
+                trf("update.available_title", &[("version", &release.version)]),
+                Some(trf(
+                    "update.current_version",
+                    &[("current", &update::VERSION)],
+                )),
+            ),
+            UpdateState::Downloading { release, .. } => (
+                art::glyph::DOWNLOAD,
+                art::hue::BLUE,
+                trf("update.downloading", &[("version", &release.version)]),
+                None,
+            ),
+            UpdateState::Installed(release, outcome) => {
+                let key = match outcome {
+                    update::Installed::Restart => "update.restart",
+                    update::Installed::FinishInInstaller => "update.finish_in_installer",
+                    update::Installed::QuitForInstaller => "update.installer_running",
+                };
+                (
+                    art::glyph::SPARKLE,
+                    art::hue::GREEN,
+                    trf(key, &[("version", &release.version)]),
+                    None,
+                )
+            }
+            UpdateState::Failed(message) => (
+                icons::WARNING,
+                art::hue::RED,
+                tr("update.failed_title").to_owned(),
+                Some(message.clone()),
+            ),
+            _ => return,
+        };
         let p = theme::palette(ui);
-        let failed = matches!(self.update, UpdateState::Failed(_));
-        let tint = if failed { p.danger } else { p.accent };
         let mut action = None;
         egui::Frame::new()
-            .fill(p.surface.lerp_to_gamma(tint, 0.10))
-            .stroke(Stroke::new(1.0, tint.gamma_multiply(0.6)))
-            .corner_radius(CornerRadius::same(theme::RADIUS + 2))
-            .inner_margin(Margin::symmetric(14, 10))
+            .fill(p.surface.lerp_to_gamma(hue, 0.08))
+            .stroke(Stroke::new(1.0, hue.gamma_multiply(0.45)))
+            .corner_radius(CornerRadius::same(theme::RADIUS + 4))
+            .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.with_layout(dir::trailing(Align::Min), |ui| {
-                        // Downloads can only be cancelled, not hidden.
-                        let closable = !matches!(self.update, UpdateState::Downloading { .. });
-                        if closable
-                            && widgets::button(
-                                ui,
-                                Some(icons::X),
-                                "",
-                                Kind::Ghost,
-                                Size::Small,
-                                true,
-                            )
-                            .on_hover_text(tr("update.hide"))
-                            .clicked()
-                        {
-                            action = Some(UpdateAction::Dismiss);
+                    widgets::icon_tile(ui, art::Art { glyph, hue }, 40.0, true);
+                    ui.add_space(4.0);
+                    dir::vertical(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add(egui::Label::new(RichText::new(&title).size(15.5).strong()).wrap());
+                        if let Some(detail) = &detail {
+                            ui.add(
+                                egui::Label::new(RichText::new(detail).small().color(p.text_weak))
+                                    .wrap(),
+                            );
                         }
-                        ui.with_layout(dir::leading(Align::Center), |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                let icon = if failed {
-                                    icons::WARNING
-                                } else {
-                                    icons::DOWNLOAD
-                                };
-                                ui.label(RichText::new(icon).size(18.0).color(tint));
-                                if let Some(a) = self.update_banner_contents(ui) {
-                                    action = Some(a);
-                                }
-                            });
-                        });
                     });
                 });
+                ui.add_space(12.0);
+                action = self.update_card_actions(ui);
             });
-        ui.add_space(10.0);
         match action {
             Some(UpdateAction::Download(release)) => {
                 self.start_update_download(release, ui.ctx());
@@ -3082,26 +3131,19 @@ impl FmxApp {
                 Ok(()) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
                 Err(e) => self.update = UpdateState::Failed(e.to_string()),
             },
-            Some(UpdateAction::Dismiss) => self.update_dismissed = true,
             None => {}
         }
     }
 
-    fn update_banner_contents(&self, ui: &mut egui::Ui) -> Option<UpdateAction> {
-        let small = |ui: &mut egui::Ui, icon: Option<&str>, text: &str, kind| {
-            widgets::button(ui, icon, text, kind, Size::Small, true).clicked()
+    /// The update card's buttons, or its progress bar while downloading.
+    fn update_card_actions(&self, ui: &mut egui::Ui) -> Option<UpdateAction> {
+        let button = |ui: &mut egui::Ui, icon: Option<&str>, text: &str, kind| {
+            widgets::button(ui, icon, text, kind, Size::Regular, true).clicked()
         };
         let mut action = None;
-        match &self.update {
+        ui.horizontal(|ui| match &self.update {
             UpdateState::Available(release) => {
-                ui.label(
-                    RichText::new(trf(
-                        "update.available",
-                        &[("version", &release.version), ("current", &update::VERSION)],
-                    ))
-                    .strong(),
-                );
-                if small(
+                if button(
                     ui,
                     Some(icons::DOWNLOAD),
                     tr("update.install"),
@@ -3109,69 +3151,58 @@ impl FmxApp {
                 ) {
                     action = Some(UpdateAction::Download(release.clone()));
                 }
-                if small(
+                if button(
                     ui,
                     Some(icons::ARROW_SQUARE_OUT),
                     tr("update.whats_new"),
-                    Kind::Ghost,
+                    Kind::Secondary,
                 ) {
                     open_url(&release.page);
                 }
-                if small(ui, None, tr("update.skip"), Kind::Ghost) {
-                    action = Some(UpdateAction::Skip(release.version.to_string()));
-                }
+                ui.with_layout(dir::trailing(Align::Center), |ui| {
+                    if button(ui, None, tr("update.skip"), Kind::Ghost) {
+                        action = Some(UpdateAction::Skip(release.version.to_string()));
+                    }
+                });
             }
             UpdateState::Downloading {
-                release,
-                progress,
-                cancel,
-                ..
+                progress, cancel, ..
             } => {
-                ui.label(trf("update.downloading", &[("version", &release.version)]));
                 let fraction = f32::from_bits(progress.load(Ordering::Relaxed));
-                widgets::progress(
-                    ui,
-                    Id::unique("update_download"),
-                    fraction,
-                    format!("{:.0}%", fraction * 100.0),
-                    PROGRESS_WIDTH,
-                );
-                if small(ui, Some(icons::X), tr("action.cancel"), Kind::Ghost) {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-                return None;
-            }
-            UpdateState::Installed(release, outcome) => {
-                let key = match outcome {
-                    update::Installed::Restart => "update.restart",
-                    update::Installed::FinishInInstaller => "update.finish_in_installer",
-                    update::Installed::QuitForInstaller => "update.installer_running",
-                };
-                ui.label(trf(key, &[("version", &release.version)]));
-                if *outcome == update::Installed::Restart
-                    && small(
+                ui.with_layout(dir::trailing(Align::Center), |ui| {
+                    if button(ui, Some(icons::X), tr("action.cancel"), Kind::Ghost) {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    let width = ui.available_width() - ui.spacing().item_spacing.x;
+                    widgets::progress(
                         ui,
-                        Some(icons::ARROW_CLOCKWISE),
-                        tr("update.restart_now"),
-                        Kind::Primary,
-                    )
-                {
-                    action = Some(UpdateAction::Restart);
-                }
+                        Id::unique("update_download"),
+                        fraction,
+                        format!("{:.0}%", fraction * 100.0),
+                        width,
+                    );
+                });
             }
-            UpdateState::Failed(message) => {
-                ui.label(trf("update.failed", &[("error", message)]));
-                if small(
+            UpdateState::Installed(_, update::Installed::Restart) => {
+                action = button(
+                    ui,
+                    Some(icons::ARROW_CLOCKWISE),
+                    tr("update.restart_now"),
+                    Kind::Primary,
+                )
+                .then_some(UpdateAction::Restart);
+            }
+            UpdateState::Failed(_) => {
+                action = button(
                     ui,
                     Some(icons::ARROW_CLOCKWISE),
                     tr("update.try_again"),
                     Kind::Secondary,
-                ) {
-                    action = Some(UpdateAction::Retry);
-                }
+                )
+                .then_some(UpdateAction::Retry);
             }
-            _ => return None,
-        }
+            _ => {}
+        });
         action
     }
 
@@ -3205,15 +3236,7 @@ impl FmxApp {
                             (tr("update.checking").to_owned(), p.text_weak)
                         }
                         UpdateState::UpToDate => (tr("update.up_to_date").to_owned(), p.success),
-                        UpdateState::Available(r) | UpdateState::Downloading { release: r, .. } => {
-                            (
-                                trf("update.available_short", &[("version", &r.version)]),
-                                p.accent,
-                            )
-                        }
-                        UpdateState::Failed(message) => {
-                            (trf("update.failed", &[("error", message)]), p.danger)
-                        }
+                        // The card below has the details and the buttons.
                         _ => (String::new(), p.text_weak),
                     };
                     if !text.is_empty() {
@@ -3222,6 +3245,9 @@ impl FmxApp {
                 });
             });
         });
+        ui.add_space(4.0);
+        self.update_card(ui);
+        ui.add_space(8.0);
         ui.add(
             egui::Label::new(
                 RichText::new(tr("update.safety_hint"))
@@ -3344,13 +3370,12 @@ impl FmxApp {
     }
 }
 
-/// What the update banner asked for.
+/// What the update card asked for.
 enum UpdateAction {
     Download(update::Release),
     Retry,
     Skip(String),
     Restart,
-    Dismiss,
 }
 
 enum FileAction {
@@ -4408,7 +4433,6 @@ impl eframe::App for FmxApp {
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     dir::vertical(ui, |ui| {
-                        self.update_banner(ui);
                         if self.in_editor {
                             centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                         } else {

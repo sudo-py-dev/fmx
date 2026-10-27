@@ -6,7 +6,8 @@
 //! - `FMX_SCREENSHOT_EXPAND=1` opens every collapsible section;
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue;
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
-//! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`).
+//! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`);
+//! - `FMX_SCREENSHOT_UPDATE=1` pretends a newer release was found.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -30,6 +31,11 @@ pub fn expand_sections() -> bool {
 /// Whether the files on the command line should go straight into the queue.
 pub fn wants_enqueue() -> bool {
     std::env::var_os("FMX_SCREENSHOT_ENQUEUE").is_some()
+}
+
+/// Whether to pretend a newer release was found.
+pub fn wants_update() -> bool {
+    std::env::var_os("FMX_SCREENSHOT_UPDATE").is_some()
 }
 
 /// Whether the drop-down with this id should be shown open.

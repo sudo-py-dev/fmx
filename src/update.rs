@@ -137,6 +137,23 @@ pub struct Release {
     size: u64,
 }
 
+impl Release {
+    /// A made-up newer release, for screenshots of the update UI. It is never downloaded.
+    #[cfg(debug_assertions)]
+    pub fn sample() -> Self {
+        let version = Version::parse("99.0.0").expect("valid version");
+        Self {
+            version,
+            page: RELEASES_PAGE.to_owned(),
+            kind: InstallKind::LinuxPortable,
+            asset: String::new(),
+            url: String::new(),
+            signature_url: String::new(),
+            size: 0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum UpdateError {
     Unsupported,
