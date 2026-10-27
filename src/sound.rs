@@ -106,7 +106,8 @@ fn render(notes: &[Note]) -> Vec<f32> {
     samples
 }
 
-/// A 16-bit mono WAV file holding `samples`.
+/// A 16-bit mono WAV file holding `samples` (Linux plays sounds from a file).
+#[cfg(any(target_os = "linux", test))]
 fn wav_bytes(samples: &[f32]) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
     let mut out = Vec::with_capacity(44 + samples.len() * 2);
