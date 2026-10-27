@@ -6,6 +6,9 @@ mod app;
 mod art;
 mod catalog;
 mod cso;
+#[cfg(debug_assertions)]
+mod devshot;
+mod dir;
 mod disc;
 mod docs;
 mod download;

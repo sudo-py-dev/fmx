@@ -3,6 +3,7 @@ Type=Application
 Name=FMX
 GenericName=Free Media Xpress
 Comment=Convert video, audio, images, documents and discs
+Comment[he]=המרת וידאו, שמע, תמונות, מסמכים ודיסקים
 Exec=fmx %F
 Icon=fmx
 Terminal=false

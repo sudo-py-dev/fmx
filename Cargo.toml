@@ -54,3 +54,7 @@ panic = "abort"
 winresource = "0.1.34"
 
 
+
+# epaint with right-to-left (bidi) text support; see vendor/epaint/FMX-PATCH.md.
+[patch.crates-io]
+epaint = { path = "vendor/epaint" }

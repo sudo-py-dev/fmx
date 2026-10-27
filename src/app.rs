@@ -7,14 +7,15 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, ComboBox, CornerRadius, DragValue, Id, Key, KeyboardShortcut, Label, Layout,
-    Margin, Modifiers, RichText, ScrollArea, Slider, Stroke, StrokeKind, TextEdit,
+    self, Align, ComboBox, CornerRadius, DragValue, Id, Key, KeyboardShortcut, Label, Margin,
+    Modifiers, RichText, ScrollArea, Slider, Stroke, StrokeKind, TextEdit,
 };
 
 use crate::art;
 use crate::catalog::{
     AudioFormat, Category, ImageFormat, InputArity, InputKind, Tool, VideoFormat,
 };
+use crate::dir;
 use crate::docs;
 use crate::download;
 use crate::externals::{External, Toolbox};
@@ -273,9 +274,17 @@ impl FmxApp {
         if app.settings.check_updates && due {
             app.start_update_check(&cc.egui_ctx, false);
         }
+        #[cfg(debug_assertions)]
+        if crate::devshot::wants_settings() {
+            app.show_settings = true;
+        }
         if !open_files.is_empty() {
             app.add_files(open_files);
             app.in_editor = !app.files.is_empty();
+        }
+        #[cfg(debug_assertions)]
+        if crate::devshot::wants_enqueue() && app.can_enqueue() {
+            app.enqueue();
         }
         app
     }
@@ -728,17 +737,19 @@ impl FmxApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(trf("shutdown.countdown", &[("secs", &left.as_secs())]));
-                ui.add_space(8.0);
-                cancel = widgets::button(
-                    ui,
-                    Some(icons::X),
-                    tr("action.cancel"),
-                    Kind::Primary,
-                    Size::Regular,
-                    true,
-                )
-                .clicked();
+                dir::vertical(ui, |ui| {
+                    ui.label(trf("shutdown.countdown", &[("secs", &left.as_secs())]));
+                    ui.add_space(8.0);
+                    cancel = widgets::button(
+                        ui,
+                        Some(icons::X),
+                        tr("action.cancel"),
+                        Kind::Primary,
+                        Size::Regular,
+                        true,
+                    )
+                    .clicked();
+                });
             });
         if cancel {
             self.shutdown_at = None;
@@ -857,7 +868,7 @@ impl FmxApp {
             ) {
                 self.load_task_list();
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
                 if tool(ui, icons::GEAR, hue::SLATE, tr("action.settings"), true) {
                     self.show_settings = !self.show_settings;
                 }
@@ -866,7 +877,7 @@ impl FmxApp {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             self.output_dir_picker(ui);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
                 combo(
                     ui,
                     "after_done",
@@ -962,10 +973,11 @@ impl FmxApp {
                 ui.add_space(4.0);
                 ui.label(RichText::new(self.category.label()).heading().strong());
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
                 ui.add(
                     TextEdit::singleline(&mut self.search)
                         .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
+                        .align(egui::Align2([dir::start(), Align::Center]))
                         .desired_width(240.0),
                 );
             });
@@ -1108,9 +1120,15 @@ impl FmxApp {
     fn editor_header(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
         ui.horizontal(|ui| {
+            // "Back" points toward the start edge.
+            let back = if dir::is_rtl() {
+                icons::CARET_RIGHT
+            } else {
+                icons::CARET_LEFT
+            };
             if widgets::button(
                 ui,
-                Some(icons::CARET_LEFT),
+                Some(back),
                 self.tool.category().label(),
                 Kind::Ghost,
                 Size::Small,
@@ -1124,7 +1142,7 @@ impl FmxApp {
             ui.add_space(4.0);
             widgets::icon_tile(ui, art::tool(self.tool), 40.0, true);
             ui.add_space(4.0);
-            ui.vertical(|ui| {
+            dir::vertical(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
                 ui.label(RichText::new(self.tool_title()).size(19.0).strong());
                 ui.label(RichText::new(self.tool.description()).color(p.text_weak));
@@ -1207,9 +1225,7 @@ impl FmxApp {
             self.inline_preview(ui, mode, preview_height);
             ui.add_space(12.0);
         }
-        egui::Grid::new("options")
-            .num_columns(2)
-            .striped(false)
+        dir::Grid::new("options", 2)
             .spacing([16.0, 12.0])
             .show(ui, |ui| {
                 self.options_ui(ui);
@@ -1302,7 +1318,7 @@ impl FmxApp {
         let blocker = self.blocker();
         ui.horizontal(|ui| {
             ui.set_min_height(44.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
                 let (icon, label) = self.primary_action();
                 if widgets::button(
                     ui,
@@ -1318,7 +1334,7 @@ impl FmxApp {
                     self.enqueue();
                 }
                 ui.add_space(10.0);
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.with_layout(dir::leading(Align::Center), |ui| {
                     let (glyph, color, text, text_color) = match &blocker {
                         Some(reason) => (icons::INFO, p.text_weak, reason.clone(), p.text_weak),
                         None => (icons::CHECK_CIRCLE, p.success, self.ready_summary(), p.text),
@@ -1350,7 +1366,7 @@ impl FmxApp {
     /// The web-address box with a Paste button beside it.
     fn url_input(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
                 let paste = widgets::button(
                     ui,
                     Some(icons::CLIPBOARD),
@@ -1541,7 +1557,7 @@ impl FmxApp {
                                     );
                                 }
                             }
-                            ui.vertical(|ui| {
+                            dir::vertical(ui, |ui| {
                                 ui.spacing_mut().item_spacing.y = 3.0;
                                 ui.add(Label::new(RichText::new(&info.title).strong()).wrap());
                                 let by: Vec<&str> = [info.channel.as_deref(), info.site.as_deref()]
@@ -1815,7 +1831,7 @@ impl FmxApp {
                         FILE_TILE,
                         false,
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.with_layout(dir::trailing(Align::Center), |ui| {
                         let mut small = |icon, hint: &str, enabled, then: FileAction| {
                             if widgets::button(
                                 ui,
@@ -1862,8 +1878,8 @@ impl FmxApp {
                             };
                             small(icons::EYE, hint, true, FileAction::Preview(i));
                         }
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.vertical(|ui| {
+                        ui.with_layout(dir::leading(Align::Center), |ui| {
+                            dir::vertical(ui, |ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 if let Some(role) = role {
                                     ui.label(RichText::new(role).small().strong().color(p.accent));
@@ -2044,7 +2060,7 @@ impl FmxApp {
                     );
                 });
                 row_hint(ui, tr("option.mode"), tr("hint.stream_copy"), |ui| {
-                    ui.checkbox(&mut opts.stream_copy, tr("option.stream_copy"));
+                    dir::checkbox(ui, &mut opts.stream_copy, tr("option.stream_copy"));
                 });
                 if !opts.stream_copy {
                     quality_row(ui, &mut opts.quality);
@@ -2214,13 +2230,13 @@ impl FmxApp {
                     ui.add(DragValue::new(&mut opts.record_fps).range(1..=options::MAX_RECORD_FPS));
                 });
                 row(ui, tr("option.audio"), |ui| {
-                    ui.checkbox(&mut opts.record_audio, tr("option.record_audio"));
+                    dir::checkbox(ui, &mut opts.record_audio, tr("option.record_audio"));
                 });
             }
         }
         if tool == Tool::Rotate {
             row(ui, tr("option.rotation"), |ui| {
-                ui.vertical(|ui| {
+                dir::vertical(ui, |ui| {
                     ui.horizontal(|ui| {
                         if widgets::button(
                             ui,
@@ -2347,9 +2363,7 @@ impl FmxApp {
             tr("section.output_settings"),
             None,
             |ui| {
-                egui::Grid::new("adv_video_grid")
-                    .striped(false)
-                    .num_columns(2)
+                dir::Grid::new("adv_video_grid", 2)
                     .spacing([16.0, 10.0])
                     .show(ui, |ui| {
                         let choices = format.encoder_choices();
@@ -2384,7 +2398,7 @@ impl FmxApp {
                             );
                         });
                         row(ui, tr("option.hw_decode"), |ui| {
-                            ui.checkbox(&mut opts.video.hw_decode, tr("option.hw_decode_on"));
+                            dir::checkbox(ui, &mut opts.video.hw_decode, tr("option.hw_decode_on"));
                         });
                         row(ui, tr("option.fps"), |ui| {
                             let mut choices: Vec<Option<u32>> = vec![None];
@@ -2431,9 +2445,7 @@ impl FmxApp {
                     ui.label(RichText::new(tr("hint.edit_applies")).weak());
                 });
                 ui.add_space(6.0);
-                egui::Grid::new("edit_grid")
-                    .striped(false)
-                    .num_columns(2)
+                dir::Grid::new("edit_grid", 2)
                     .spacing([16.0, 10.0])
                     .show(ui, |ui| {
                         trim_rows(ui, edit);
@@ -2442,7 +2454,7 @@ impl FmxApp {
                         }
                         row(ui, tr("option.crop"), |ui| {
                             let mut on = edit.crop.is_some();
-                            ui.checkbox(&mut on, "");
+                            dir::checkbox(ui, &mut on, "");
                             let mut rect = edit.crop.unwrap_or_default();
                             if on {
                                 rect_editor(ui, &mut rect);
@@ -2518,95 +2530,110 @@ impl FmxApp {
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                egui::Grid::new("queue")
+                dir::Grid::new("queue", 4)
                     .striped(true)
-                    .num_columns(4)
                     .spacing([18.0, 8.0])
                     .min_row_height(30.0)
                     .show(ui, |ui| {
                         for job in self.queue.jobs() {
-                            ui.label(RichText::new(job.spec.tool.label()).strong());
-                            ui.label(job.title.clone().unwrap_or_else(|| job_source(&job.spec)))
-                                .on_hover_text(job.spec.output.display().to_string());
-                            status_cell(ui, job);
-                            ui.horizontal(|ui| match job.state {
-                                JobState::Queued | JobState::Running { .. } => {
-                                    let label = if job.spec.tool == Tool::Record
-                                        && job.state != JobState::Queued
-                                    {
-                                        tr("action.stop_recording")
-                                    } else {
-                                        tr("action.cancel")
-                                    };
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::X),
-                                        label,
-                                        Kind::Ghost,
-                                        Size::Small,
-                                        true,
-                                    )
-                                    .clicked()
-                                    {
-                                        cancel = Some(job.id);
-                                    }
-                                }
-                                JobState::Done { .. } => {
-                                    if job.spec.output.is_file()
-                                        && widgets::button(
+                            let (cancel, remove) = (&mut cancel, &mut remove);
+                            let actions: dir::Cell<'_> = Box::new(move |ui| {
+                                ui.horizontal(|ui| match job.state {
+                                    JobState::Queued | JobState::Running { .. } => {
+                                        let label = if job.spec.tool == Tool::Record
+                                            && job.state != JobState::Queued
+                                        {
+                                            tr("action.stop_recording")
+                                        } else {
+                                            tr("action.cancel")
+                                        };
+                                        if widgets::button(
                                             ui,
-                                            Some(icons::ARROW_SQUARE_OUT),
-                                            tr("action.open"),
+                                            Some(icons::X),
+                                            label,
                                             Kind::Ghost,
                                             Size::Small,
                                             true,
                                         )
                                         .clicked()
-                                    {
-                                        open_path(&job.spec.output);
+                                        {
+                                            *cancel = Some(job.id);
+                                        }
                                     }
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::FOLDER),
-                                        tr("action.open_folder"),
-                                        Kind::Ghost,
-                                        Size::Small,
-                                        true,
-                                    )
-                                    .clicked()
-                                    {
-                                        reveal(&job.spec.output);
+                                    JobState::Done { .. } => {
+                                        if job.spec.output.is_file()
+                                            && widgets::button(
+                                                ui,
+                                                Some(icons::ARROW_SQUARE_OUT),
+                                                tr("action.open"),
+                                                Kind::Ghost,
+                                                Size::Small,
+                                                true,
+                                            )
+                                            .clicked()
+                                        {
+                                            open_path(&job.spec.output);
+                                        }
+                                        if widgets::button(
+                                            ui,
+                                            Some(icons::FOLDER),
+                                            tr("action.open_folder"),
+                                            Kind::Ghost,
+                                            Size::Small,
+                                            true,
+                                        )
+                                        .clicked()
+                                        {
+                                            reveal(&job.spec.output);
+                                        }
+                                        if widgets::button(
+                                            ui,
+                                            Some(icons::X),
+                                            "",
+                                            Kind::Ghost,
+                                            Size::Small,
+                                            true,
+                                        )
+                                        .on_hover_text(tr("action.remove"))
+                                        .clicked()
+                                        {
+                                            *remove = Some(job.id);
+                                        }
                                     }
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::X),
-                                        "",
-                                        Kind::Ghost,
-                                        Size::Small,
-                                        true,
-                                    )
-                                    .on_hover_text(tr("action.remove"))
-                                    .clicked()
-                                    {
-                                        remove = Some(job.id);
+                                    _ => {
+                                        if widgets::button(
+                                            ui,
+                                            Some(icons::X),
+                                            tr("action.remove"),
+                                            Kind::Ghost,
+                                            Size::Small,
+                                            true,
+                                        )
+                                        .clicked()
+                                        {
+                                            *remove = Some(job.id);
+                                        }
                                     }
-                                }
-                                _ => {
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::X),
-                                        tr("action.remove"),
-                                        Kind::Ghost,
-                                        Size::Small,
-                                        true,
-                                    )
-                                    .clicked()
-                                    {
-                                        remove = Some(job.id);
-                                    }
-                                }
+                                });
                             });
-                            ui.end_row();
+                            dir::grid_row(
+                                ui,
+                                vec![
+                                    Box::new(|ui| {
+                                        ui.label(RichText::new(job.spec.tool.label()).strong());
+                                    }),
+                                    Box::new(|ui| {
+                                        ui.label(
+                                            job.title
+                                                .clone()
+                                                .unwrap_or_else(|| job_source(&job.spec)),
+                                        )
+                                        .on_hover_text(job.spec.output.display().to_string());
+                                    }),
+                                    Box::new(|ui| status_cell(ui, job)),
+                                    actions,
+                                ],
+                            );
                         }
                     });
             });
@@ -2635,41 +2662,46 @@ impl FmxApp {
             .fixed_size(size)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.horizontal_top(|ui| {
-                    // Section list on the left, like most apps' preferences.
-                    ui.vertical(|ui| {
-                        ui.set_width(SETTINGS_NAV_WIDTH);
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        for tab in SettingsTab::ALL {
-                            if widgets::nav_item(
-                                ui,
-                                Some(tab.art()),
-                                tab.label(),
-                                self.settings_tab == tab,
-                                false,
-                                None,
-                            )
-                            .clicked()
-                            {
-                                self.settings_tab = tab;
-                            }
-                        }
-                    });
-                    ui.separator();
-                    let right_width = ui.available_width();
-                    ui.vertical(|ui| {
-                        ui.set_width(right_width);
-                        ui.set_max_width(right_width);
-                        ui.label(RichText::new(self.settings_tab.label()).heading().strong());
-                        ui.add_space(8.0);
-                        ScrollArea::vertical()
-                            .id_salt(("settings_page", self.settings_tab as u8))
-                            .auto_shrink([false; 2])
-                            .show(ui, |ui| self.settings_page(ui, ctx));
-                    });
-                });
+                // A start-aligned column makes the row below flow from the start edge.
+                dir::vertical(ui, |ui| self.settings_contents(ui, ctx));
             });
         self.show_settings = open;
+    }
+
+    fn settings_contents(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal_top(|ui| {
+            // Section list on the start edge, like most apps' preferences.
+            dir::vertical(ui, |ui| {
+                ui.set_width(SETTINGS_NAV_WIDTH);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                for tab in SettingsTab::ALL {
+                    if widgets::nav_item(
+                        ui,
+                        Some(tab.art()),
+                        tab.label(),
+                        self.settings_tab == tab,
+                        false,
+                        None,
+                    )
+                    .clicked()
+                    {
+                        self.settings_tab = tab;
+                    }
+                }
+            });
+            ui.separator();
+            let right_width = ui.available_width();
+            dir::vertical(ui, |ui| {
+                ui.set_width(right_width);
+                ui.set_max_width(right_width);
+                ui.label(RichText::new(self.settings_tab.label()).heading().strong());
+                ui.add_space(8.0);
+                ScrollArea::vertical()
+                    .id_salt(("settings_page", self.settings_tab as u8))
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| self.settings_page(ui, ctx));
+            });
+        });
     }
 
     /// The controls of the selected Settings section.
@@ -2724,10 +2756,18 @@ impl FmxApp {
                         },
                     );
                     row(ui, tr("settings.start_label"), |ui| {
-                        ui.checkbox(&mut self.settings.start_on_add, tr("settings.auto_start"));
+                        dir::checkbox(
+                            ui,
+                            &mut self.settings.start_on_add,
+                            tr("settings.auto_start"),
+                        );
                     });
                     row(ui, tr("settings.notify_label"), |ui| {
-                        ui.checkbox(&mut self.settings.notify_when_done, tr("settings.notify"));
+                        dir::checkbox(
+                            ui,
+                            &mut self.settings.notify_when_done,
+                            tr("settings.notify"),
+                        );
                     });
                     row(ui, tr("settings.sound_label"), |ui| {
                         use crate::settings::CompletionSound;
@@ -2741,34 +2781,38 @@ impl FmxApp {
                         ComboBox::from_id_salt("completion_sound")
                             .selected_text(label_for(&self.settings.completion_sound))
                             .show_ui(ui, |ui| {
-                                for choice in [
-                                    CompletionSound::Default,
-                                    CompletionSound::Bell,
-                                    CompletionSound::Victory,
-                                    CompletionSound::Custom(std::path::PathBuf::new()),
-                                    CompletionSound::Off,
-                                ] {
-                                    let is_custom_variant =
-                                        matches!(choice, CompletionSound::Custom(_));
-                                    let text = label_for(&choice);
-                                    let currently_custom = matches!(
-                                        self.settings.completion_sound,
-                                        CompletionSound::Custom(_)
-                                    );
-                                    let selected = if is_custom_variant {
-                                        currently_custom
-                                    } else {
-                                        self.settings.completion_sound == choice
-                                    };
-                                    if ui.selectable_label(selected, text).clicked() {
-                                        if is_custom_variant && !currently_custom {
-                                            self.settings.completion_sound =
-                                                CompletionSound::Custom(std::path::PathBuf::new());
-                                        } else if !is_custom_variant {
-                                            self.settings.completion_sound = choice;
+                                dir::menu(ui, |ui| {
+                                    for choice in [
+                                        CompletionSound::Default,
+                                        CompletionSound::Bell,
+                                        CompletionSound::Victory,
+                                        CompletionSound::Custom(std::path::PathBuf::new()),
+                                        CompletionSound::Off,
+                                    ] {
+                                        let is_custom_variant =
+                                            matches!(choice, CompletionSound::Custom(_));
+                                        let text = label_for(&choice);
+                                        let currently_custom = matches!(
+                                            self.settings.completion_sound,
+                                            CompletionSound::Custom(_)
+                                        );
+                                        let selected = if is_custom_variant {
+                                            currently_custom
+                                        } else {
+                                            self.settings.completion_sound == choice
+                                        };
+                                        if ui.selectable_label(selected, text).clicked() {
+                                            if is_custom_variant && !currently_custom {
+                                                self.settings.completion_sound =
+                                                    CompletionSound::Custom(
+                                                        std::path::PathBuf::new(),
+                                                    );
+                                            } else if !is_custom_variant {
+                                                self.settings.completion_sound = choice;
+                                            }
                                         }
                                     }
-                                }
+                                });
                             });
                         // When Custom is active, show a browse button and the chosen path.
                         if let CompletionSound::Custom(ref mut path) =
@@ -2831,12 +2875,14 @@ impl FmxApp {
         ComboBox::from_id_salt("language")
             .selected_text(label(&current))
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut current, None, label(&None));
-                for (code, _) in &names {
-                    let choice = Some((*code).to_owned());
-                    let text = label(&choice);
-                    ui.selectable_value(&mut current, choice, text);
-                }
+                dir::menu(ui, |ui| {
+                    ui.selectable_value(&mut current, None, label(&None));
+                    for (code, _) in &names {
+                        let choice = Some((*code).to_owned());
+                        let text = label(&choice);
+                        ui.selectable_value(&mut current, choice, text);
+                    }
+                });
             });
         if current != self.settings.language {
             i18n::set_language(current.as_deref());
@@ -2989,7 +3035,7 @@ impl FmxApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    ui.with_layout(dir::trailing(Align::Min), |ui| {
                         // Downloads can only be cancelled, not hidden.
                         let closable = !matches!(self.update, UpdateState::Downloading { .. });
                         if closable
@@ -3006,7 +3052,7 @@ impl FmxApp {
                         {
                             action = Some(UpdateAction::Dismiss);
                         }
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.with_layout(dir::leading(Align::Center), |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 let icon = if failed {
                                     icons::WARNING
@@ -3140,10 +3186,10 @@ impl FmxApp {
                 );
             });
             row(ui, tr("update.automatic_label"), |ui| {
-                ui.checkbox(&mut self.settings.check_updates, tr("update.automatic"));
+                dir::checkbox(ui, &mut self.settings.check_updates, tr("update.automatic"));
             });
             row(ui, "", |ui| {
-                ui.vertical(|ui| {
+                dir::vertical(ui, |ui| {
                     let checking = matches!(self.update, UpdateState::Checking { .. });
                     check_now = widgets::button(
                         ui,
@@ -3411,7 +3457,7 @@ fn step_panel(
     let margin = 14;
     // The frame's margin and stroke on both sides.
     let inner = size - egui::Vec2::splat(f32::from(margin) * 2.0 + 2.0);
-    ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), |ui| {
+    ui.allocate_ui_with_layout(size, dir::column(), |ui| {
         egui::Frame::new()
             .fill(p.surface)
             .stroke(Stroke::new(1.0, p.border))
@@ -3433,7 +3479,7 @@ fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: 
     ui.horizontal(|ui| {
         widgets::step_badge(ui, number, done);
         ui.add_space(4.0);
-        ui.vertical(|ui| {
+        dir::vertical(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(RichText::new(title).strong().size(16.5));
             if !help.is_empty() {
@@ -3444,10 +3490,8 @@ fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: 
 }
 
 /// A settings grid whose labels share one fixed-width column.
-fn settings_grid(ui: &mut egui::Ui, id: &str, rows: impl FnOnce(&mut egui::Ui)) {
-    egui::Grid::new(id)
-        .num_columns(2)
-        .striped(false)
+fn settings_grid(ui: &mut egui::Ui, id: &'static str, rows: impl FnOnce(&mut egui::Ui)) {
+    dir::Grid::new(id, 2)
         .min_col_width(SETTINGS_LABEL_WIDTH)
         .max_col_width(SETTINGS_WIDTH - SETTINGS_LABEL_WIDTH)
         .spacing([18.0, 12.0])
@@ -3481,12 +3525,12 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 position_badge(ui, number);
-                ui.vertical(|ui| {
+                dir::vertical(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     ui.label(RichText::new(role).small().strong().color(p.accent));
                     ui.label(RichText::new(tr("slot.empty")).color(p.text_weak));
                 });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.with_layout(dir::trailing(Align::Center), |ui| {
                     clicked = widgets::button(
                         ui,
                         Some(icons::PLUS),
@@ -3508,7 +3552,7 @@ fn centered(ui: &mut egui::Ui, max_width: f32, content: impl FnOnce(&mut egui::U
     let pad = ((ui.available_width() - width) / 2.0).max(0.0);
     ui.horizontal_top(|ui| {
         ui.add_space(pad);
-        ui.vertical(|ui| {
+        dir::vertical(ui, |ui| {
             ui.set_width(width);
             content(ui);
         });
@@ -3663,9 +3707,18 @@ fn time_left(elapsed: Duration, progress: f32) -> Option<Duration> {
 
 /// One labelled row of a two-column options grid.
 fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
-    ui.label(RichText::new(label).color(theme::palette(ui).text_weak));
-    ui.horizontal(content);
-    ui.end_row();
+    let color = theme::palette(ui).text_weak;
+    dir::grid_row(
+        ui,
+        vec![
+            Box::new(|ui| {
+                ui.label(RichText::new(label).color(color));
+            }),
+            Box::new(|ui| {
+                ui.horizontal(content);
+            }),
+        ],
+    );
 }
 
 /// The video downloader's options. `best` is the link's tallest picture, if known.
@@ -3718,12 +3771,12 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
         tr("download.playlist_label"),
         tr("download.playlist_hint"),
         |ui| {
-            ui.checkbox(&mut d.playlist, tr("download.playlist"));
+            dir::checkbox(ui, &mut d.playlist, tr("download.playlist"));
         },
     );
     if d.kind == DownloadKind::Video {
         row(ui, tr("download.subtitles_label"), |ui| {
-            ui.checkbox(&mut d.subtitles, tr("download.subtitles"));
+            dir::checkbox(ui, &mut d.subtitles, tr("download.subtitles"));
             if d.subtitles {
                 ui.add(
                     TextEdit::singleline(&mut d.subtitle_langs)
@@ -3736,14 +3789,14 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
         });
     }
     row(ui, tr("download.extras_label"), |ui| {
-        ui.vertical(|ui| {
+        dir::vertical(ui, |ui| {
             let cover = download::supports_cover(d);
             ui.add_enabled(
                 cover,
                 egui::Checkbox::new(&mut d.embed_thumbnail, tr("download.cover")),
             )
             .on_disabled_hover_text(tr("download.cover_unsupported"));
-            ui.checkbox(&mut d.embed_metadata, tr("download.metadata"));
+            dir::checkbox(ui, &mut d.embed_metadata, tr("download.metadata"));
         });
     });
     row_hint(
@@ -3779,13 +3832,21 @@ fn height_label(height: u32) -> String {
 /// A grid row with a short explanation under the control.
 fn row_hint(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mut egui::Ui)) {
     let p = theme::palette(ui);
-    ui.label(RichText::new(label).color(p.text_weak));
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 3.0;
-        ui.horizontal(content);
-        ui.label(RichText::new(hint).small().color(p.text_weak));
-    });
-    ui.end_row();
+    dir::grid_row(
+        ui,
+        vec![
+            Box::new(|ui| {
+                ui.label(RichText::new(label).color(p.text_weak));
+            }),
+            Box::new(|ui| {
+                dir::vertical(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.horizontal(content);
+                    ui.label(RichText::new(hint).small().color(p.text_weak));
+                });
+            }),
+        ],
+    );
 }
 
 fn quality_row(ui: &mut egui::Ui, q: &mut Quality) {
@@ -3926,14 +3987,12 @@ fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {
         );
     });
     row(ui, tr("option.color"), |ui| {
-        ui.checkbox(&mut opts.grayscale, tr("option.grayscale"));
+        dir::checkbox(ui, &mut opts.grayscale, tr("option.grayscale"));
     });
 }
 
 fn audio_grid(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool) {
-    egui::Grid::new("adv_audio_grid")
-        .striped(false)
-        .num_columns(2)
+    dir::Grid::new("adv_audio_grid", 2)
         .spacing([16.0, 10.0])
         .show(ui, |ui| {
             if lossy {
@@ -3974,7 +4033,7 @@ fn optional_number(
     off_label: &str,
 ) {
     let mut on = value.is_some();
-    ui.checkbox(&mut on, "");
+    dir::checkbox(ui, &mut on, "");
     let mut number = value.unwrap_or(default);
     if on {
         ui.add(DragValue::new(&mut number).range(range).suffix(suffix));
@@ -4049,12 +4108,19 @@ fn combo<T: PartialEq + Clone>(
     choices: &[T],
     label: impl Fn(T) -> String,
 ) {
+    #[cfg(debug_assertions)]
+    if crate::devshot::wants_menu(id) {
+        let button = ui.make_persistent_id(egui::IdSalt::new(id));
+        egui::Popup::open_id(ui.ctx(), button.with("popup"));
+    }
     ComboBox::from_id_salt(id)
         .selected_text(label(value.clone()))
         .show_ui(ui, |ui| {
-            for choice in choices {
-                ui.selectable_value(value, choice.clone(), label(choice.clone()));
-            }
+            dir::menu(ui, |ui| {
+                for choice in choices {
+                    ui.selectable_value(value, choice.clone(), label(choice.clone()));
+                }
+            });
         });
 }
 
@@ -4080,7 +4146,7 @@ fn status_cell(ui: &mut egui::Ui, job: &Job) {
             let percent = format!("{:.0}%", fraction * 100.0);
             // A tool's own detail (download size, speed, time left) beats our estimate.
             if let Some(detail) = &job.detail {
-                ui.vertical(|ui| {
+                dir::vertical(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     widgets::progress(ui, bar_id, *fraction, percent, PROGRESS_WIDTH);
                     ui.label(RichText::new(detail).small().color(p.text_weak));
@@ -4280,6 +4346,8 @@ fn power_off() {
 impl eframe::App for FmxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(debug_assertions)]
+        crate::devshot::tick(&ctx);
         self.handle_input(&ctx);
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
@@ -4296,27 +4364,27 @@ impl eframe::App for FmxApp {
         };
         egui::Panel::top("toolbar")
             .frame(bar(p.surface).stroke(Stroke::new(1.0, p.border)))
-            .show(ui, |ui| self.toolbar(ui));
+            .show(ui, |ui| dir::vertical(ui, |ui| self.toolbar(ui)));
         // Like a tool dialog, an open tool gets the whole window;
         // the sidebar and queue come back once its jobs are added.
         if !self.in_editor {
-            egui::Panel::left("tools")
+            dir::start_panel("tools")
                 .resizable(true)
                 .default_size(SIDEBAR_WIDTH)
                 .frame(bar(p.panel))
-                .show(ui, |ui| self.sidebar(ui));
+                .show(ui, |ui| dir::vertical(ui, |ui| self.sidebar(ui)));
             // An empty queue is a single line.
             if self.queue.jobs().is_empty() {
                 egui::Panel::bottom("queue_empty")
                     .resizable(false)
                     .frame(bar(p.surface))
-                    .show(ui, |ui| self.queue_panel(ui));
+                    .show(ui, |ui| dir::vertical(ui, |ui| self.queue_panel(ui)));
             } else {
                 egui::Panel::bottom("queue")
                     .resizable(true)
                     .default_size(QUEUE_HEIGHT)
                     .frame(bar(p.surface))
-                    .show(ui, |ui| self.queue_panel(ui));
+                    .show(ui, |ui| dir::vertical(ui, |ui| self.queue_panel(ui)));
             }
         }
         egui::CentralPanel::no_frame().show(ui, |ui| {
@@ -4332,19 +4400,23 @@ impl eframe::App for FmxApp {
                         .inner_margin(Margin::symmetric(18, 10)),
                 )
                 .show_collapsible(ui, &mut in_editor, |ui| {
-                    centered(ui, EDITOR_MAX_WIDTH, |ui| self.action_bar(ui));
+                    dir::vertical(ui, |ui| {
+                        centered(ui, EDITOR_MAX_WIDTH, |ui| self.action_bar(ui));
+                    });
                 });
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
-                    self.update_banner(ui);
-                    if self.in_editor {
-                        centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
-                    } else {
-                        ScrollArea::vertical()
-                            .auto_shrink([false; 2])
-                            .show(ui, |ui| self.tool_grid(ui));
-                    }
+                    dir::vertical(ui, |ui| {
+                        self.update_banner(ui);
+                        if self.in_editor {
+                            centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
+                        } else {
+                            ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| self.tool_grid(ui));
+                        }
+                    });
                 });
         });
         self.settings_window(&ctx);

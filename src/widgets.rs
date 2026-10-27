@@ -9,6 +9,7 @@ use eframe::egui::{
 };
 
 use crate::art::Art;
+use crate::dir;
 use crate::theme::{
     self, BUTTON_HEIGHT, MOTION, Palette, RADIUS, SMALL_BUTTON_HEIGHT, VALUE_MOTION,
 };
@@ -182,20 +183,29 @@ pub fn button_tinted(
                 StrokeKind::Outside,
             );
         }
-        let mut x = rect.center().x - content_w / 2.0;
+        // The icon leads: left of the text, or right of it in right-to-left languages.
+        let content = Rect::from_center_size(rect.center(), Vec2::new(content_w, 0.0));
+        let mut x = content.min.x;
         if let Some(g) = icon_galley {
             let color = tint.filter(|_| kind != Kind::Primary).unwrap_or(text_color);
             let w = g.size().x;
             painter.galley_with_override_text_color(
-                Pos2::new(x, rect.center().y - g.size().y / 2.0),
+                Pos2::new(
+                    dir::mirror_x(content, x, w),
+                    rect.center().y - g.size().y / 2.0,
+                ),
                 g,
                 color.gamma_multiply(opacity),
             );
             x += w + gap;
         }
         if let Some(g) = text_galley {
+            let w = g.size().x;
             painter.galley_with_override_text_color(
-                Pos2::new(x, rect.center().y - g.size().y / 2.0),
+                Pos2::new(
+                    dir::mirror_x(content, x, w),
+                    rect.center().y - g.size().y / 2.0,
+                ),
                 g,
                 text_color.gamma_multiply(opacity),
             );
@@ -293,22 +303,30 @@ pub fn nav_item(
         );
         let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::same(8), fill);
+        // Laid out left to right, then mirrored for right-to-left languages.
         if active > 0.0 {
+            let bar_x = dir::mirror_x(rect, rect.left() + 0.5, 3.0);
             let bar = Rect::from_center_size(
-                rect.left_center() + Vec2::new(2.0, 0.0),
+                Pos2::new(bar_x + 1.5, rect.center().y),
                 Vec2::new(3.0, rect.height() * 0.55 * active),
             );
             painter.rect_filled(bar, CornerRadius::same(2), tint);
         }
         let mut x = rect.left() + 10.0 + 2.0 * hover;
         if let Some(art) = art {
-            let tile = Rect::from_min_size(Pos2::new(x, rect.center().y - 13.0), Vec2::splat(26.0));
+            let tile = Rect::from_min_size(
+                Pos2::new(dir::mirror_x(rect, x, 26.0), rect.center().y - 13.0),
+                Vec2::splat(26.0),
+            );
             paint_tile(painter, tile, art, active > 0.5, ui.visuals().dark_mode);
             x += 26.0 + 10.0;
         }
         let text_color = mix(color, p.text, active);
         painter.galley_with_override_text_color(
-            Pos2::new(x, rect.center().y - galley.size().y / 2.0),
+            Pos2::new(
+                dir::mirror_x(rect, x, galley.size().x),
+                rect.center().y - galley.size().y / 2.0,
+            ),
             galley,
             text_color,
         );
@@ -322,6 +340,10 @@ pub fn nav_item(
                 rect.right_center() - Vec2::new(10.0 + label.size().x / 2.0 + 6.0, 0.0),
                 label.size() + Vec2::new(12.0, 4.0),
             );
+            let pill = pill.translate(Vec2::new(
+                dir::mirror_x(rect, pill.min.x, pill.width()) - pill.min.x,
+                0.0,
+            ));
             painter.rect_filled(pill, CornerRadius::same(255), p.control);
             painter.galley_with_override_text_color(
                 pill.center() - label.size() / 2.0,
@@ -395,7 +417,8 @@ pub fn tool_card(
             StrokeKind::Inside,
         );
         let opacity = if unavailable { DISABLED_OPACITY } else { 1.0 };
-        let tile = Rect::from_min_size(card.min + Vec2::new(14.0, 12.0), Vec2::splat(38.0));
+        let tile_x = dir::mirror_x(card, card.min.x + 14.0, 38.0);
+        let tile = Rect::from_min_size(Pos2::new(tile_x, card.min.y + 12.0), Vec2::splat(38.0));
         let dimmed = Art {
             hue: art.hue.gamma_multiply(opacity),
             ..art
@@ -409,7 +432,8 @@ pub fn tool_card(
             p.text,
             card.width() - 28.0,
         );
-        painter.galley(Pos2::new(text_x, tile.max.y + 9.0), title_g, p.text);
+        let title_x = dir::mirror_x(card, text_x, title_g.size().x);
+        painter.galley(Pos2::new(title_x, tile.max.y + 9.0), title_g, p.text);
         if !subtitle.is_empty() {
             let sub = elided(
                 ui,
@@ -418,7 +442,8 @@ pub fn tool_card(
                 p.text_weak,
                 card.width() - 28.0,
             );
-            painter.galley(Pos2::new(text_x, tile.max.y + 29.0), sub, p.text_weak);
+            let sub_x = dir::mirror_x(card, text_x, sub.size().x);
+            painter.galley(Pos2::new(sub_x, tile.max.y + 29.0), sub, p.text_weak);
         }
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
@@ -428,7 +453,7 @@ pub fn tool_card(
 pub fn chip(ui: &mut egui::Ui, icon: &str, text: &str, color: Color32) -> Response {
     let font = TextStyle::Small.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(
-        format!("{icon} {text}"),
+        format!("{}{icon} {text}", crate::i18n::direction_mark()),
         FontId::new(font.size + 0.5, font.family),
         color,
     );
@@ -454,6 +479,9 @@ pub fn progress(ui: &mut egui::Ui, id: Id, target: f32, text: String, width: f32
     let shown = ui
         .ctx()
         .animate_value_with_time(id, target.clamp(0.0, 1.0), time);
+    if dir::is_rtl() {
+        return progress_rtl(ui, shown, text, width, p.accent);
+    }
     ui.add(
         egui::ProgressBar::new(shown)
             .desired_width(width)
@@ -462,6 +490,41 @@ pub fn progress(ui: &mut egui::Ui, id: Id, target: f32, text: String, width: f32
             .fill(p.accent)
             .text(text),
     )
+}
+
+/// egui's progress bar fills from the left; this one, styled the same,
+/// fills from the right with its text on the right.
+fn progress_rtl(
+    ui: &mut egui::Ui,
+    value: f32,
+    text: String,
+    width: f32,
+    fill: Color32,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::ProgressIndicator, true, &text));
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.visuals();
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, CornerRadius::same(255), visuals.extreme_bg_color);
+        let filled = (rect.width() * value).max(rect.height());
+        let bar = Rect::from_min_max(Pos2::new(rect.max.x - filled, rect.min.y), rect.max);
+        painter.rect_filled(bar, CornerRadius::same(255), fill);
+        let galley = painter.layout_no_wrap(
+            text,
+            TextStyle::Button.resolve(ui.style()),
+            Color32::PLACEHOLDER,
+        );
+        let color = visuals
+            .override_text_color
+            .unwrap_or(visuals.selection.stroke.color);
+        let pos = Pos2::new(
+            rect.max.x - ui.spacing().item_spacing.x - galley.size().x,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        painter.galley(pos, galley, color);
+    }
+    response
 }
 
 /// A row of joined choices where exactly one is selected: radio buttons that
@@ -498,11 +561,13 @@ pub fn segmented<T: PartialEq + Copy>(
                 let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
                 let active = animate(ui, response.id.with("on"), *value == *choice, MOTION);
                 let r = RADIUS;
+                // Choices flow from the start edge, so round the outer ends.
+                let (left, right) = if dir::is_rtl() { (last, 0) } else { (0, last) };
                 let corners = CornerRadius {
-                    nw: if i == 0 { r } else { 0 },
-                    sw: if i == 0 { r } else { 0 },
-                    ne: if i == last { r } else { 0 },
-                    se: if i == last { r } else { 0 },
+                    nw: if i == left { r } else { 0 },
+                    sw: if i == left { r } else { 0 },
+                    ne: if i == right { r } else { 0 },
+                    se: if i == right { r } else { 0 },
                 };
                 let fill = mix(mix(p.control, p.control_hover, hover), p.accent, active);
                 let painter = ui.painter();
@@ -707,7 +772,14 @@ impl Toasts {
         let reduce_motion = ctx.global_style().animation_time == 0.0;
         let mut dismissed = None;
         egui::Area::new(Id::unique("toasts"))
-            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -16.0))
+            .anchor(
+                if dir::is_rtl() {
+                    Align2::LEFT_BOTTOM
+                } else {
+                    Align2::RIGHT_BOTTOM
+                },
+                Vec2::new(if dir::is_rtl() { 16.0 } else { -16.0 }, -16.0),
+            )
             .order(egui::Order::Foreground)
             .interactable(true)
             .show(ctx, |ui| {
@@ -754,7 +826,8 @@ impl Toasts {
     }
 }
 
-/// Paints a sleek, modern chevron that rotates smoothly from pointing right (0°) to pointing down (90°).
+/// Paints a sleek, modern chevron that rotates smoothly from pointing right (0°) to pointing
+/// down (90°). In right-to-left languages it points left when closed.
 pub fn paint_chevron(
     painter: &egui::Painter,
     center: Pos2,
@@ -762,10 +835,12 @@ pub fn paint_chevron(
     openness: f32,
     stroke: Stroke,
 ) {
+    let flip = if dir::is_rtl() { -1.0 } else { 1.0 };
     let angle = openness * (std::f32::consts::PI * 0.5);
     let cos = angle.cos();
     let sin = angle.sin();
-    let rotate = |x: f32, y: f32| -> Vec2 { Vec2::new(x * cos - y * sin, x * sin + y * cos) };
+    let rotate =
+        |x: f32, y: f32| -> Vec2 { Vec2::new(flip * (x * cos - y * sin), x * sin + y * cos) };
     let half_w = size * 0.35;
     let half_h = size * 0.6;
     let p1 = center + rotate(-half_w, -half_h);
@@ -788,7 +863,13 @@ pub fn collapsible_section<R>(
     let p = theme::palette(ui);
     let id = ui.make_persistent_id(id_salt);
     let mut state =
-        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, {
+            #[cfg(debug_assertions)]
+            let open = crate::devshot::expand_sections();
+            #[cfg(not(debug_assertions))]
+            let open = false;
+            open
+        });
     let is_open = state.is_open();
     let openness = state.openness(ui.ctx());
 
@@ -837,8 +918,12 @@ pub fn collapsible_section<R>(
             StrokeKind::Inside,
         );
 
-        // Modern Chevron arrow on the left (clean, no box)
-        let chevron_center = Pos2::new(header_rect.min.x + 18.0, header_rect.center().y);
+        // Chevron, icon and title from the start edge; the badge sits on the end edge.
+        let mirror = |x: f32, w: f32| dir::mirror_x(header_rect, x, w);
+        let chevron_center = Pos2::new(
+            mirror(header_rect.min.x + 18.0, 0.0),
+            header_rect.center().y,
+        );
         let chevron_color = mix(p.text_weak, p.accent, hover.max(openness));
         paint_chevron(
             painter,
@@ -854,7 +939,10 @@ pub fn collapsible_section<R>(
             let icon_font = FontId::proportional(15.0);
             let icon_galley = painter.layout_no_wrap(ic.to_owned(), icon_font, p.accent);
             painter.galley(
-                Pos2::new(text_x, header_rect.center().y - icon_galley.size().y / 2.0),
+                Pos2::new(
+                    mirror(text_x, icon_galley.size().x),
+                    header_rect.center().y - icon_galley.size().y / 2.0,
+                ),
                 icon_galley,
                 p.accent,
             );
@@ -865,7 +953,10 @@ pub fn collapsible_section<R>(
         let title_font = FontId::proportional(14.5);
         let title_galley = painter.layout_no_wrap(title.to_owned(), title_font, p.text);
         painter.galley(
-            Pos2::new(text_x, header_rect.center().y - title_galley.size().y / 2.0),
+            Pos2::new(
+                mirror(text_x, title_galley.size().x),
+                header_rect.center().y - title_galley.size().y / 2.0,
+            ),
             title_galley,
             p.text,
         );
@@ -878,7 +969,7 @@ pub fn collapsible_section<R>(
             let badge_size = badge_galley.size() + badge_pad;
             let badge_rect = Rect::from_min_size(
                 Pos2::new(
-                    header_rect.max.x - badge_size.x - 10.0,
+                    mirror(header_rect.max.x - badge_size.x - 10.0, badge_size.x),
                     header_rect.center().y - badge_size.y / 2.0,
                 ),
                 badge_size,

@@ -1,7 +1,8 @@
-//! Bundled Phosphor icon font (MIT, see `assets/fonts/LICENSE-Phosphor.txt`).
+//! Bundled fonts: the Phosphor icon font (MIT, see `assets/fonts/LICENSE-Phosphor.txt`)
+//! and Noto Sans Hebrew (OFL, see `assets/fonts/NotoSansHebrew-OFL.txt`).
 //!
-//! egui's default fonts lack most symbol glyphs, so icons come from this font,
-//! registered as a fallback right after the text font.
+//! egui's default fonts lack most symbol glyphs and all Hebrew letters, so
+//! icons and Hebrew come from these fonts, registered as fallbacks.
 
 use std::sync::Arc;
 
@@ -11,6 +12,8 @@ const FONT_NAME: &str = "phosphor";
 const FONT: &[u8] = include_bytes!("../assets/fonts/Phosphor.ttf");
 const FILL_NAME: &str = "phosphor-fill";
 const FILL_FONT: &[u8] = include_bytes!("../assets/fonts/Phosphor-Fill.ttf");
+const HEBREW_NAME: &str = "noto-sans-hebrew";
+const HEBREW_FONT: &[u8] = include_bytes!("../assets/fonts/NotoSansHebrew-Regular.ttf");
 
 /// The filled icon weight, used for colorful tiles.
 pub fn fill(size: f32) -> egui::FontId {
@@ -19,6 +22,7 @@ pub fn fill(size: f32) -> egui::FontId {
 
 pub const ARROW_CLOCKWISE: &str = "\u{E036}";
 pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+pub const ARROW_LEFT: &str = "\u{E058}";
 pub const ARROW_RIGHT: &str = "\u{E06C}";
 pub const ARROWS_HORIZONTAL: &str = "\u{E098}";
 pub const ARROWS_VERTICAL: &str = "\u{E09C}";
@@ -54,17 +58,23 @@ pub const WARNING: &str = "\u{E4E0}";
 pub const X: &str = "\u{E4F6}";
 pub const X_CIRCLE: &str = "\u{E4F8}";
 
-/// Registers the icon font as a fallback for both text families.
+/// Registers the icon and Hebrew fonts as fallbacks for both text families.
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(FONT)),
     );
+    fonts.font_data.insert(
+        HEBREW_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(HEBREW_FONT)),
+    );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         let keys = fonts.families.entry(family).or_default();
         // Second, so the text font still wins for ordinary characters.
         keys.insert(keys.len().min(1), FONT_NAME.to_owned());
+        // Last: it only has to supply the letters no other font has.
+        keys.push(HEBREW_NAME.to_owned());
     }
     fonts.font_data.insert(
         FILL_NAME.to_owned(),
@@ -79,7 +89,7 @@ pub fn install(ctx: &egui::Context) {
 
 /// An icon followed by a label.
 pub fn label(icon: &str, text: &str) -> String {
-    format!("{icon}  {text}")
+    format!("{}{icon}  {text}", crate::i18n::direction_mark())
 }
 
 #[cfg(test)]
@@ -176,12 +186,12 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {})
             .textures_delta
             .clear();
-        let mut texts: Vec<String> = ["en", "es", "fr", "de"]
+        let mut texts: Vec<String> = ["en", "es", "fr", "de", "he"]
             .iter()
             .flat_map(|code| {
                 let path = format!("{}/locales/{code}.json", env!("CARGO_MANIFEST_DIR"));
                 let src = std::fs::read_to_string(path).expect("locale");
-                let map = crate::i18n::parse(&src);
+                let map = crate::i18n::parse(&src, *code == "he");
                 map.into_values()
             })
             .collect();
@@ -193,10 +203,9 @@ mod tests {
         let mut missing = std::collections::BTreeSet::new();
         ctx.fonts_mut(|fonts| {
             for text in &texts {
-                missing.extend(
-                    text.chars()
-                        .filter(|c| !c.is_whitespace() && !fonts.has_glyph(&font, *c)),
-                );
+                missing.extend(text.chars().filter(|c| {
+                    !c.is_whitespace() && *c != crate::i18n::RTL_MARK && !fonts.has_glyph(&font, *c)
+                }));
             }
         });
         assert!(

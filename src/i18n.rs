@@ -3,6 +3,10 @@
 //! Locales are JSON maps embedded at compile time. The active locale is picked
 //! from the environment once at startup; missing keys fall back to English,
 //! then to the key itself so a gap is visible instead of silent.
+//!
+//! Right-to-left languages (see [`is_rtl`]) get each string prefixed with a
+//! RIGHT-TO-LEFT MARK, so text that starts with a file format, number or icon
+//! still reads right to left, and their arrows point the other way.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -15,7 +19,12 @@ const LOCALES: &[(&str, &str)] = &[
     ("es", include_str!("../locales/es.json")),
     ("fr", include_str!("../locales/fr.json")),
     ("de", include_str!("../locales/de.json")),
+    ("he", include_str!("../locales/he.json")),
 ];
+/// Languages written right to left.
+const RTL_LANGUAGES: &[&str] = &["he"];
+/// Sets the base direction of a right-to-left string (Unicode U+200F).
+pub const RTL_MARK: char = '\u{200F}';
 const FALLBACK: usize = 0;
 
 static CATALOGS: OnceLock<Vec<HashMap<String, String>>> = OnceLock::new();
@@ -24,16 +33,39 @@ static ACTIVE: AtomicUsize = AtomicUsize::new(FALLBACK);
 /// egui's built-in fonts have no U+2192 arrow, so it is drawn from the icon font.
 const ARROW: char = '→';
 
-pub(crate) fn parse(src: &str) -> HashMap<String, String> {
+pub(crate) fn parse(src: &str, rtl: bool) -> HashMap<String, String> {
     // The files are compiled in, so a parse failure is a build-time bug caught by tests.
     let map: HashMap<String, String> = serde_json::from_str(src).unwrap_or_default();
     map.into_iter()
-        .map(|(k, v)| (k, v.replace(ARROW, crate::icons::ARROW_RIGHT)))
+        .map(|(k, v)| {
+            let v = if rtl {
+                format!("{RTL_MARK}{}", v.replace(ARROW, crate::icons::ARROW_LEFT))
+            } else {
+                v.replace(ARROW, crate::icons::ARROW_RIGHT)
+            };
+            (k, v)
+        })
         .collect()
 }
 
 fn catalogs() -> &'static [HashMap<String, String>] {
-    CATALOGS.get_or_init(|| LOCALES.iter().map(|(_, src)| parse(src)).collect())
+    CATALOGS.get_or_init(|| {
+        LOCALES
+            .iter()
+            .map(|(code, src)| parse(src, RTL_LANGUAGES.contains(code)))
+            .collect()
+    })
+}
+
+/// Whether the active language is written right to left.
+pub fn is_rtl() -> bool {
+    RTL_LANGUAGES.contains(&LOCALES[ACTIVE.load(Ordering::Relaxed)].0)
+}
+
+/// Prefix for text built from parts (an icon and a label, say), so it reads
+/// in the UI's direction even when its first part is an icon or a number.
+pub fn direction_mark() -> &'static str {
+    if is_rtl() { "\u{200F}" } else { "" }
 }
 
 /// Extracts the language code from a POSIX locale such as `de_DE.UTF-8`.
@@ -56,10 +88,8 @@ pub fn languages() -> Vec<(&'static str, &'static str)> {
         .iter()
         .zip(catalogs())
         .map(|((code, _), map)| {
-            (
-                *code,
-                map.get("language.name").map_or(*code, String::as_str),
-            )
+            let name = map.get("language.name").map_or(*code, String::as_str);
+            (*code, name.trim_start_matches(RTL_MARK))
         })
         .collect()
 }

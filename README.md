@@ -27,7 +27,7 @@
 - **Safe auto-updates** — every release file is Ed25519-signed; unsigned or tampered files are refused
 - **Parallel queue** — jobs run side by side with live progress, cancel and retry
 - **Light & dark theme** — follows system preference; smooth hover/press animations; "Reduce motion" option
-- **4 languages** — English, Spanish, French, German (or set `FMX_LANG=xx`)
+- **5 languages** — English, Spanish, French, German and Hebrew, with a fully mirrored right-to-left layout for Hebrew (or set `FMX_LANG=xx`)
 - **Drag & drop everywhere** — files, folders and links; open files directly from the command line
 
 ---
@@ -186,11 +186,12 @@ Rust 1.88+ is required (`rust-version` in `Cargo.toml`).
 
 | Variable | Effect |
 |---|---|
-| `FMX_LANG=es\|fr\|de\|en` | Override UI language (also changeable in Settings) |
+| `FMX_LANG=es\|fr\|de\|he\|en` | Override UI language (also changeable in Settings) |
 | `FMX_LOG=debug` | Print every command FMX runs |
 | `FMX_FFMPEG=<path>` | Force a specific ffmpeg binary |
 
-To add a language, add `locales/xx.json` and register it in `src/i18n.rs`.
+To add a language, add `locales/xx.json` and register it in `src/i18n.rs`; list it in
+`RTL_LANGUAGES` there too if it is written right to left, and the whole UI mirrors.
 
 ---
 

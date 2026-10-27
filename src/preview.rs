@@ -12,6 +12,7 @@ use eframe::egui::{
     StrokeKind, TextureHandle, TextureOptions, Vec2,
 };
 
+use crate::dir;
 use crate::i18n::{tr, trf};
 use crate::icons;
 use crate::options::{Edit, Rect, Rotation, display_time, format_timestamp, parse_timestamp};
@@ -332,14 +333,16 @@ impl Preview {
             .default_width(DISPLAY_MAX_WIDTH + 32.0)
             .resizable(false)
             .show(ctx, |ui| {
-                self.contents(
-                    ui,
-                    edit,
-                    rect,
-                    Mode::BOTH,
-                    DISPLAY_MAX_HEIGHT,
-                    edit.rotation,
-                );
+                dir::vertical(ui, |ui| {
+                    self.contents(
+                        ui,
+                        edit,
+                        rect,
+                        Mode::BOTH,
+                        DISPLAY_MAX_HEIGHT,
+                        edit.rotation,
+                    );
+                });
             });
         open
     }

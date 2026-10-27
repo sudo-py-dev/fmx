@@ -6,3 +6,5 @@ packaging/update-key.pub -text
 *.ico binary
 *.icns binary
 *.ttf binary
+# Third-party code kept in the repository (see vendor/epaint/FMX-PATCH.md).
+vendor/** linguist-vendored
