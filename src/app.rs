@@ -1068,44 +1068,20 @@ impl FmxApp {
             ) {
                 self.load_task_list();
             }
-            ui.with_layout(dir::trailing(Align::Center), |ui| {
-                let news = self.update_news();
-                let settings = widgets::button_tinted(
-                    ui,
-                    Some(icons::GEAR),
-                    Some(hue::SLATE),
-                    tr("action.settings"),
-                    Kind::Ghost,
-                    Size::Regular,
-                    true,
-                );
-                if news {
-                    // A dot on the button's top end corner: an update is waiting in Settings.
-                    let r = settings.rect;
-                    let x = dir::mirror_x(r, r.max.x - 9.0, 0.0);
-                    let p = theme::palette(ui);
-                    ui.painter()
-                        .circle_filled(egui::pos2(x, r.min.y + 7.0), 4.0, p.accent);
-                }
-                if settings
-                    .on_hover_text_at_pointer(if news {
-                        tr("update.available_hint")
-                    } else {
-                        tr("action.settings")
-                    })
-                    .clicked()
-                {
-                    self.show_settings = !self.show_settings;
-                    if news {
-                        self.settings_tab = SettingsTab::Updates;
-                    }
-                }
-            });
+            let width =
+                widgets::button_width(ui, Some(icons::GEAR), tr("action.settings"), Size::Regular);
+            dir::at_end(ui, width, |ui| self.settings_button(ui));
         });
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             self.output_dir_picker(ui);
-            ui.with_layout(dir::trailing(Align::Center), |ui| {
+            let width = labelled_combo_width(ui, tr("after.label"), self.after_done.label());
+            dir::at_end(ui, width, |ui| {
+                // Pinned to the end, the row runs backwards: the menu comes first.
+                let pinned = ui.layout().main_dir() == dir::trailing(Align::Center).main_dir();
+                if !pinned {
+                    ui.label(RichText::new(tr("after.label")).weak());
+                }
                 combo(
                     ui,
                     "after_done",
@@ -1113,9 +1089,46 @@ impl FmxApp {
                     &AfterDone::ALL,
                     |a| a.label().to_owned(),
                 );
-                ui.label(RichText::new(tr("after.label")).weak());
+                if pinned {
+                    ui.label(RichText::new(tr("after.label")).weak());
+                }
             });
         });
+    }
+
+    /// The Settings button, with a dot when an update is waiting there.
+    fn settings_button(&mut self, ui: &mut egui::Ui) {
+        let news = self.update_news();
+        let settings = widgets::button_tinted(
+            ui,
+            Some(icons::GEAR),
+            Some(art::hue::SLATE),
+            tr("action.settings"),
+            Kind::Ghost,
+            Size::Regular,
+            true,
+        );
+        if news {
+            // A dot on the button's top end corner: an update is waiting in Settings.
+            let r = settings.rect;
+            let x = dir::mirror_x(r, r.max.x - 9.0, 0.0);
+            let p = theme::palette(ui);
+            ui.painter()
+                .circle_filled(egui::pos2(x, r.min.y + 7.0), 4.0, p.accent);
+        }
+        if settings
+            .on_hover_text_at_pointer(if news {
+                tr("update.available_hint")
+            } else {
+                tr("action.settings")
+            })
+            .clicked()
+        {
+            self.show_settings = !self.show_settings;
+            if news {
+                self.settings_tab = SettingsTab::Updates;
+            }
+        }
     }
 
     fn output_dir_picker(&mut self, ui: &mut egui::Ui) {
@@ -3843,6 +3856,28 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
             });
         });
     clicked
+}
+
+/// About how wide `label` and then a drop-down showing `selected` are, as
+/// [`combo`] draws them.
+fn labelled_combo_width(ui: &egui::Ui, label: &str, selected: &str) -> f32 {
+    let text = |s: &str, style: egui::TextStyle| {
+        ui.painter()
+            .layout_no_wrap(
+                s.to_owned(),
+                style.resolve(ui.style()),
+                egui::Color32::PLACEHOLDER,
+            )
+            .size()
+            .x
+    };
+    let spacing = ui.spacing();
+    let menu = (text(selected, egui::TextStyle::Button)
+        + spacing.icon_width
+        + spacing.icon_spacing
+        + spacing.button_padding.x * 2.0)
+        .max(spacing.combo_width);
+    text(label, egui::TextStyle::Body) + spacing.item_spacing.x + menu
 }
 
 /// Lays out `content` at most `max_width` wide, centered in the available space.

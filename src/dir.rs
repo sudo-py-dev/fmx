@@ -46,6 +46,17 @@ pub fn trailing(valign: Align) -> Layout {
     }
 }
 
+/// Puts `add` (about `width` wide) at the end edge of the current row when it
+/// fits there, and otherwise just next in the row, so in a wrapping row it
+/// moves to the next line instead of overlapping what came before.
+pub fn at_end<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if ui.available_width() >= width + ui.spacing().item_spacing.x {
+        ui.with_layout(trailing(Align::Center), add).inner
+    } else {
+        add(ui)
+    }
+}
+
 /// Like `ui.vertical`, aligned to the start edge.
 pub fn vertical<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
     ui.scope_builder(UiBuilder::new().layout(column()), add_contents)

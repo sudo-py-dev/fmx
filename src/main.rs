@@ -59,6 +59,14 @@ fn window_icon() -> egui::IconData {
     }
 }
 
+fn initial_size() -> [f32; 2] {
+    #[cfg(debug_assertions)]
+    if let Some(size) = devshot::window_size() {
+        return size;
+    }
+    INITIAL_SIZE
+}
+
 /// Command-line switches; everything else is a file to open.
 const DEBUG_FLAG: &str = "--debug";
 /// Opens the window, draws a few frames and quits: a check that FMX starts here.
@@ -149,7 +157,7 @@ fn main() {
         viewport: egui::ViewportBuilder::default()
             .with_title(i18n::tr("app.name"))
             .with_app_id(APP_ID)
-            .with_inner_size(INITIAL_SIZE)
+            .with_inner_size(initial_size())
             .with_min_inner_size(MIN_SIZE)
             .with_drag_and_drop(true)
             .with_icon(window_icon()),

@@ -99,6 +99,66 @@ pub fn button(
     button_tinted(ui, icon, None, text, kind, size, enabled)
 }
 
+/// A button's laid-out icon and text, and its size.
+struct ButtonContent {
+    icon: Option<std::sync::Arc<egui::Galley>>,
+    text: Option<std::sync::Arc<egui::Galley>>,
+    gap: f32,
+    content_w: f32,
+    size: Vec2,
+}
+
+fn button_content(
+    ui: &egui::Ui,
+    icon: Option<&str>,
+    text: &str,
+    size: Size,
+    color: Color32,
+) -> ButtonContent {
+    let base = TextStyle::Button.resolve(ui.style());
+    let font = match size {
+        Size::Small => FontId::new(base.size - 1.5, base.family.clone()),
+        Size::Large => FontId::new(base.size + 1.0, base.family.clone()),
+        Size::Regular => base,
+    };
+    let icon_galley = icon.map(|i| {
+        ui.painter().layout_no_wrap(
+            i.to_owned(),
+            FontId::new(font.size + 1.5, font.family.clone()),
+            color,
+        )
+    });
+    let text_galley =
+        (!text.is_empty()).then(|| ui.painter().layout_no_wrap(text.to_owned(), font, color));
+    let gap = if icon_galley.is_some() && text_galley.is_some() {
+        ICON_GAP
+    } else {
+        0.0
+    };
+    let content_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x)
+        + gap
+        + text_galley.as_ref().map_or(0.0, |g| g.size().x);
+    let (height, pad) = match size {
+        Size::Small => (SMALL_BUTTON_HEIGHT, 9.0),
+        Size::Regular => (BUTTON_HEIGHT, 14.0),
+        Size::Large => (LARGE_BUTTON_HEIGHT, 22.0),
+    };
+    ButtonContent {
+        icon: icon_galley,
+        text: text_galley,
+        gap,
+        content_w,
+        size: Vec2::new((content_w + pad * 2.0).max(height), height),
+    }
+}
+
+/// How wide [`button`] draws this icon and text, to lay out around it beforehand.
+pub fn button_width(ui: &egui::Ui, icon: Option<&str>, text: &str, size: Size) -> f32 {
+    button_content(ui, icon, text, size, Color32::PLACEHOLDER)
+        .size
+        .x
+}
+
 /// Like [`button`], with the icon drawn in its own color.
 pub fn button_tinted(
     ui: &mut egui::Ui,
@@ -110,39 +170,15 @@ pub fn button_tinted(
     enabled: bool,
 ) -> Response {
     let p = theme::palette(ui);
-    let base = TextStyle::Button.resolve(ui.style());
-    let font = match size {
-        Size::Small => FontId::new(base.size - 1.5, base.family.clone()),
-        Size::Large => FontId::new(base.size + 1.0, base.family.clone()),
-        Size::Regular => base,
-    };
     let (fills, text_color, border) = colors(kind, &p);
-    let icon_galley = icon.map(|i| {
-        ui.painter().layout_no_wrap(
-            i.to_owned(),
-            FontId::new(font.size + 1.5, font.family.clone()),
-            text_color,
-        )
-    });
-    let text_galley = (!text.is_empty()).then(|| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font, text_color)
-    });
-    let gap = if icon_galley.is_some() && text_galley.is_some() {
-        ICON_GAP
-    } else {
-        0.0
-    };
-    let content_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x)
-        + gap
-        + text_galley.as_ref().map_or(0.0, |g| g.size().x);
-
-    let (height, pad) = match size {
-        Size::Small => (SMALL_BUTTON_HEIGHT, 9.0),
-        Size::Regular => (BUTTON_HEIGHT, 14.0),
-        Size::Large => (LARGE_BUTTON_HEIGHT, 22.0),
-    };
-    let width = (content_w + pad * 2.0).max(height);
+    let ButtonContent {
+        icon: icon_galley,
+        text: text_galley,
+        gap,
+        content_w,
+        size: button_size,
+    } = button_content(ui, icon, text, size, text_color);
+    let (width, height) = (button_size.x, button_size.y);
     let sense = if enabled {
         Sense::click()
     } else {

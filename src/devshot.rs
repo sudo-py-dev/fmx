@@ -23,6 +23,15 @@ const SETTLE_FRAMES: u32 = 30;
 
 static FRAME: AtomicU32 = AtomicU32::new(0);
 
+/// The window size `FMX_SCREENSHOT_SIZE` asks for, set when the window opens.
+/// A window manager that keeps the window bigger gets the UI zoomed instead,
+/// so the layout is the one at that width.
+pub fn window_size() -> Option<[f32; 2]> {
+    let value = std::env::var("FMX_SCREENSHOT_SIZE").ok()?;
+    let (w, h) = value.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
+}
+
 /// The Settings section the screenshot should show, if any (`1` = the first).
 pub fn wants_settings() -> Option<String> {
     std::env::var("FMX_SCREENSHOT_SETTINGS").ok()
@@ -73,13 +82,15 @@ pub fn tick(ctx: &egui::Context) {
     };
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
     ctx.request_repaint();
-    if frame == 0
-        && let Some((w, h)) = std::env::var("FMX_SCREENSHOT_SIZE")
-            .ok()
-            .and_then(|s| s.split_once('x').map(|(w, h)| (w.parse(), h.parse())))
-            .and_then(|(w, h)| Some((w.ok()?, h.ok()?)))
+    // Until the window has its final size, keep the zoom matching it.
+    if frame < SETTLE_FRAMES / 2
+        && let Some([width, _]) = window_size()
     {
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+        let actual = ctx.content_rect().width() * ctx.zoom_factor();
+        let zoom = (actual / width).max(1.0);
+        if (zoom - ctx.zoom_factor()).abs() > 0.01 {
+            ctx.set_zoom_factor(zoom);
+        }
     }
     if frame != SETTLE_FRAMES {
         return;
