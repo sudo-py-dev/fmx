@@ -1310,6 +1310,7 @@ dependencies = [
  "calamine",
  "dirs",
  "eframe",
+ "encoding_rs",
  "epaint_default_fonts",
  "flate2",
  "image",

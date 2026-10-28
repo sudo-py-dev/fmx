@@ -116,7 +116,7 @@
   "error.io": "שגיאת קובץ: {error}",
   "error.image": "שגיאת תמונה: {error}",
   "category.rom": "DVD / CD / ISO",
-  "desc.to_ebook": "המרת ספרים אלקטרוניים (EPUB‏, MOBI‏, AZW3‏, FB2‏, PDF‏, DOCX…) באמצעות Calibre.",
+  "desc.to_ebook": "המרת ספרים אלקטרוניים ומסמכים (EPUB‏, FB2‏, DOCX‏, ODT‏, HTML‏, TXT…) ל-EPUB‏, FB2‏, PDF או TXT — מובנה, בלי תוכנות נוספות. פורמטים של Kindle ‏(MOBI‏, AZW3), וקריאת ספרי MOBI או PDF, דורשים Calibre.",
   "desc.pdf_to_images": "הפיכת כל עמוד ב-PDF לתמונה.",
   "desc.pdf_to_text": "חילוץ הטקסט של קובץ PDF תוך שמירה על הפריסה.",
   "desc.pdf_to_html": "הפיכת קובץ PDF לדף HTML אחד.",

@@ -116,7 +116,7 @@
   "error.io": "Dateifehler: {error}",
   "error.image": "Bildfehler: {error}",
   "category.rom": "DVD / CD / ISO",
-  "desc.to_ebook": "Wandelt E-Books (EPUB, MOBI, AZW3, FB2, PDF, DOCX…) mit Calibre um.",
+  "desc.to_ebook": "Wandelt E-Books und Dokumente (EPUB, FB2, DOCX, ODT, HTML, TXT…) in EPUB, FB2, PDF oder TXT um – eingebaut. Kindle-Formate (MOBI, AZW3) und das Lesen von MOBI- oder PDF-Büchern brauchen Calibre.",
   "desc.pdf_to_images": "Rendert jede PDF-Seite als Bild.",
   "desc.pdf_to_text": "Extrahiert den Text einer PDF unter Beibehaltung des Layouts.",
   "desc.pdf_to_html": "Wandelt eine PDF in eine einzelne HTML-Seite um.",

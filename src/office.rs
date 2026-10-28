@@ -46,7 +46,7 @@ impl From<std::io::Error> for OfficeError {
     }
 }
 
-fn corrupt(e: impl fmt::Display) -> OfficeError {
+pub(crate) fn corrupt(e: impl fmt::Display) -> OfficeError {
     OfficeError::Corrupt(e.to_string())
 }
 
@@ -95,7 +95,7 @@ fn zip_part(path: &Path, name: &str) -> Result<String, OfficeError> {
     String::from_utf8(bytes).map_err(corrupt)
 }
 
-fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
+pub(crate) fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.local_name().as_ref() == local)
@@ -114,7 +114,7 @@ fn toggle_on(e: &BytesStart<'_>) -> bool {
     )
 }
 
-fn entity(name: &str) -> Option<char> {
+pub(crate) fn entity(name: &str) -> Option<char> {
     match name {
         "amp" => Some('&'),
         "lt" => Some('<'),
@@ -499,7 +499,7 @@ fn markdown_blocks(text: &str) -> Vec<Block> {
 }
 
 /// A tolerant HTML reader: headings, paragraphs, list items and tables.
-fn html_blocks(html: &str) -> Vec<Block> {
+pub(crate) fn html_blocks(html: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut text = String::new();
     let mut heading: Option<u8> = None;

@@ -72,7 +72,7 @@ Join images · resize · rotate · grayscale · watermark · HEIC/AVIF inputs
 <details>
 <summary><b>Document</b></summary>
 
-Images → PDF · PDF → images / TXT / HTML / Word / Excel · Office → PDF · merge / split / compress PDF · eBook → EPUB / MOBI / AZW3 / FB2 / PDF / TXT
+Images → PDF · PDF → images / TXT / HTML / Word / Excel · Office → PDF · merge / split / compress PDF · eBook → EPUB / FB2 / PDF / TXT (built in) and MOBI / AZW3 (with Calibre)
 
 </details>
 
@@ -125,6 +125,7 @@ Select files in your file manager, right-click, and choose **Convert with FMX**:
 | Audio (MP3, FLAC, WAV, M4A, …) | MP3 · M4A · FLAC · WAV · Opus |
 | Images (PNG, JPG, WebP, HEIC, …) | JPG · PNG · WebP · PDF (all selected images in one PDF) |
 | Office (Word, Excel, PowerPoint, OpenDocument) | PDF |
+| eBooks (EPUB, FB2) | PDF · TXT · EPUB · FB2 |
 | PDF | Word · TXT · Images |
 
 FMX queues the files with your current settings and starts right away; the results are saved
@@ -181,7 +182,7 @@ Optional system programs that unlock extra tools when found next to the app or o
 |---|---|---|
 | Poppler | PDF → images/TXT/HTML/Word/Excel, merge/split PDF | `poppler-utils` |
 | Ghostscript | Compress PDF | `ghostscript` |
-| Calibre | eBook conversions | `calibre` |
+| Calibre | Kindle eBooks (MOBI, AZW3), and reading MOBI/PDF books | `calibre` |
 | xorriso | Folder → ISO | `xorriso` |
 | Monkey's Audio | APE output | `monkeys-audio` |
 | LibreOffice | Legacy `.doc`/`.ppt` → PDF | `libreoffice` |
@@ -271,7 +272,7 @@ mirrors.
 |---|---|
 | `fmx --debug` | Debug logging for this run, even if FMX can't open its window |
 | `fmx --self-test` | Open the window, draw a few frames and quit (exit code 0 = FMX works here) |
-| `fmx --convert <target> <files…>` | Convert right away, as the right-click menu does (`mp4`, `mkv`, `webm`, `gif`, `mp3`, `m4a`, `flac`, `wav`, `opus`, `jpg`, `png`, `webp`, `pdf`, `word`, `txt`, `images`) |
+| `fmx --convert <target> <files…>` | Convert right away, as the right-click menu does (`mp4`, `mkv`, `webm`, `gif`, `mp3`, `m4a`, `flac`, `wav`, `opus`, `jpg`, `png`, `webp`, `pdf`, `word`, `txt`, `images`, `epub`, `fb2`) |
 | `fmx --register-shell` / `--unregister-shell` | Add or remove the right-click menu for this user, then quit |
 
 Only one FMX window runs at a time: starting FMX again (or converting from the right-click

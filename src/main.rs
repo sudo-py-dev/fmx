@@ -13,6 +13,7 @@ mod dir;
 mod disc;
 mod docs;
 mod download;
+mod ebook;
 mod exec;
 mod externals;
 mod ffmpeg;

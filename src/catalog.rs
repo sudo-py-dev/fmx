@@ -502,6 +502,11 @@ impl EbookFormat {
         Self::Txt,
     ];
 
+    /// Written by FMX itself (see `ebook`); Kindle formats need Calibre.
+    pub fn is_native(self) -> bool {
+        !matches!(self, Self::Mobi | Self::Azw3)
+    }
+
     pub fn ext(self) -> &'static str {
         match self {
             Self::Epub => "epub",
@@ -715,7 +720,8 @@ impl InputKind {
                 "txt", "md", "html", "htm", "doc", "ppt",
             ],
             Self::Ebooks => &[
-                "epub", "mobi", "azw3", "azw", "fb2", "pdf", "txt", "docx", "html", "lit", "pdb",
+                "epub", "fb2", "mobi", "azw3", "azw", "pdf", "txt", "docx", "odt", "rtf", "md",
+                "html", "htm", "lit", "pdb",
             ],
             Self::Disc | Self::Iso => &["iso"],
             Self::Cso => &["cso"],
@@ -894,6 +900,7 @@ impl Tool {
             // Native readers and writers; LibreOffice is only an optional extra for .doc/.ppt.
             Self::OfficeToPdf => &[],
             Self::PdfToWord => &[External::Pdftotext],
+            Self::ToEbook(f) if f.is_native() => &[],
             Self::ToEbook(_) => &[External::EbookConvert],
             Self::FolderToIso => &[External::Xorriso],
             Self::Download => &[External::YtDlp, External::Ffmpeg],

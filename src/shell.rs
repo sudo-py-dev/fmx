@@ -18,7 +18,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::catalog::{self, AudioFormat, ImageFormat, Tool, VideoFormat};
+use crate::catalog::{self, AudioFormat, EbookFormat, ImageFormat, Tool, VideoFormat};
 use crate::i18n::{tr, trf};
 
 /// Lists what was written by the last registration, and for which program
@@ -106,6 +106,17 @@ const GROUPS: &[Group] = &[
         targets: &[("pdf", Tool::OfficeToPdf)],
     },
     Group {
+        id: "ebook",
+        extensions: &["epub", "fb2"],
+        mime_types: &["application/epub+zip", "application/x-fictionbook+xml"],
+        targets: &[
+            ("pdf", Tool::ToEbook(EbookFormat::Pdf)),
+            ("txt", Tool::ToEbook(EbookFormat::Txt)),
+            ("epub", Tool::ToEbook(EbookFormat::Epub)),
+            ("fb2", Tool::ToEbook(EbookFormat::Fb2)),
+        ],
+    },
+    Group {
         id: "pdf",
         extensions: &["pdf"],
         mime_types: &["application/pdf"],
@@ -160,6 +171,8 @@ fn item_label(target: &str) -> String {
         "pdf" => "PDF",
         "word" => "Word",
         "txt" => "TXT",
+        "epub" => "EPUB",
+        "fb2" => "FB2",
         "images" => menu_text("shell.images"),
         other => other,
     };
@@ -474,6 +487,10 @@ mod tests {
         assert_eq!(t("pdf", "scan.jpg"), Some(Tool::ImagesToPdf));
         assert_eq!(t("pdf", "report.docx"), Some(Tool::OfficeToPdf));
         assert_eq!(t("word", "report.pdf"), Some(Tool::PdfToWord));
+        assert_eq!(
+            t("pdf", "novel.epub"),
+            Some(Tool::ToEbook(EbookFormat::Pdf))
+        );
         assert_eq!(t("mp4", "report.pdf"), None);
         assert_eq!(t("mp4", "no-extension"), None);
     }

@@ -116,7 +116,7 @@
   "error.io": "Erreur de fichier : {error}",
   "error.image": "Erreur d’image : {error}",
   "category.rom": "DVD / CD / ISO",
-  "desc.to_ebook": "Convertit des livres numériques (EPUB, MOBI, AZW3, FB2, PDF, DOCX…) avec Calibre.",
+  "desc.to_ebook": "Convertit livres numériques et documents (EPUB, FB2, DOCX, ODT, HTML, TXT…) en EPUB, FB2, PDF ou TXT, sans autre logiciel. Les formats Kindle (MOBI, AZW3) et la lecture de livres MOBI ou PDF nécessitent Calibre.",
   "desc.pdf_to_images": "Rend chaque page du PDF en image.",
   "desc.pdf_to_text": "Extrait le texte d’un PDF en conservant la mise en page.",
   "desc.pdf_to_html": "Transforme un PDF en une seule page HTML.",

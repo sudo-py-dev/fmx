@@ -4,11 +4,12 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use crate::catalog::{AudioFormat, Tool};
+use crate::catalog::{AudioFormat, EbookFormat, Tool};
 use crate::cso;
 use crate::disc;
 use crate::docs;
 use crate::download;
+use crate::ebook;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::imaging;
@@ -146,11 +147,7 @@ fn run_tool(
         ),
         Tool::OfficeToPdf => office_to_pdf(spec, toolbox, cancel),
         Tool::PdfToWord => pdf_to_word(spec, toolbox, cancel),
-        Tool::ToEbook(_) => run_plain(
-            need(toolbox, External::EbookConvert)?,
-            &docs::ebook_convert(first_input(spec)?, out),
-            cancel,
-        ),
+        Tool::ToEbook(format) => ebook_convert(spec, format, toolbox, cancel),
         Tool::FolderToIso => {
             let folder = first_input(spec)?;
             let is_dvd = folder.join("VIDEO_TS").is_dir();
@@ -261,6 +258,29 @@ fn office_to_pdf(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Resu
         pdfgen::PdfError::Io(e) => JobError::Io(e),
         pdfgen::PdfError::Font => JobError::Io(std::io::Error::other("font")),
     })
+}
+
+/// Converts natively when FMX reads the input and writes the format (see
+/// `ebook`), and with Calibre otherwise.
+fn ebook_convert(
+    spec: &JobSpec,
+    format: EbookFormat,
+    toolbox: &Toolbox,
+    cancel: &AtomicBool,
+) -> Result<(), JobError> {
+    let input = first_input(spec)?;
+    if format.is_native() && ebook::can_read(input) {
+        let book = ebook::read(input).map_err(JobError::Office)?;
+        let name = input
+            .file_stem()
+            .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+        return ebook::write(&book, format, &name, &spec.output).map_err(JobError::Io);
+    }
+    run_plain(
+        need(toolbox, External::EbookConvert)?,
+        &docs::ebook_convert(input, &spec.output),
+        cancel,
+    )
 }
 
 /// Lays out the PDF's text with Poppler and writes it as a Word document.
