@@ -468,9 +468,12 @@ pub fn chip(ui: &mut egui::Ui, icon: &str, text: &str, color: Color32) -> Respon
     response
 }
 
+/// Height of a progress bar.
+const PROGRESS_HEIGHT: f32 = 20.0;
+
 /// A progress bar whose value glides toward its target instead of jumping.
+/// It fills from the start edge (the right in right-to-left languages).
 pub fn progress(ui: &mut egui::Ui, id: Id, target: f32, text: String, width: f32) -> Response {
-    let p = theme::palette(ui);
     let time = if ui.style().animation_time == 0.0 {
         0.0
     } else {
@@ -479,52 +482,70 @@ pub fn progress(ui: &mut egui::Ui, id: Id, target: f32, text: String, width: f32
     let shown = ui
         .ctx()
         .animate_value_with_time(id, target.clamp(0.0, 1.0), time);
-    if dir::is_rtl() {
-        return progress_rtl(ui, shown, text, width, p.accent);
-    }
-    ui.add(
-        egui::ProgressBar::new(shown)
-            .desired_width(width)
-            .desired_height(20.0)
-            .corner_radius(CornerRadius::same(255))
-            .fill(p.accent)
-            .text(text),
-    )
-}
-
-/// egui's progress bar fills from the left; this one, styled the same,
-/// fills from the right with its text on the right.
-fn progress_rtl(
-    ui: &mut egui::Ui,
-    value: f32,
-    text: String,
-    width: f32,
-    fill: Color32,
-) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, PROGRESS_HEIGHT), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(egui::Role::ProgressIndicator, true, &text));
-    if ui.is_rect_visible(rect) {
-        let visuals = ui.visuals();
-        let painter = ui.painter().with_clip_rect(rect);
-        painter.rect_filled(rect, CornerRadius::same(255), visuals.extreme_bg_color);
-        let filled = (rect.width() * value).max(rect.height());
-        let bar = Rect::from_min_max(Pos2::new(rect.max.x - filled, rect.min.y), rect.max);
-        painter.rect_filled(bar, CornerRadius::same(255), fill);
-        let galley = painter.layout_no_wrap(
-            text,
-            TextStyle::Button.resolve(ui.style()),
-            Color32::PLACEHOLDER,
-        );
-        let color = visuals
-            .override_text_color
-            .unwrap_or(visuals.selection.stroke.color);
-        let pos = Pos2::new(
-            rect.max.x - ui.spacing().item_spacing.x - galley.size().x,
-            rect.center().y - galley.size().y / 2.0,
-        );
-        painter.galley(pos, galley, color);
+    if ui.is_rect_visible(rect) && shown > 0.0 {
+        // At least a circle, so a little progress still shows.
+        let filled = (rect.width() * shown).max(rect.height());
+        let x = dir::mirror_x(rect, rect.min.x, filled);
+        let fill = Rect::from_min_size(Pos2::new(x, rect.min.y), Vec2::new(filled, rect.height()));
+        paint_bar(ui, rect, Some(fill), text);
+    } else if ui.is_rect_visible(rect) {
+        paint_bar(ui, rect, None, text);
     }
     response
+}
+
+/// A bar for work whose progress is unknown: a short segment slides along it.
+/// With reduced motion it stays still in the middle.
+pub fn busy(ui: &mut egui::Ui, text: &str, width: f32) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, PROGRESS_HEIGHT), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::ProgressIndicator, true, text));
+    if ui.is_rect_visible(rect) {
+        let segment = rect.width() * 0.3;
+        let travel = rect.width() - segment;
+        let place = if ui.style().animation_time == 0.0 {
+            0.5
+        } else {
+            ui.ctx().request_repaint();
+            // Back and forth once every two seconds, easing at the ends.
+            let t = (ui.input(|i| i.time) * std::f64::consts::PI).sin() as f32;
+            0.5 + 0.5 * t
+        };
+        let fill = Rect::from_min_size(
+            Pos2::new(rect.min.x + travel * place, rect.min.y),
+            Vec2::new(segment, rect.height()),
+        );
+        paint_bar(ui, rect, Some(fill), text.to_owned());
+    }
+    response
+}
+
+/// A rounded track with `fill` on it and `text` in the middle, in two colors
+/// (one over the track, one over the fill), so it reads wherever the fill is.
+fn paint_bar(ui: &egui::Ui, rect: Rect, fill: Option<Rect>, text: String) {
+    let p = theme::palette(ui);
+    let painter = ui.painter().with_clip_rect(rect);
+    let round = CornerRadius::same(255);
+    // The controls' color: it stands out on plain and striped rows alike.
+    painter.rect_filled(rect, round, p.control);
+    let galley = painter.layout_no_wrap(
+        text,
+        TextStyle::Small.resolve(ui.style()),
+        Color32::PLACEHOLDER,
+    );
+    let pos = rect.center() - galley.size() / 2.0;
+    // Text in the track's color, then the fill over it, then the fill's part
+    // of the text again in the color that reads on the fill.
+    painter.galley_with_override_text_color(pos, galley.clone(), p.text);
+    if let Some(fill) = fill {
+        painter.rect_filled(fill, round, p.accent);
+        painter
+            .with_clip_rect(fill.intersect(rect))
+            .galley_with_override_text_color(pos, galley, p.on_accent);
+    }
 }
 
 /// A row of joined choices where exactly one is selected: radio buttons that

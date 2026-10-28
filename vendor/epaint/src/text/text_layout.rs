@@ -169,7 +169,7 @@ pub(crate) fn layout(fonts: &mut FontsImpl, pixels_per_point: f32, job: Arc<Layo
 
     // FMX patch: move right-to-left text into visual order (see `bidi`).
     if super::bidi::has_rtl(&job.text) {
-        super::bidi::reorder_rows(&mut rows);
+        super::bidi::reorder_rows(&mut rows, pixels_per_point);
     }
 
     // Calculate the Y positions and tessellate the text:

@@ -92,6 +92,15 @@ impl Queue {
         &self.jobs
     }
 
+    /// Debug screenshots: shows job `index` as running, without running it.
+    #[cfg(debug_assertions)]
+    pub fn pretend_running(&mut self, index: usize, progress: Option<f32>, detail: Option<String>) {
+        if let Some(job) = self.jobs.get_mut(index) {
+            job.state = JobState::Running { progress };
+            job.detail = detail;
+        }
+    }
+
     pub fn push(&mut self, spec: JobSpec) {
         self.push_titled(spec, None);
     }

@@ -315,8 +315,22 @@ impl FmxApp {
         }
         #[cfg(debug_assertions)]
         {
-            if crate::devshot::wants_update() {
-                app.update = UpdateState::Available(update::Release::sample());
+            if let Some(downloaded) = crate::devshot::wants_update() {
+                let release = update::Release::sample();
+                app.update = match downloaded {
+                    None => UpdateState::Available(release),
+                    Some(fraction) => {
+                        let (tx, rx) = mpsc::channel();
+                        // Kept open, so the pretend download never ends.
+                        std::mem::forget(tx);
+                        UpdateState::Downloading {
+                            release,
+                            progress: Arc::new(AtomicU32::new(fraction.to_bits())),
+                            cancel: Arc::new(AtomicBool::new(false)),
+                            rx,
+                        }
+                    }
+                };
                 app.settings_tab = SettingsTab::Updates;
             }
             if let Some(section) = crate::devshot::wants_settings() {
@@ -347,6 +361,18 @@ impl FmxApp {
         #[cfg(debug_assertions)]
         if crate::devshot::wants_enqueue() && app.can_enqueue() {
             app.enqueue();
+            if crate::devshot::wants_running() {
+                // A download's own detail line, and a step of unknown length.
+                let done = trf(
+                    "download.progress_of",
+                    &[("done", &"3.1 MB"), ("total", &"7.8 MB")],
+                );
+                let left = trf("download.left", &[("time", &"0:08")]);
+                let detail = format!("{done} · 551.9 KB/s · {left}");
+                app.queue.pretend_running(0, Some(0.42), Some(detail));
+                app.queue
+                    .pretend_running(1, None, Some(tr("download.step_merge").to_owned()));
+            }
         }
         app
     }
@@ -4422,7 +4448,13 @@ fn status_cell(ui: &mut egui::Ui, job: &Job) {
                 dir::vertical(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     widgets::progress(ui, bar_id, *fraction, percent, PROGRESS_WIDTH);
-                    ui.label(RichText::new(detail).small().color(p.text_weak));
+                    // One line as wide as the bar, so it never spills into the next column.
+                    ui.set_max_width(PROGRESS_WIDTH);
+                    ui.add(
+                        egui::Label::new(RichText::new(detail).small().color(p.text_weak))
+                            .truncate(),
+                    )
+                    .on_hover_text(detail);
                 });
                 return;
             }
@@ -4437,15 +4469,7 @@ fn status_cell(ui: &mut egui::Ui, job: &Job) {
         }
         JobState::Running { progress: None } => {
             let text = job.detail.as_deref().unwrap_or(tr("status.running"));
-            ui.add(
-                egui::ProgressBar::new(0.0)
-                    .animate(true)
-                    .text(text)
-                    .desired_width(PROGRESS_WIDTH)
-                    .desired_height(20.0)
-                    .corner_radius(CornerRadius::same(255))
-                    .fill(p.accent),
-            );
+            widgets::busy(ui, text, PROGRESS_WIDTH);
         }
         JobState::Done { elapsed } => {
             let text = trf(

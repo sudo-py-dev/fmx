@@ -374,6 +374,18 @@ mod tests {
         assert!(x_of(&rows[0], 'ק') > x_of(&rows[0], 'ץ'), "{rows:?}");
     }
 
+    /// Glyphs off the pixel grid look heavier than their neighbours.
+    #[test]
+    fn mixed_text_stays_on_the_pixel_grid() {
+        let rows = layout(
+            "\u{200F}ספרים (EPUB, FB2) ל-PDF או TXT — מובנה",
+            f32::INFINITY,
+        );
+        for (c, x) in &rows[0] {
+            assert!((x - x.round()).abs() < 1e-3, "{c:?} at {x}");
+        }
+    }
+
     #[test]
     fn english_is_untouched() {
         let rows = layout("Convert to MP4 (fast)", f32::INFINITY);

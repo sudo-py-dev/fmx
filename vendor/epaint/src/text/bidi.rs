@@ -51,8 +51,9 @@ pub(super) fn mirrored_text(text: &str) -> Option<String> {
     changed.then_some(mirrored)
 }
 
-/// Moves the glyphs of every row that holds right-to-left text into visual order.
-pub(super) fn reorder_rows(rows: &mut [PlacedRow]) {
+/// Moves the glyphs of every row that holds right-to-left text into visual
+/// order, keeping them on the pixel grid (`pixels_per_point`) as epaint does.
+pub(super) fn reorder_rows(rows: &mut [PlacedRow], pixels_per_point: f32) {
     let mut start = 0;
     while start < rows.len() {
         // A paragraph is the run of rows up to and including one ending in a newline.
@@ -60,12 +61,12 @@ pub(super) fn reorder_rows(rows: &mut [PlacedRow]) {
             .iter()
             .position(|row| row.ends_with_newline)
             .map_or(rows.len(), |i| start + i + 1);
-        reorder_paragraph(&mut rows[start..end]);
+        reorder_paragraph(&mut rows[start..end], pixels_per_point);
         start = end;
     }
 }
 
-fn reorder_paragraph(rows: &mut [PlacedRow]) {
+fn reorder_paragraph(rows: &mut [PlacedRow], pixels_per_point: f32) {
     let mut text = String::new();
     // Byte offset of each glyph's character, per row.
     let mut offsets: Vec<Vec<usize>> = Vec::with_capacity(rows.len());
@@ -107,7 +108,11 @@ fn reorder_paragraph(rows: &mut [PlacedRow]) {
                 clusters
             })
             .collect();
-        place(&mut alloc::sync::Arc::make_mut(&mut placed.row).glyphs, &order);
+        place(
+            &mut alloc::sync::Arc::make_mut(&mut placed.row).glyphs,
+            &order,
+            pixels_per_point,
+        );
     }
 }
 
@@ -126,7 +131,9 @@ fn clusters(glyphs: &[Glyph], range: Range<usize>) -> Vec<Range<usize>> {
 
 /// Lays clusters out left to right in `order`, keeping the row's content
 /// (everything but leading and trailing whitespace) where alignment put it.
-fn place(glyphs: &mut [Glyph], order: &[Range<usize>]) {
+fn place(glyphs: &mut [Glyph], order: &[Range<usize>], pixels_per_point: f32) {
+    // Off-grid glyphs are smeared over two pixels and look heavier than the rest.
+    let snap = |x: f32| (x * pixels_per_point).round() / pixels_per_point;
     let is_space = |g: &Glyph| g.chr.is_whitespace();
     let leading = glyphs.iter().take_while(|g| is_space(g)).count();
     if leading == glyphs.len() {
@@ -150,7 +157,7 @@ fn place(glyphs: &mut [Glyph], order: &[Range<usize>]) {
 
     let mut cursor = glyphs[content.start].pos.x - before_content;
     for (cluster, w) in order.iter().zip(widths) {
-        let dx = cursor - glyphs[cluster.start].pos.x;
+        let dx = snap(cursor) - glyphs[cluster.start].pos.x;
         for glyph in &mut glyphs[cluster.clone()] {
             glyph.pos.x += dx;
         }
