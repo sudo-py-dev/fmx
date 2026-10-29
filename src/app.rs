@@ -3551,6 +3551,20 @@ impl FmxApp {
                 });
                 ui.add_space(12.0);
                 action = self.update_card_actions(ui);
+                // The release's notes, right here instead of on GitHub.
+                if let UpdateState::Available(release) = &self.update
+                    && !release.notes.is_empty()
+                {
+                    ui.add_space(8.0);
+                    widgets::collapsible_section(
+                        ui,
+                        ("update_notes", release.version.to_string()),
+                        Some(icons::SPARKLE),
+                        tr("update.whats_new"),
+                        None,
+                        |ui| release_notes(ui, &release.notes),
+                    );
+                }
             });
         match action {
             Some(UpdateAction::Download(release)) => {
@@ -3585,12 +3599,15 @@ impl FmxApp {
                 ) {
                     action = Some(UpdateAction::Download(release.clone()));
                 }
-                if button(
-                    ui,
-                    Some(icons::ARROW_SQUARE_OUT),
-                    tr("update.whats_new"),
-                    Kind::Secondary,
-                ) {
+                // With no notes to show here, "What's new" opens the release page.
+                if release.notes.is_empty()
+                    && button(
+                        ui,
+                        Some(icons::ARROW_SQUARE_OUT),
+                        tr("update.whats_new"),
+                        Kind::Secondary,
+                    )
+                {
                     open_url(&release.page);
                 }
                 ui.with_layout(dir::trailing(Align::Center), |ui| {
@@ -4093,7 +4110,57 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// A rounded surface that groups related controls.
+/// Shows release notes written in simple Markdown: headings, bullet lists
+/// and paragraphs, with emphasis, code marks and link targets left out.
+fn release_notes(ui: &mut egui::Ui, notes: &str) {
+    let p = theme::palette(ui);
+    ui.spacing_mut().item_spacing.y = 4.0;
+    for line in notes.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            ui.add_space(4.0);
+        } else if let Some(heading) = line.strip_prefix('#') {
+            ui.add_space(4.0);
+            let heading = plain_markdown(heading.trim_start_matches('#').trim());
+            ui.label(RichText::new(heading).strong().size(15.0));
+        } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            ui.horizontal_top(|ui| {
+                ui.label(RichText::new("•").color(p.accent));
+                ui.add(egui::Label::new(plain_markdown(item)).wrap());
+            });
+        } else {
+            ui.add(egui::Label::new(RichText::new(plain_markdown(line)).color(p.text_weak)).wrap());
+        }
+    }
+}
+
+/// Markdown text without its marks: `**bold**`, `` `code` `` and
+/// `[text](link)` become plain words.
+fn plain_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find("](").and_then(|mid| {
+            after[mid + 2..]
+                .find(')')
+                .map(|close| (mid, mid + 2 + close))
+        }) {
+            Some((mid, close)) => {
+                out.push_str(&after[..mid]);
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace("__", "").replace('`', "")
+}
+
 /// The app's icon and name, at the top of the sidebar or header bar.
 fn app_title(ui: &mut egui::Ui) {
     widgets::icon_tile(ui, art::LOGO, 26.0, true);
@@ -4111,6 +4178,7 @@ fn card_frame(ui: &egui::Ui) -> egui::Frame {
         .corner_radius(CornerRadius::same(theme::CARD_RADIUS))
 }
 
+/// A rounded surface that groups related controls.
 fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     card_frame(ui)
         .inner_margin(Margin::same(14))
@@ -4908,6 +4976,14 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(12_400_000), "12.4 MB");
         assert_eq!(human_size(3_000_000_000), "3.0 GB");
+    }
+
+    #[test]
+    fn markdown_marks_are_removed() {
+        assert_eq!(
+            plain_markdown("**Faster** `ffmpeg` and [the docs](https://x.y) [x]"),
+            "Faster ffmpeg and the docs [x]"
+        );
     }
 
     #[test]

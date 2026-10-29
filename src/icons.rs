@@ -54,6 +54,7 @@ pub const PLUS: &str = "\u{E3D4}";
 pub const RECORD: &str = "\u{E3EE}";
 pub const SCISSORS: &str = "\u{EAE0}";
 pub const SLIDERS: &str = "\u{E432}";
+pub const SPARKLE: &str = "\u{E6A2}";
 pub const STOP: &str = "\u{E46C}";
 pub const WARNING: &str = "\u{E4E0}";
 pub const X: &str = "\u{E4F6}";
@@ -134,6 +135,7 @@ mod tests {
             PLUS,
             RECORD,
             SCISSORS,
+            SPARKLE,
             SLIDERS,
             STOP,
             WARNING,

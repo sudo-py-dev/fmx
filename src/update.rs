@@ -36,6 +36,8 @@ const MAX_SIGNATURE_BYTES: u64 = 4 << 10;
 const MAX_PACKAGE_BYTES: u64 = 800 << 20;
 const MAX_BINARY_BYTES: u64 = 400 << 20;
 const CHUNK: usize = 64 * 1024;
+/// The most release-note text shown in the app.
+const MAX_NOTES_CHARS: usize = 20_000;
 /// How often FMX looks for updates on its own, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
@@ -128,8 +130,10 @@ pub fn trusted_comment(version: Version, asset: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: Version,
-    /// The release page, for "What's new".
+    /// The release page, for "What's new" when the release has no notes.
     pub page: String,
+    /// What changed, from the release's notes; empty when it has none.
+    pub notes: String,
     pub kind: InstallKind,
     asset: String,
     url: String,
@@ -145,6 +149,9 @@ impl Release {
         Self {
             version,
             page: RELEASES_PAGE.to_owned(),
+            notes:
+                "### New\n- A cleaner look\n- **Faster** conversions\n\n### Fixed\n- A rare crash"
+                    .to_owned(),
             kind: InstallKind::LinuxPortable,
             asset: String::new(),
             url: String::new(),
@@ -194,6 +201,8 @@ impl From<std::io::Error> for UpdateError {
 struct ApiRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
@@ -250,12 +259,27 @@ fn newer_release(
     Ok(Some(Release {
         version,
         page,
+        notes: whats_new(api.body.as_deref().unwrap_or_default()),
         kind,
         url: file.browser_download_url.clone(),
         signature_url: sig.browser_download_url.clone(),
         size: file.size,
         asset,
     }))
+}
+
+/// The "What's new" part of a release's notes: everything before its
+/// download instructions, without the section's own heading.
+fn whats_new(body: &str) -> String {
+    let body = body.replace("\r\n", "\n");
+    let notes = body.split("\n## Download").next().unwrap_or_default();
+    let notes = notes.trim_start();
+    let notes = notes
+        .strip_prefix("## What's new")
+        .or_else(|| notes.strip_prefix("## Download").map(|_| ""))
+        .unwrap_or(notes)
+        .trim();
+    notes.chars().take(MAX_NOTES_CHARS).collect()
 }
 
 /// Asks GitHub for the latest release; `None` means FMX is up to date.
@@ -561,6 +585,16 @@ mod tests {
         // No signature published: refused.
         let unsigned = api_json("v0.0.2", &[&name]);
         assert!(newer_release(&unsigned, v("0.0.1"), kind).is_err());
+    }
+
+    #[test]
+    fn notes_are_the_part_before_the_downloads() {
+        let body = "## What's new\r\n\r\n- Faster\r\n- Cleaner\r\n\r\n## Download\r\n\r\n| x |";
+        assert_eq!(whats_new(body), "- Faster\n- Cleaner");
+        // Only download instructions: nothing to show.
+        assert_eq!(whats_new("## Download\n\n| System | File |"), "");
+        assert_eq!(whats_new(""), "");
+        assert_eq!(whats_new("Just text"), "Just text");
     }
 
     #[test]
