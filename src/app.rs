@@ -20,6 +20,7 @@ use crate::diagnostics;
 use crate::dir;
 use crate::docs;
 use crate::download;
+use crate::exec;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
@@ -4467,6 +4468,7 @@ fn record_rows(
         dir::vertical(ui, |ui| {
             dir::checkbox(ui, &mut r.cursor, tr("record.cursor"));
             dir::checkbox(ui, &mut r.countdown, tr("record.countdown"));
+            dir::checkbox(ui, &mut r.minimize, tr("record.minimize"));
         });
     });
 }
@@ -5059,6 +5061,9 @@ impl eframe::App for FmxApp {
             self.handle_request(&ctx, request);
         }
         self.handle_input(&ctx);
+        if exec::take_minimize_request() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         self.sync_window_theme(&ctx);
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);

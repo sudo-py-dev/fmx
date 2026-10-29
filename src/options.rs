@@ -458,6 +458,8 @@ pub struct RecordOptions {
     pub quality: RecordQuality,
     /// Wait three seconds before recording starts.
     pub countdown: bool,
+    /// Minimize FMX, then wait three seconds before recording starts.
+    pub minimize: bool,
 }
 
 impl Default for RecordOptions {
@@ -475,6 +477,7 @@ impl Default for RecordOptions {
             cursor: true,
             quality: RecordQuality::Balanced,
             countdown: true,
+            minimize: false,
         }
     }
 }

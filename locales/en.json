@@ -255,6 +255,7 @@
   "record.extras": "Extras",
   "record.cursor": "Show the mouse pointer",
   "record.countdown": "Count down 3 seconds before recording",
+  "record.minimize": "Minimize FMX 3 seconds before recording",
   "record.choose_screen": "Choose what to share…",
   "record.starting_in": "Starting in {seconds}…",
   "record.recording": "Recording {time} · {size}",

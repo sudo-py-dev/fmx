@@ -254,6 +254,7 @@
   "record.extras": "Options",
   "record.cursor": "Afficher le pointeur de la souris",
   "record.countdown": "Compte à rebours de 3 secondes avant l’enregistrement",
+  "record.minimize": "Réduire FMX 3 secondes avant l’enregistrement",
   "record.choose_screen": "Choisissez ce qui est partagé…",
   "record.starting_in": "Début dans {seconds}…",
   "record.recording": "Enregistrement {time} · {size}",

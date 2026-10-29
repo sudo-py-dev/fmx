@@ -254,6 +254,7 @@
   "record.extras": "תוספות",
   "record.cursor": "הצגת סמן העכבר",
   "record.countdown": "ספירה לאחור של 3 שניות לפני ההקלטה",
+  "record.minimize": "מזעור FMX שלוש שניות לפני תחילת ההקלטה",
   "record.choose_screen": "בחירת מה לשתף…",
   "record.starting_in": "מתחיל בעוד {seconds}…",
   "record.recording": "מקליט {time} · {size}",

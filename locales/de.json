@@ -254,6 +254,7 @@
   "record.extras": "Extras",
   "record.cursor": "Mauszeiger zeigen",
   "record.countdown": "3 Sekunden Countdown vor der Aufnahme",
+  "record.minimize": "FMX 3 Sekunden vor der Aufnahme minimieren",
   "record.choose_screen": "Wählen Sie, was geteilt wird…",
   "record.starting_in": "Beginnt in {seconds}…",
   "record.recording": "Aufnahme {time} · {size}",

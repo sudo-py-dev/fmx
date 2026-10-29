@@ -191,14 +191,26 @@ fn share_screen(cursor: bool, cancel: &AtomicBool) -> Result<crate::screencast::
     }
 }
 
-/// Three seconds to get ready, if wanted.
+/// Set when a recording wants FMX's window out of the way.
+static MINIMIZE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a recording asked to minimize the window since the last call.
+pub fn take_minimize_request() -> bool {
+    MINIMIZE_REQUESTED.swap(false, Ordering::Relaxed)
+}
+
+/// Three seconds to get ready, if wanted, minimizing the window first if
+/// asked (the detail sent next wakes the window to do it).
 fn countdown(
     rec: &RecordOptions,
     cancel: &AtomicBool,
     on_detail: &mut dyn FnMut(String),
 ) -> Result<(), JobError> {
-    if !rec.countdown {
+    if !rec.countdown && !rec.minimize {
         return Ok(());
+    }
+    if rec.minimize {
+        MINIMIZE_REQUESTED.store(true, Ordering::Relaxed);
     }
     for left in (1..=3).rev() {
         on_detail(trf("record.starting_in", &[("seconds", &left)]));
