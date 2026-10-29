@@ -1,14 +1,26 @@
 ## What's new
 
-### A cleaner Settings window
-- Every setting is now one tidy row: its name and a short description on one side, its control on the other.
-- On/off settings use switches, and the long explanations moved into tooltips.
+### Screen recorder and screenshots
+- Records on Wayland (GNOME, KDE) through the system's screen-sharing dialog.
+- Choose the sound: none, microphone, computer sound, or both; pick a monitor or a custom area, and hide the mouse pointer.
+- Save as MP4, MKV, WebM or MOV, with quality presets, a 3-second countdown, and an option to minimize FMX first.
+- New Screenshot tool: the whole screen, a monitor or an area, as PNG or JPEG, after a delay.
 
-### New About page
-- Settings → About shows the version, links to the website, problem reports and all releases, and FMX's licenses.
+### Video preview
+- Play and pause the video (Space), skip with the buttons or arrow keys; the picture is bigger and centred.
+- Trim has one simple start/end row under the video.
+- Extract Frames can save frames at moments you pick while watching, every frame, or every few seconds from part of a video.
+- Rotate has turn and flip buttons under the picture that combine, with a live preview.
+
+### Simpler and cleaner
+- Tool options are tidy rows split by lines, with switches for on/off options.
+- The queue is a clean list: one row per job, long names shortened, actions at the end.
+- Settings groups have titles, and "When done" moved there from the queue.
+- CD to Audio lists your disc drives instead of asking for a path.
+- YouTube downloads offer only the qualities the video has.
 
 ### Fixed
-- Tool pages no longer jump sideways when you open a section like Edit or Output settings.
+- The System theme follows the desktop's light/dark change without restarting.
 
 ## Download
 
