@@ -1,6 +1,6 @@
 [package]
 name = "fmx"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 rust-version = "1.89"
 description = "Free Media Xpress (FMX) - A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
