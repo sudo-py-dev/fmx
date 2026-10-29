@@ -1097,41 +1097,16 @@ impl FmxApp {
         }
     }
 
-    /// The queue header's end: what to do when it finishes, and a menu for
-    /// saving and loading the list.
+    /// The queue header's end: a menu for saving and loading the list. What
+    /// to do when the queue finishes is in Settings.
     fn queue_menu(&mut self, ui: &mut egui::Ui) {
-        // Pinned to the end, the row runs backwards: add the items in reverse.
-        // Otherwise they go together on the next line.
+        // When it doesn't fit at the end, it goes on the next line.
         let pinned = ui.layout().main_dir() == dir::trailing(Align::Center).main_dir();
         if !pinned {
             ui.end_row();
         }
-        self.queue_menu_items(ui, pinned);
-    }
-
-    fn queue_menu_items(&mut self, ui: &mut egui::Ui, pinned: bool) {
         let has_jobs = !self.queue.jobs().is_empty();
-        if pinned {
-            self.more_menu(ui, has_jobs);
-        }
-        if has_jobs {
-            if !pinned {
-                ui.label(RichText::new(tr("after.label")).weak());
-            }
-            combo(
-                ui,
-                "after_done",
-                &mut self.after_done,
-                &AfterDone::ALL,
-                |a| a.label().to_owned(),
-            );
-            if pinned {
-                ui.label(RichText::new(tr("after.label")).weak());
-            }
-        }
-        if !pinned {
-            self.more_menu(ui, has_jobs);
-        }
+        self.more_menu(ui, has_jobs);
     }
 
     /// The ⋮ button with Save list (when there is one) and Load list.
@@ -2795,16 +2770,12 @@ impl FmxApp {
                 ui.add_space(8.0);
                 self.queue_controls(ui);
             }
-            let mut width = widgets::button_width(
+            let width = widgets::button_width(
                 ui,
                 Some(icons::DOTS_THREE_VERTICAL),
                 tr("action.more"),
                 Size::Regular,
             );
-            if total > 0 {
-                width += ui.spacing().item_spacing.x
-                    + labelled_combo_width(ui, tr("after.label"), self.after_done.label());
-            }
             dir::at_end(ui, width, |ui| self.queue_menu(ui));
         });
         if self.queue.jobs().is_empty() {
@@ -3096,6 +3067,21 @@ impl FmxApp {
                 });
                 ui.add_space(GROUP_GAP);
                 pref_group(ui, Some((tr("settings.group_finished"), "")), |ui| {
+                    // For this session only: a shutdown must not linger.
+                    widgets::pref_row(
+                        ui,
+                        tr("settings.after_done"),
+                        tr("settings.after_done_hint"),
+                        |ui| {
+                            combo(
+                                ui,
+                                "after_done",
+                                &mut self.after_done,
+                                &AfterDone::ALL,
+                                |a| a.label().to_owned(),
+                            );
+                        },
+                    );
                     widgets::pref_row(ui, tr("settings.notify"), "", |ui| {
                         widgets::switch(ui, &mut self.settings.notify_when_done);
                     });
@@ -3987,27 +3973,6 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
             });
         });
     clicked
-}
-/// About how wide `label` and then a drop-down showing `selected` are, as
-/// [`combo`] draws them.
-fn labelled_combo_width(ui: &egui::Ui, label: &str, selected: &str) -> f32 {
-    let text = |s: &str, style: egui::TextStyle| {
-        ui.painter()
-            .layout_no_wrap(
-                s.to_owned(),
-                style.resolve(ui.style()),
-                egui::Color32::PLACEHOLDER,
-            )
-            .size()
-            .x
-    };
-    let spacing = ui.spacing();
-    let menu = (text(selected, egui::TextStyle::Button)
-        + spacing.icon_width
-        + spacing.icon_spacing
-        + spacing.button_padding.x * 2.0)
-        .max(spacing.combo_width);
-    text(label, egui::TextStyle::Body) + spacing.item_spacing.x + menu
 }
 
 /// Lays out `content` at most `max_width` wide, centered in the available space.
