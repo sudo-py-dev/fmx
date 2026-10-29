@@ -62,7 +62,7 @@ Installed-Size: $size
 Depends: ${depends:-libc6}
 Suggests: poppler-utils, ghostscript, xorriso, calibre
 Homepage: https://github.com/sudo-py-dev/fmx
-Description: Free Media Xpress — all-in-one media, document and disc converter
+Description: Free Media Xpress - all-in-one media, document and disc converter
  Converts video, audio, images, documents and discs from one window.
  Ships its own ffmpeg, ffprobe and yt-dlp under /usr/lib/fmx and works
  fully offline. Updates come only as new FMX releases.

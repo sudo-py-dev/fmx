@@ -408,6 +408,7 @@
   "update.bad_release": "Das Release auf GitHub ist unvollständig oder nicht signiert und wurde nicht verwendet.",
   "update.bad_signature": "Die Signatur des Downloads passt nicht zu FMXs Schlüssel. Er wurde gelöscht, nichts wurde installiert.",
   "update.too_large": "Der Download war größer als erwartet und wurde verworfen.",
+  "update.not_installed": "Das Update wurde nicht installiert. Versuche es erneut und gib dein Passwort ein, wenn du danach gefragt wirst.",
   "update.available_hint": "Ein Update wartet unter Einstellungen → Updates.",
   "settings.section_general_title": "Allgemein",
   "settings.section_queue_title": "Warteschlange",

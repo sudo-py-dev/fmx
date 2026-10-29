@@ -408,6 +408,7 @@
   "update.bad_release": "הגרסה ב-GitHub חלקית או לא חתומה, ולכן לא נעשה בה שימוש.",
   "update.bad_signature": "החתימה של ההורדה לא תאמה למפתח הגרסאות של FMX. הקובץ נמחק ושום דבר לא הותקן.",
   "update.too_large": "ההורדה הייתה גדולה מהצפוי ונמחקה.",
+  "update.not_installed": "העדכון לא הותקן. יש לנסות שוב ולהזין את הסיסמה כשתתבקש.",
   "update.available_hint": "עדכון ממתין בהגדרות → עדכונים.",
   "settings.section_general_title": "כללי",
   "settings.section_queue_title": "תור",

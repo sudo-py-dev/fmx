@@ -409,6 +409,7 @@
   "update.bad_release": "The release on GitHub is incomplete or not signed, so it was not used.",
   "update.bad_signature": "The download's signature did not match FMX's release key. It was deleted and nothing was installed.",
   "update.too_large": "The download was larger than expected and was discarded.",
+  "update.not_installed": "The update was not installed. Try again and enter your password when asked.",
   "update.available_hint": "An update is ready in Settings → Updates.",
   "settings.section_general_title": "General",
   "settings.section_queue_title": "Queue",

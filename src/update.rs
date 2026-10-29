@@ -77,7 +77,7 @@ impl fmt::Display for Version {
 /// How Fmx was installed, which decides what an update downloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallKind {
-    /// The Debian package (`/usr/bin/Fmx`).
+    /// The Debian package (`/usr/bin/fmx`).
     Deb,
     /// The portable Linux archive, run from wherever it was unpacked.
     LinuxPortable,
@@ -161,6 +161,8 @@ pub enum UpdateError {
     BadRelease,
     Signature,
     TooLarge,
+    /// The package manager did not install the update, or the password prompt was dismissed.
+    NotInstalled,
     Io(std::io::Error),
     Cancelled,
 }
@@ -173,6 +175,7 @@ impl fmt::Display for UpdateError {
             Self::BadRelease => f.write_str(tr("update.bad_release")),
             Self::Signature => f.write_str(tr("update.bad_signature")),
             Self::TooLarge => f.write_str(tr("update.too_large")),
+            Self::NotInstalled => f.write_str(tr("update.not_installed")),
             Self::Io(e) => f.write_str(&trf("error.io", &[("error", e)])),
             Self::Cancelled => f.write_str(tr("status.cancelled")),
         }
@@ -404,14 +407,31 @@ pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError>
             Ok(Installed::FinishInInstaller)
         }
         InstallKind::Deb => {
-            spawn_detached("xdg-open", [file])?;
-            Ok(Installed::FinishInInstaller)
+            install_deb(file)?;
+            Ok(Installed::Restart)
         }
         InstallKind::LinuxPortable => {
             let exe = std::env::current_exe()?;
             replace_from_archive(file, &exe)?;
             Ok(Installed::Restart)
         }
+    }
+}
+
+/// Installs a verified `.deb` over the current one, asking for the password
+/// through the desktop's own prompt. Blocks until the package manager is done,
+/// so callers run it off the UI thread.
+fn install_deb(file: &Path) -> Result<(), UpdateError> {
+    let status = std::process::Command::new("pkexec")
+        .args(["apt-get", "install", "-y", "--allow-downgrades"])
+        .arg(file)
+        .stdin(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        tracing::info!(%status, "package manager did not install the update");
+        Err(UpdateError::NotInstalled)
     }
 }
 
@@ -473,7 +493,12 @@ fn replace_from_archive(archive: &Path, exe: &Path) -> Result<(), UpdateError> {
 /// Starts the (updated) program again; the caller then closes this one.
 pub fn relaunch() -> Result<(), UpdateError> {
     let exe = std::env::current_exe()?;
-    spawn_detached(&exe.to_string_lossy(), std::iter::empty::<&str>())?;
+    // Linux names a running program whose file was replaced "<path> (deleted)".
+    let exe = exe.to_string_lossy();
+    spawn_detached(
+        exe.trim_end_matches(" (deleted)"),
+        std::iter::empty::<&str>(),
+    )?;
     Ok(())
 }
 

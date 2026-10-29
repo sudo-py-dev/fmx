@@ -118,7 +118,7 @@ enum UpdateState {
         /// Progress as `f32` bits.
         progress: Arc<AtomicU32>,
         cancel: Arc<AtomicBool>,
-        rx: mpsc::Receiver<Result<PathBuf, String>>,
+        rx: mpsc::Receiver<Result<update::Installed, String>>,
     },
     Installed(update::Release, update::Installed),
     Failed(String),
@@ -3268,10 +3268,12 @@ impl FmxApp {
             ctx.clone(),
         );
         std::thread::spawn(move || {
+            // Installing waits for the package manager on Linux, so it runs here too.
             let result = update::download(&thread_release, &thread_cancel, |p| {
                 thread_progress.store(p.to_bits(), Ordering::Relaxed);
                 ctx.request_repaint();
             })
+            .and_then(|file| update::install(&thread_release, &file))
             .map_err(|e| e.to_string());
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -3308,15 +3310,12 @@ impl FmxApp {
                 Err(mpsc::TryRecvError::Disconnected) => UpdateState::Idle,
             },
             UpdateState::Downloading { release, rx, .. } => match rx.try_recv() {
-                Ok(Ok(file)) => match update::install(release, &file) {
-                    Ok(outcome) => {
-                        if outcome == update::Installed::QuitForInstaller {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                        UpdateState::Installed(release.clone(), outcome)
+                Ok(Ok(outcome)) => {
+                    if outcome == update::Installed::QuitForInstaller {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                    Err(e) => UpdateState::Failed(e.to_string()),
-                },
+                    UpdateState::Installed(release.clone(), outcome)
+                }
                 Ok(Err(message)) => UpdateState::Failed(message),
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => UpdateState::Idle,

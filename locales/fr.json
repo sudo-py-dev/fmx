@@ -408,6 +408,7 @@
   "update.bad_release": "La version sur GitHub est incomplète ou non signée ; elle n’a pas été utilisée.",
   "update.bad_signature": "La signature du téléchargement ne correspond pas à la clé de FMX. Il a été supprimé et rien n’a été installé.",
   "update.too_large": "Le téléchargement était plus volumineux que prévu et a été supprimé.",
+  "update.not_installed": "La mise à jour n’a pas été installée. Réessayez et saisissez votre mot de passe lorsqu’il est demandé.",
   "update.available_hint": "Une mise à jour vous attend dans Paramètres → Mises à jour.",
   "settings.section_general_title": "Général",
   "settings.section_queue_title": "File d’attente",
