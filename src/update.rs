@@ -511,7 +511,7 @@ mod tests {
     const TEST_PAYLOAD: &[u8] = include_bytes!("../packaging/test-fixtures/payload.bin");
     const TEST_SIGNATURE: &str = include_str!("../packaging/test-fixtures/payload.bin.minisig");
     /// The trusted comment the fixture was signed with.
-    const TEST_COMMENT: &str = "Fmx 9.9.9 Fmx-9.9.9-linux-x86_64.tar.gz";
+    const TEST_COMMENT: &str = "fmx 9.9.9 fmx-9.9.9-linux-x86_64.tar.gz";
 
     fn v(text: &str) -> Version {
         Version::parse(text).expect("version")
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn signature_for_another_file_or_version_is_refused() {
         let key = PublicKey::decode(TEST_KEY).expect("key");
-        let other = "Fmx 9.9.8 Fmx-9.9.8-linux-x86_64.tar.gz";
+        let other = "fmx 9.9.8 fmx-9.9.8-linux-x86_64.tar.gz";
         assert!(matches!(
             checked_signature(TEST_SIGNATURE, &key, other),
             Err(UpdateError::Signature)
