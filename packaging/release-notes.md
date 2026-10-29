@@ -1,21 +1,14 @@
 ## What's new
 
-### A cleaner look, like GNOME
-- Settings and tool search now sit at the top of the sidebar, so the tools get the whole window.
-- An open tool keeps the sidebar and has a simple back arrow and title instead of a top bar.
-- Tool cards show just the format's name, without repeating the file extension.
+### A cleaner Settings window
+- Every setting is now one tidy row: its name and a short description on one side, its control on the other.
+- On/off settings use switches, and the long explanations moved into tooltips.
 
-### Smoother motion
-- Opening a tool slides its page in, and going back slides it away.
-- The sidebar highlight glides to the category you pick, and the new page fades in.
-
-### Also new
-- See what changed in a new version right in Settings → Updates, before you update.
+### New About page
+- Settings → About shows the version, links to the website, problem reports and all releases, and FMX's licenses.
 
 ### Fixed
-- Menus in Hebrew are no longer stretched across the window.
-- Hebrew labels no longer run under the scroll bar.
-- The Windows shortcut is now named "fmx".
+- Tool pages no longer jump sideways when you open a section like Edit or Output settings.
 
 ## Download
 
