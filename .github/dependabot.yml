@@ -1,0 +1,36 @@
+# Weekly dependency updates, grouped so each ecosystem opens one pull request.
+# Security updates come separately, as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo:
+        update-types: [minor, patch]
+    ignore:
+      # epaint is vendored with right-to-left text support (see
+      # vendor/epaint/FMX-PATCH.md), so the egui family moves together, by hand.
+      - dependency-name: "egui*"
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: "eframe"
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: "epaint*"
+        update-types: [version-update:semver-major, version-update:semver-minor]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
