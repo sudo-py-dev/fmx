@@ -476,6 +476,7 @@ impl Preview {
             .default_width(WINDOW_DISPLAY_WIDTH + 32.0)
             .resizable(false)
             .show(ctx, |ui| {
+                ui.set_max_width(WINDOW_DISPLAY_WIDTH);
                 dir::vertical(ui, |ui| {
                     self.contents(
                         ui,
