@@ -18,7 +18,7 @@ use crate::i18n::{tr, trf};
 use crate::imaging;
 use crate::jobs::{JobError, JobSpec};
 use crate::office;
-use crate::options::{RecordArea, RecordOptions};
+use crate::options::{RecordArea, RecordOptions, ScreenRect, ScreenshotOptions};
 use crate::pdfgen;
 use crate::plan::{self, BLURAY_PROTOCOL, CD_DEMUXER, Capture, DVD_DEMUXER, Input, PlanError};
 use crate::process::{self, RunError, StopMode, Watch};
@@ -88,8 +88,9 @@ fn record_screen(
             return Err(JobError::Recorder(tr("record.needs_gstreamer").to_owned()));
         }
         on_detail(tr("record.choose_screen").to_owned());
-        let cast = share_screen(rec.cursor, cancel)?;
-        countdown(rec, cancel, on_detail)?;
+        let cursor = rec.cursor;
+        let cast = ask_portal(cancel, move || Cast::start(cursor))?;
+        countdown(record_wait(rec), rec.minimize, cancel, on_detail)?;
         let frames = cast
             .spawn_frames(Path::new(GST_LAUNCH), rec.fps)
             .map_err(|e| JobError::Run(RunError::Spawn(GST_LAUNCH.to_owned(), e)))?;
@@ -105,19 +106,38 @@ fn record_screen(
         drop::<Cast>(cast);
         return result.map_err(JobError::Run);
     }
-    let monitor = match rec.area {
+    let capture = screen_capture(rec.area, rec.region, &devices)?;
+    countdown(record_wait(rec), rec.minimize, cancel, on_detail)?;
+    let plan = plan::record(out, rec, &capture, &sounds);
+    process::run(
+        ffmpeg,
+        &plan.args,
+        plan.stop,
+        cancel,
+        recording_lines(on_detail),
+    )
+    .map_err(JobError::Run)
+}
+
+/// Where the picture comes from outside Wayland, for the chosen area.
+fn screen_capture(
+    choice: RecordArea,
+    region: ScreenRect,
+    devices: &capture::Devices,
+) -> Result<Capture, JobError> {
+    let monitor = match choice {
         RecordArea::Monitor(i) => devices.monitors.get(i as usize),
         _ => None,
     };
-    let area = match rec.area {
+    let area = match choice {
         RecordArea::Screen => None,
         RecordArea::Monitor(_) => monitor.and_then(|m| m.rect),
-        RecordArea::Region => Some(rec.region),
+        RecordArea::Region => Some(region),
     };
-    let capture = if cfg!(windows) {
+    Ok(if cfg!(windows) {
         Capture::Desktop { area }
     } else if cfg!(target_os = "macos") {
-        // AVFoundation records one screen at a time: the chosen or the first.
+        // AVFoundation captures one screen at a time: the chosen or the first.
         let device = monitor
             .or(devices.monitors.first())
             .and_then(|m| m.device.clone())
@@ -128,17 +148,80 @@ fn record_screen(
             display: std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_owned()),
             area,
         }
+    })
+}
+
+/// Takes one picture of the screen after the chosen delay.
+fn take_screenshot(
+    out: &Path,
+    shot: &ScreenshotOptions,
+    ffmpeg: &Path,
+    cancel: &AtomicBool,
+    on_detail: &mut dyn FnMut(String),
+) -> Result<(), JobError> {
+    // Minimizing takes a moment; FMX must be gone from the picture.
+    let wait = if shot.minimize {
+        shot.delay_s.max(1)
+    } else {
+        shot.delay_s
     };
-    countdown(rec, cancel, on_detail)?;
-    let plan = plan::record(out, rec, &capture, &sounds);
-    process::run(
-        ffmpeg,
-        &plan.args,
-        plan.stop,
-        cancel,
-        recording_lines(on_detail),
-    )
-    .map_err(JobError::Run)
+    #[cfg(target_os = "linux")]
+    if capture::is_wayland() {
+        countdown(wait, shot.minimize, cancel, on_detail)?;
+        use crate::screencast;
+        let interactive = shot.area == RecordArea::Region;
+        let saved = match ask_portal(cancel, move || screencast::screenshot(interactive)) {
+            // GNOME lets apps outside a sandbox take screenshots only through
+            // its own capture tool.
+            Err(JobError::Recorder(_)) if !interactive => {
+                ask_portal(cancel, || screencast::screenshot(true))?
+            }
+            result => result?,
+        };
+        return keep_screenshot(&saved, out, ffmpeg, cancel);
+    }
+    let devices = capture::detect(Some(ffmpeg));
+    let capture = screen_capture(shot.area, shot.region, &devices)?;
+    countdown(wait, shot.minimize, cancel, on_detail)?;
+    let plan = plan::screenshot(out, shot, &capture);
+    process::run(ffmpeg, &plan.args, plan.stop, cancel, |_| {}).map_err(JobError::Run)
+}
+
+/// Moves the portal's PNG to `out`, converting it when another format was
+/// chosen; the portal's copy goes, so the picture is not saved twice.
+#[cfg(target_os = "linux")]
+fn keep_screenshot(
+    saved: &Path,
+    out: &Path,
+    ffmpeg: &Path,
+    cancel: &AtomicBool,
+) -> Result<(), JobError> {
+    let same_format = saved
+        .extension()
+        .zip(out.extension())
+        .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+    if same_format {
+        if std::fs::rename(saved, out).is_err() {
+            std::fs::copy(saved, out).map_err(JobError::Io)?;
+            let _ = std::fs::remove_file(saved);
+        }
+        return Ok(());
+    }
+    let args: Vec<OsString> = vec![
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-y".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-i".into(),
+        saved.into(),
+        "-q:v".into(),
+        "2".into(),
+        out.into(),
+    ];
+    run_plain(ffmpeg, &args, cancel)?;
+    let _ = std::fs::remove_file(saved);
+    Ok(())
 }
 
 /// Whether a program can be found on `PATH`.
@@ -158,35 +241,29 @@ fn recording_lines(on_detail: &mut dyn FnMut(String)) -> impl FnMut(&str) + '_ {
     }
 }
 
-/// Waits for the user to pick a screen in the system's dialog, giving up if
-/// the job is stopped meanwhile.
+/// Runs a desktop portal request (which may wait on the user in a system
+/// dialog) on its own thread, giving up if the job is stopped meanwhile.
 #[cfg(target_os = "linux")]
-fn share_screen(cursor: bool, cancel: &AtomicBool) -> Result<crate::screencast::Cast, JobError> {
-    use crate::screencast::{Cast, CastError};
+fn ask_portal<T: Send + 'static>(
+    cancel: &AtomicBool,
+    request: impl FnOnce() -> Result<T, crate::screencast::CastError> + Send + 'static,
+) -> Result<T, JobError> {
+    use crate::screencast::CastError;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(Cast::start(cursor));
+        let _ = tx.send(request());
     });
+    let failed = |e: &str| JobError::Recorder(trf("error.screen_share", &[("error", &e)]));
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(JobError::Run(RunError::Cancelled));
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Ok(cast)) => return Ok(cast),
+            Ok(Ok(value)) => return Ok(value),
             Ok(Err(CastError::Cancelled)) => return Err(JobError::Run(RunError::Cancelled)),
-            Ok(Err(CastError::Failed(e))) => {
-                return Err(JobError::Recorder(trf(
-                    "error.screen_share",
-                    &[("error", &e)],
-                )));
-            }
+            Ok(Err(CastError::Failed(e))) => return Err(failed(&e)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(JobError::Recorder(trf(
-                    "error.screen_share",
-                    &[("error", &"")],
-                )));
-            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(failed("")),
         }
     }
 }
@@ -199,20 +276,24 @@ pub fn take_minimize_request() -> bool {
     MINIMIZE_REQUESTED.swap(false, Ordering::Relaxed)
 }
 
-/// Three seconds to get ready, if wanted, minimizing the window first if
+/// Seconds a recording waits before it starts: three to get ready, if
+/// wanted or if FMX minimizes first.
+fn record_wait(rec: &RecordOptions) -> u32 {
+    if rec.countdown || rec.minimize { 3 } else { 0 }
+}
+
+/// Counts `seconds` down in the job's detail, minimizing the window first if
 /// asked (the detail sent next wakes the window to do it).
 fn countdown(
-    rec: &RecordOptions,
+    seconds: u32,
+    minimize: bool,
     cancel: &AtomicBool,
     on_detail: &mut dyn FnMut(String),
 ) -> Result<(), JobError> {
-    if !rec.countdown && !rec.minimize {
-        return Ok(());
-    }
-    if rec.minimize {
+    if minimize {
         MINIMIZE_REQUESTED.store(true, Ordering::Relaxed);
     }
-    for left in (1..=3).rev() {
+    for left in (1..=seconds).rev() {
         on_detail(trf("record.starting_in", &[("seconds", &left)]));
         for _ in 0..10 {
             if cancel.load(Ordering::Relaxed) {
@@ -379,6 +460,20 @@ fn run_tool(
                 RunError::Failed { .. } => JobError::DownloadFailed(e),
                 e => JobError::Run(e),
             })
+        }
+        Tool::Screenshot => {
+            take_screenshot(
+                out,
+                &opts.screenshot,
+                need(toolbox, External::Ffmpeg)?,
+                cancel,
+                on_detail,
+            )?;
+            if out.is_file() {
+                Ok(())
+            } else {
+                Err(JobError::NoOutput)
+            }
         }
         Tool::Record => {
             record_screen(
@@ -620,7 +715,7 @@ mod e2e {
     use super::*;
     use crate::catalog::{AudioFormat, ImageFormat, VideoFormat};
     use crate::jobs::{Selection, plan_jobs};
-    use crate::options::{Corner, Options, RecordAudio, Rect};
+    use crate::options::{Corner, Options, RecordAudio, Rect, ShotFormat};
     use std::collections::HashSet;
     use std::process::Command;
     use std::sync::atomic::Ordering;
@@ -1036,6 +1131,41 @@ mod e2e {
             detail.contains("1:05") && detail.contains("12.4 MB"),
             "{detail}"
         );
+    }
+
+    /// May need a person to allow screenshots once: `cargo test -- --ignored screenshot`.
+    #[test]
+    #[ignore]
+    fn screenshot_end_to_end() {
+        let Some(tb) = toolbox() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        for format in [ShotFormat::Png, ShotFormat::Jpeg] {
+            let spec = JobSpec {
+                tool: Tool::Screenshot,
+                inputs: Vec::new(),
+                url: None,
+                output: dir.path().join(format!("shot.{}", format.ext())),
+                options: Options {
+                    screenshot: ScreenshotOptions {
+                        format,
+                        minimize: false,
+                        ..ScreenshotOptions::default()
+                    },
+                    ..Options::default()
+                },
+            };
+            let result = execute(&spec, &tb, &AtomicBool::new(false), |_| {});
+            assert!(result.is_ok(), "{result:?}");
+            let info = ffmpeg::probe(
+                tb.get(External::Ffmpeg).expect("ffmpeg"),
+                &spec.output,
+                None,
+            )
+            .expect("probe");
+            assert!(info.width.unwrap_or(0) > 100, "{format:?}");
+        }
     }
 
     /// Needs a person to answer the system's dialog: `cargo test -- --ignored wayland`.

@@ -696,7 +696,8 @@ impl FmxApp {
                 // Back to the tools, where the queue shows the new jobs.
                 self.in_editor = false;
                 // "Start recording" and "Download" mean now; everything else waits for Start.
-                if self.settings.start_on_add || matches!(self.tool, Tool::Record | Tool::Download)
+                if self.settings.start_on_add
+                    || matches!(self.tool, Tool::Record | Tool::Screenshot | Tool::Download)
                 {
                     self.queue.is_running = true;
                 }
@@ -1499,9 +1500,18 @@ impl FmxApp {
                 });
             }
             InputKind::Capture => {
-                ui.label(tr("input.capture"));
+                let screenshot = self.tool == Tool::Screenshot;
+                ui.label(tr(if screenshot {
+                    "shot.input"
+                } else {
+                    "input.capture"
+                }));
                 let note = if capture::system_picks_area() {
-                    Some(tr("record.system_picks"))
+                    Some(tr(if screenshot {
+                        "shot.system_picks"
+                    } else {
+                        "record.system_picks"
+                    }))
                 } else if cfg!(target_os = "macos") {
                     Some(tr("record.mac_permission"))
                 } else {
@@ -1522,6 +1532,7 @@ impl FmxApp {
         match kind {
             InputKind::Url => (tr("step.url"), tr("hint.download_rights").to_owned()),
             InputKind::Device => (tr("step.device"), tr("help.device").to_owned()),
+            InputKind::Capture if self.tool == Tool::Screenshot => (tr("shot.step"), String::new()),
             InputKind::Capture => (tr("step.capture"), String::new()),
             _ => {
                 let title = if kind.picks_folders() {
@@ -1694,6 +1705,7 @@ impl FmxApp {
     fn primary_action(&self) -> (&'static str, &'static str) {
         match self.tool {
             Tool::Record => (icons::RECORD, tr("action.start_recording")),
+            Tool::Screenshot => (icons::CAMERA, tr("action.take_screenshot")),
             Tool::Download => (icons::DOWNLOAD, tr("action.download")),
             _ => (icons::LIST_PLUS, tr("action.enqueue")),
         }
@@ -2312,7 +2324,7 @@ impl FmxApp {
 
     fn options_ui(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        if tool == Tool::Record {
+        if matches!(tool, Tool::Record | Tool::Screenshot) {
             self.poll_capture_devices(ui.ctx());
         }
         let opts = &mut self.settings.options;
@@ -2569,6 +2581,9 @@ impl FmxApp {
             }
             Tool::Record => {
                 record_rows(ui, &mut opts.record, self.capture_devices.as_ref());
+            }
+            Tool::Screenshot => {
+                screenshot_rows(ui, &mut opts.screenshot, self.capture_devices.as_ref());
             }
             // The tools `has_options` lists have nothing to set.
             _ => {}
@@ -4377,59 +4392,118 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The screen recorder's options.
+/// What part of the screen to capture; `devices` is `None` while still being
+/// found. With `system_dialog`, a custom area is drawn in the system's own
+/// dialog (Wayland) instead of typed in.
+fn area_rows(
+    ui: &mut egui::Ui,
+    id: &str,
+    area: &mut options::RecordArea,
+    region: &mut options::ScreenRect,
+    devices: Option<&capture::Devices>,
+    system_dialog: bool,
+) {
+    use options::RecordArea;
+    let monitors = devices.map_or(&[][..], |d| &d.monitors);
+    let mut areas = vec![RecordArea::Screen];
+    areas.extend((0..monitors.len() as u32).map(RecordArea::Monitor));
+    areas.push(RecordArea::Region);
+    if (devices.is_some() || system_dialog) && !areas.contains(area) {
+        *area = RecordArea::Screen;
+    }
+    row(ui, tr("record.area"), |ui| {
+        combo(ui, id, area, &areas, |a| match a {
+            RecordArea::Screen => tr("record.area_screen").to_owned(),
+            RecordArea::Monitor(i) => monitors.get(i as usize).map_or_else(
+                || format!("{} {}", tr("record.screen"), i + 1),
+                |m| match m.rect {
+                    Some(r) => format!("{} ({}×{})", m.name, r.width, r.height),
+                    None => m.name.clone(),
+                },
+            ),
+            RecordArea::Region if system_dialog => tr("shot.area_pick").to_owned(),
+            RecordArea::Region => tr("record.area_region").to_owned(),
+        });
+    });
+    if *area == RecordArea::Region && !system_dialog {
+        let side = options::MIN_RECORD_SIDE..=options::MAX_RECORD_SIDE;
+        row(ui, tr("record.position"), |ui| {
+            ui.add(
+                DragValue::new(&mut region.x)
+                    .range(0..=options::MAX_RECORD_SIDE)
+                    .prefix("x "),
+            );
+            ui.add(
+                DragValue::new(&mut region.y)
+                    .range(0..=options::MAX_RECORD_SIDE)
+                    .prefix("y "),
+            );
+        });
+        row(ui, tr("record.size"), |ui| {
+            ui.add(
+                DragValue::new(&mut region.width)
+                    .range(side.clone())
+                    .suffix(" px"),
+            );
+            ui.label("×");
+            ui.add(DragValue::new(&mut region.height).range(side).suffix(" px"));
+        });
+    }
+}
+
+/// The screenshot tool's options.
+fn screenshot_rows(
+    ui: &mut egui::Ui,
+    s: &mut options::ScreenshotOptions,
+    devices: Option<&capture::Devices>,
+) {
+    let wayland = capture::system_picks_area();
+    area_rows(
+        ui,
+        "shot_area",
+        &mut s.area,
+        &mut s.region,
+        devices,
+        wayland,
+    );
+    row(ui, tr("option.output_format"), |ui| {
+        let choices = options::ShotFormat::ALL.map(|f| (f, f.label()));
+        widgets::segmented(ui, &mut s.format, &choices);
+    });
+    row(ui, tr("shot.delay"), |ui| {
+        ui.add(
+            DragValue::new(&mut s.delay_s)
+                .range(0..=options::MAX_SHOT_DELAY_S)
+                .suffix(tr("shot.seconds_suffix")),
+        );
+    });
+    row(ui, tr("record.extras"), |ui| {
+        dir::vertical(ui, |ui| {
+            // The portal draws the pointer as the system decides.
+            if !wayland {
+                dir::checkbox(ui, &mut s.cursor, tr("record.cursor"));
+            }
+            dir::checkbox(ui, &mut s.minimize, tr("shot.minimize"));
+        });
+    });
+}
+
 /// The screen recorder's options; `devices` is `None` while still being found.
 fn record_rows(
     ui: &mut egui::Ui,
     r: &mut options::RecordOptions,
     devices: Option<&capture::Devices>,
 ) {
-    use options::{RecordArea, RecordAudio, RecordQuality};
+    use options::{RecordAudio, RecordQuality};
     if !capture::system_picks_area() {
-        let monitors = devices.map_or(&[][..], |d| &d.monitors);
-        let mut areas = vec![RecordArea::Screen];
-        areas.extend((0..monitors.len() as u32).map(RecordArea::Monitor));
-        areas.push(RecordArea::Region);
-        if devices.is_some() && !areas.contains(&r.area) {
-            r.area = RecordArea::Screen;
-        }
-        row(ui, tr("record.area"), |ui| {
-            combo(ui, "record_area", &mut r.area, &areas, |a| match a {
-                RecordArea::Screen => tr("record.area_screen").to_owned(),
-                RecordArea::Monitor(i) => monitors.get(i as usize).map_or_else(
-                    || format!("{} {}", tr("record.screen"), i + 1),
-                    |m| match m.rect {
-                        Some(r) => format!("{} ({}×{})", m.name, r.width, r.height),
-                        None => m.name.clone(),
-                    },
-                ),
-                RecordArea::Region => tr("record.area_region").to_owned(),
-            });
-        });
-        if r.area == RecordArea::Region {
-            let side = options::MIN_RECORD_SIDE..=options::MAX_RECORD_SIDE;
-            let region = &mut r.region;
-            row(ui, tr("record.position"), |ui| {
-                ui.add(
-                    DragValue::new(&mut region.x)
-                        .range(0..=options::MAX_RECORD_SIDE)
-                        .prefix("x "),
-                );
-                ui.add(
-                    DragValue::new(&mut region.y)
-                        .range(0..=options::MAX_RECORD_SIDE)
-                        .prefix("y "),
-                );
-            });
-            row(ui, tr("record.size"), |ui| {
-                ui.add(
-                    DragValue::new(&mut region.width)
-                        .range(side.clone())
-                        .suffix(" px"),
-                );
-                ui.label("×");
-                ui.add(DragValue::new(&mut region.height).range(side).suffix(" px"));
-            });
-        }
+        area_rows(
+            ui,
+            "record_area",
+            &mut r.area,
+            &mut r.region,
+            devices,
+            false,
+        );
     }
     let audio_choices = match devices {
         Some(d) => {

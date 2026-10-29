@@ -52,6 +52,7 @@ pub const PAUSE: &str = "\u{E39E}";
 pub const PLAY: &str = "\u{E3D0}";
 pub const PLUS: &str = "\u{E3D4}";
 pub const RECORD: &str = "\u{E3EE}";
+pub const CAMERA: &str = "\u{E10E}";
 pub const SCISSORS: &str = "\u{EAE0}";
 pub const SLIDERS: &str = "\u{E432}";
 pub const SPARKLE: &str = "\u{E6A2}";
@@ -134,6 +135,7 @@ mod tests {
             PLAY,
             PLUS,
             RECORD,
+            CAMERA,
             SCISSORS,
             SPARKLE,
             SLIDERS,

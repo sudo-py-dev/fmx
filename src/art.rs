@@ -71,6 +71,7 @@ pub mod glyph {
     pub const PACKAGE: &str = "\u{E390}";
     pub const PIP: &str = "\u{E64C}";
     pub const RECORD: &str = "\u{E3EE}";
+    pub const CAMERA: &str = "\u{E10E}";
     pub const SCISSORS: &str = "\u{EAE0}";
     pub const SLIDERS: &str = "\u{E434}";
     pub const SPARKLE: &str = "\u{E6A2}";
@@ -89,13 +90,14 @@ pub mod glyph {
 
     /// Every glyph above, for the font-coverage test.
     #[cfg(test)]
-    pub const ALL: [&str; 53] = [
+    pub const ALL: [&str; 54] = [
         ANDROID,
         APPLE,
         ARROW_CLOCKWISE,
         ARROWS_IN,
         ARROWS_SPLIT,
         BOOK,
+        CAMERA,
         CAPTIONS,
         CROP,
         DISC,
@@ -299,6 +301,7 @@ pub fn tool(t: Tool) -> Art {
         Tool::Repair => art(glyph::FIRST_AID, hue::RED),
         Tool::Download => art(glyph::DOWNLOAD, hue::BLUE),
         Tool::Record => art(glyph::RECORD, hue::RED),
+        Tool::Screenshot => art(glyph::CAMERA, hue::TEAL),
     }
 }
 
@@ -317,6 +320,16 @@ mod tests {
                 assert!(!a.glyph.is_empty());
                 assert_ne!(a.hue, Color32::BLACK);
             }
+        }
+    }
+
+    #[test]
+    fn every_glyph_is_in_the_icon_font() {
+        let font = include_bytes!("../assets/fonts/Phosphor-Fill.ttf");
+        let face = ttf_parser::Face::parse(font, 0).expect("font");
+        for g in glyph::ALL {
+            let c = g.chars().next().expect("glyph");
+            assert!(face.glyph_index(c).is_some(), "U+{:04X} missing", c as u32);
         }
     }
 }

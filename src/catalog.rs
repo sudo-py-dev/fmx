@@ -95,6 +95,7 @@ impl Category {
                 Tool::Repair,
                 Tool::Download,
                 Tool::Record,
+                Tool::Screenshot,
             ],
         }
     }
@@ -660,6 +661,7 @@ pub enum Tool {
     Repair,
     Download,
     Record,
+    Screenshot,
 }
 
 /// How a tool groups its inputs into jobs.
@@ -671,7 +673,7 @@ pub enum InputArity {
     AllAtLeast(usize),
     /// One job consuming exactly this many inputs, in order.
     Exactly(usize),
-    /// No inputs at all (screen recording).
+    /// No inputs at all (screen recording and screenshots).
     None,
 }
 
@@ -782,6 +784,7 @@ impl Tool {
             Self::Repair => tr("tool.repair"),
             Self::Download => tr("tool.download"),
             Self::Record => tr("tool.record"),
+            Self::Screenshot => tr("tool.screenshot"),
         }
     }
 
@@ -831,6 +834,7 @@ impl Tool {
             Self::Repair => tr("desc.repair"),
             Self::Download => tr("desc.download"),
             Self::Record => tr("desc.record"),
+            Self::Screenshot => tr("desc.screenshot"),
         }
     }
 
@@ -842,7 +846,7 @@ impl Tool {
                 InputArity::AllAtLeast(2)
             }
             Self::Mux | Self::VideoMix => InputArity::Exactly(2),
-            Self::Record => InputArity::None,
+            Self::Record | Self::Screenshot => InputArity::None,
             _ => InputArity::EachFile,
         }
     }
@@ -866,7 +870,7 @@ impl Tool {
             Self::IsoToCso => InputKind::Iso,
             Self::CsoToIso => InputKind::Cso,
             Self::Download => InputKind::Url,
-            Self::Record => InputKind::Capture,
+            Self::Record | Self::Screenshot => InputKind::Capture,
             _ => InputKind::Media,
         }
     }

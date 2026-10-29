@@ -492,6 +492,60 @@ impl RecordFormat {
     }
 }
 
+/// The image a screenshot is saved as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShotFormat {
+    Png,
+    Jpeg,
+}
+
+impl ShotFormat {
+    pub const ALL: [Self; 2] = [Self::Png, Self::Jpeg];
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+        }
+    }
+}
+
+pub const MAX_SHOT_DELAY_S: u32 = 60;
+
+/// The screenshot tool's choices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenshotOptions {
+    pub format: ShotFormat,
+    pub area: RecordArea,
+    pub region: ScreenRect,
+    pub cursor: bool,
+    /// Seconds to wait before the picture is taken.
+    pub delay_s: u32,
+    /// Minimize FMX first, so it is not in the picture.
+    pub minimize: bool,
+}
+
+impl Default for ScreenshotOptions {
+    fn default() -> Self {
+        Self {
+            format: ShotFormat::Png,
+            area: RecordArea::Screen,
+            region: RecordOptions::default().region,
+            cursor: false,
+            delay_s: 0,
+            minimize: true,
+        }
+    }
+}
+
 pub const MIN_RECORD_SIDE: u32 = 16;
 pub const MAX_RECORD_SIDE: u32 = 16_384;
 
@@ -722,6 +776,7 @@ pub struct Options {
     pub iso_label: String,
     pub cso_level: u32,
     pub record: RecordOptions,
+    pub screenshot: ScreenshotOptions,
     pub download: DownloadOptions,
     pub join_layout: JoinLayout,
     /// Text appended to every output file name, e.g. `_converted`.
@@ -759,6 +814,7 @@ impl Default for Options {
             iso_label: "DISC".to_owned(),
             cso_level: 9,
             record: RecordOptions::default(),
+            screenshot: ScreenshotOptions::default(),
             download: DownloadOptions::default(),
             join_layout: JoinLayout::Vertical,
             name_tag: String::new(),

@@ -1,11 +1,11 @@
 //! Screen capture on Wayland, where programs may not read the screen
 //! themselves: the XDG desktop portal asks which screen or window to share,
 //! PipeWire delivers its frames, and GStreamer hands them to ffmpeg as a
-//! YUV4MPEG stream.
+//! YUV4MPEG stream. Screenshots come from the portal as a saved file.
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 
 use zbus::blocking::{Connection, Proxy, proxy::Builder};
@@ -17,6 +17,7 @@ use crate::process;
 const DESTINATION: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const SCREEN_CAST: &str = "org.freedesktop.portal.ScreenCast";
+const SCREENSHOT: &str = "org.freedesktop.portal.Screenshot";
 /// Source types the system dialog offers: monitors and windows.
 const MONITOR_OR_WINDOW: u32 = 1 | 2;
 const CURSOR_HIDDEN: u32 = 1;
@@ -60,7 +61,7 @@ impl Cast {
     pub fn start(cursor: bool) -> Result<Self, CastError> {
         let conn = Connection::session()?;
         let (session, node, remote) = {
-            let mut portal = Portal::new(&conn)?;
+            let mut portal = Portal::new(&conn, SCREEN_CAST)?;
             let session = portal.create_session()?;
             portal.select_sources(&session, cursor)?;
             let node = portal.start(&session)?;
@@ -117,6 +118,49 @@ impl Drop for Cast {
     }
 }
 
+/// Takes a screenshot of every screen, or of an area the user picks in the
+/// system's dialog when `interactive`. Returns the file the portal saved.
+pub fn screenshot(interactive: bool) -> Result<PathBuf, CastError> {
+    let conn = Connection::session()?;
+    let mut portal = Portal::new(&conn, SCREENSHOT)?;
+    let token = portal.token();
+    let options = HashMap::from([
+        ("handle_token", Value::from(token.as_str())),
+        ("interactive", Value::from(interactive)),
+    ]);
+    let results = portal.request("Screenshot", &token, &("", options))?;
+    match results.get("uri").map(|v| &**v) {
+        Some(Value::Str(uri)) => file_path(uri.as_str())
+            .ok_or_else(|| CastError::Failed(format!("not a local file: {uri}"))),
+        _ => Err(CastError::Failed("no screenshot".to_owned())),
+    }
+}
+
+/// `file:///home/a/Shot%201.png` → `/home/a/Shot 1.png`.
+fn file_path(uri: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let encoded = uri.strip_prefix("file://")?.as_bytes();
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut i = 0;
+    while i < encoded.len() {
+        let hex = encoded
+            .get(i + 1..i + 3)
+            .filter(|_| encoded[i] == b'%')
+            .and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
+        match hex {
+            Some(byte) => {
+                bytes.push(byte);
+                i += 3;
+            }
+            None => {
+                bytes.push(encoded[i]);
+                i += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
 /// Stops a frame pipeline gracefully, so its stream ends cleanly.
 pub fn interrupt(child: &mut Child) {
     let pid = rustix::process::Pid::from_child(child);
@@ -134,8 +178,8 @@ struct Portal<'a> {
 }
 
 impl<'a> Portal<'a> {
-    fn new(conn: &'a Connection) -> Result<Self, CastError> {
-        let proxy = uncached(conn, PATH, SCREEN_CAST)?;
+    fn new(conn: &'a Connection, interface: &'a str) -> Result<Self, CastError> {
+        let proxy = uncached(conn, PATH, interface)?;
         let sender = conn
             .unique_name()
             .map(|n| n.trim_start_matches(':').replace('.', "_"))
@@ -241,6 +285,24 @@ fn uncached<'a>(conn: &Connection, path: &str, interface: &'a str) -> zbus::Resu
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn file_uris_decode_to_paths() {
+        assert_eq!(
+            file_path("file:///home/a/Screenshot%20from%202026.png"),
+            Some(PathBuf::from("/home/a/Screenshot from 2026.png"))
+        );
+        assert_eq!(file_path("https://x/y.png"), None);
+    }
+
+    /// Needs a person to take the picture: `cargo test -- --ignored portal_screenshot`.
+    #[test]
+    #[ignore]
+    fn portal_screenshot_interactive() {
+        let path = screenshot(true).expect("screenshot");
+        assert!(path.is_file(), "{}", path.display());
+        eprintln!("saved {}", path.display());
+    }
 
     /// Needs a person to answer the system's dialog: `cargo test -- --ignored portal`.
     #[test]

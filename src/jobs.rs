@@ -157,6 +157,7 @@ pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> Ou
         Tool::JoinAudio | Tool::AudioMix => opts.join_audio_format.ext(),
         Tool::Mux | Tool::Repair => "mkv",
         Tool::Record => opts.record.format.ext(),
+        Tool::Screenshot => opts.screenshot.format.ext(),
         Tool::DvdToVideo => opts.disc_video_format.ext(),
         Tool::FolderToIso | Tool::CsoToIso => "iso",
         Tool::IsoToCso => "cso",
@@ -269,6 +270,20 @@ pub fn plan_jobs(
                 .output_dir
                 .map_or_else(|| default_dir("Downloads"), Path::to_path_buf);
             return Ok(vec![spec(Vec::new(), Some(sel.url.trim().to_owned()), dir)]);
+        }
+        Tool::Screenshot => {
+            let dir = sel
+                .output_dir
+                .map_or_else(|| default_dir("Pictures"), Path::to_path_buf);
+            let output = allocate_output(
+                &dir,
+                "screenshot",
+                "",
+                Some(sel.options.screenshot.format.ext()),
+                claimed,
+                Path::exists,
+            );
+            return Ok(vec![spec(Vec::new(), None, output)]);
         }
         Tool::Record => {
             let dir = sel

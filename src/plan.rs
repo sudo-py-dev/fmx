@@ -9,7 +9,7 @@ use crate::catalog::{AudioFormat, Device, Tool, VideoEncoder, VideoFormat};
 use crate::i18n::{tr, trf};
 use crate::options::{
     self, Corner, Edit, HwAccel, MixLayout, Options, Quality, RecordArea, RecordFormat,
-    RecordOptions, Rect, ScreenRect, parse_timestamp,
+    RecordOptions, Rect, ScreenRect, ScreenshotOptions, ShotFormat, parse_timestamp,
 };
 use crate::probe::MediaInfo;
 use crate::process::StopMode;
@@ -791,11 +791,16 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
             if rec.fps == 0 || rec.fps > options::MAX_RECORD_FPS {
                 return Err(PlanError::InvalidValue(tr("option.fps").to_owned()));
             }
-            let side = options::MIN_RECORD_SIDE..=options::MAX_RECORD_SIDE;
-            if rec.area == RecordArea::Region
-                && !(side.contains(&rec.region.width) && side.contains(&rec.region.height))
-            {
-                return Err(PlanError::InvalidValue(tr("record.area").to_owned()));
+            check_region(rec.area, rec.region)?;
+        }
+        Tool::Screenshot => {
+            let shot = &opts.screenshot;
+            if shot.delay_s > options::MAX_SHOT_DELAY_S {
+                return Err(PlanError::InvalidValue(tr("shot.delay").to_owned()));
+            }
+            // On Wayland a custom area is drawn in the system's dialog instead.
+            if !crate::capture::system_picks_area() {
+                check_region(shot.area, shot.region)?;
             }
         }
         _ => {}
@@ -1507,6 +1512,88 @@ pub enum Capture {
     Stdin,
 }
 
+fn check_region(area: RecordArea, region: ScreenRect) -> Result<(), PlanError> {
+    let side = options::MIN_RECORD_SIDE..=options::MAX_RECORD_SIDE;
+    if area == RecordArea::Region
+        && !(side.contains(&region.width) && side.contains(&region.height))
+    {
+        return Err(PlanError::InvalidValue(tr("record.area").to_owned()));
+    }
+    Ok(())
+}
+
+/// Adds the picture input for `capture`; returns the rectangle still to
+/// cut from it, where the input itself cannot.
+fn screen_input(
+    args: Args,
+    capture: &Capture,
+    fps: &str,
+    cursor: bool,
+) -> (Args, Option<ScreenRect>) {
+    let cursor = if cursor { "1" } else { "0" };
+    let args = args.flag("-thread_queue_size", "1024");
+    match capture {
+        Capture::X11 { display, area } => {
+            let mut args = args
+                .flag("-f", "x11grab")
+                .flag("-framerate", fps)
+                .flag("-draw_mouse", cursor);
+            let mut source = display.clone();
+            if let Some(r) = area {
+                args = args.flag("-video_size", format!("{}x{}", r.width, r.height));
+                source = format!("{display}+{},{}", r.x, r.y);
+            }
+            (args.flag("-i", source), None)
+        }
+        Capture::Desktop { area } => {
+            let mut args = args
+                .flag("-f", "gdigrab")
+                .flag("-framerate", fps)
+                .flag("-draw_mouse", cursor);
+            if let Some(r) = area {
+                args = args
+                    .flag("-offset_x", r.x.to_string())
+                    .flag("-offset_y", r.y.to_string())
+                    .flag("-video_size", format!("{}x{}", r.width, r.height));
+            }
+            (args.flag("-i", "desktop"), None)
+        }
+        Capture::MacScreen { device, area } => {
+            let args = args
+                .flag("-f", "avfoundation")
+                .flag("-framerate", fps)
+                .flag("-capture_cursor", cursor)
+                .flag("-i", format!("{device}:none"));
+            (args, *area)
+        }
+        Capture::Stdin => (args.flag("-f", "yuv4mpegpipe").flag("-i", "pipe:0"), None),
+    }
+}
+
+/// A crop filter followed by a comma, or nothing.
+fn crop_to(area: Option<ScreenRect>) -> String {
+    area.map_or_else(String::new, |r| {
+        format!("crop={}:{}:{}:{},", r.width, r.height, r.x, r.y)
+    })
+}
+
+/// One picture of the screen.
+pub fn screenshot(output: &Path, shot: &ScreenshotOptions, capture: &Capture) -> Plan {
+    let (args, crop) = screen_input(base(), capture, "30", shot.cursor);
+    // AVFoundation's first frames can be blank while the screen starts.
+    let skip = if matches!(capture, Capture::MacScreen { .. }) {
+        "select=gte(n\\,10),"
+    } else {
+        ""
+    };
+    let filter = format!("{}{skip}null", crop_to(crop));
+    let mut args = args.flag("-vf", filter).flag("-frames:v", "1");
+    if shot.format == ShotFormat::Jpeg {
+        args = args.flag("-q:v", "2");
+    }
+    args.output(output).expect(None)
+}
+
 /// Screen capture until stopped. `sounds` are ffmpeg's input format and
 /// device for each sound recorded with the picture (see `capture.rs`).
 pub fn record(
@@ -1516,50 +1603,13 @@ pub fn record(
     sounds: &[(&str, String)],
 ) -> Plan {
     let fps = rec.fps.clamp(1, options::MAX_RECORD_FPS).to_string();
-    let cursor = if rec.cursor { "1" } else { "0" };
     let mut args = base();
     // Stopping sends `q` on stdin, so ffmpeg must keep reading it, unless
     // the picture itself arrives there and stops by ending.
     if *capture != Capture::Stdin {
         args.0.retain(|a| a != "-nostdin");
     }
-    args = args.flag("-thread_queue_size", "1024");
-    let mut crop = None;
-    args = match capture {
-        Capture::X11 { display, area } => {
-            let mut args = args
-                .flag("-f", "x11grab")
-                .flag("-framerate", fps.as_str())
-                .flag("-draw_mouse", cursor);
-            let mut source = display.clone();
-            if let Some(r) = area {
-                args = args.flag("-video_size", format!("{}x{}", r.width, r.height));
-                source = format!("{display}+{},{}", r.x, r.y);
-            }
-            args.flag("-i", source)
-        }
-        Capture::Desktop { area } => {
-            let mut args = args
-                .flag("-f", "gdigrab")
-                .flag("-framerate", fps.as_str())
-                .flag("-draw_mouse", cursor);
-            if let Some(r) = area {
-                args = args
-                    .flag("-offset_x", r.x.to_string())
-                    .flag("-offset_y", r.y.to_string())
-                    .flag("-video_size", format!("{}x{}", r.width, r.height));
-            }
-            args.flag("-i", "desktop")
-        }
-        Capture::MacScreen { device, area } => {
-            crop = *area;
-            args.flag("-f", "avfoundation")
-                .flag("-framerate", fps.as_str())
-                .flag("-capture_cursor", cursor)
-                .flag("-i", format!("{device}:none"))
-        }
-        Capture::Stdin => args.flag("-f", "yuv4mpegpipe").flag("-i", "pipe:0"),
-    };
+    let (mut args, crop) = screen_input(args, capture, &fps, rec.cursor);
 
     // Sound inputs after the picture, numbered from 1.
     for (format, device) in sounds {
@@ -1570,11 +1620,7 @@ pub fn record(
     }
 
     // libx264 needs even sides; cutting a pixel off never scales the picture.
-    let mut graph = match crop {
-        Some(r) => format!("[0:v]crop={}:{}:{}:{},", r.width, r.height, r.x, r.y),
-        None => "[0:v]".to_owned(),
-    };
-    graph.push_str("crop=trunc(iw/2)*2:trunc(ih/2)*2[v]");
+    let mut graph = format!("[0:v]{}crop=trunc(iw/2)*2:trunc(ih/2)*2[v]", crop_to(crop));
     let audio_map = match sounds.len() {
         0 => None,
         1 => Some("1:a".to_owned()),
@@ -2288,6 +2334,54 @@ mod tests {
             &[],
         );
         assert!(p.args.iter().any(|a| a == "+faststart"));
+    }
+
+    #[test]
+    fn screenshots_take_one_frame() {
+        let shot = ScreenshotOptions {
+            format: ShotFormat::Jpeg,
+            ..ScreenshotOptions::default()
+        };
+        let x11 = Capture::X11 {
+            display: ":0".to_owned(),
+            area: None,
+        };
+        let p = screenshot(Path::new("/o/shot.jpg"), &shot, &x11);
+        let cmd = p
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(cmd.contains("-draw_mouse 0 -i :0"), "{cmd}");
+        assert!(cmd.contains("-vf null -frames:v 1 -q:v 2"), "{cmd}");
+        assert_eq!(p.stop, StopMode::Kill);
+    }
+
+    #[test]
+    fn mac_screenshots_skip_the_first_frames_and_crop() {
+        let area = Some(ScreenRect {
+            x: 5,
+            y: 6,
+            width: 100,
+            height: 50,
+        });
+        let capture = Capture::MacScreen {
+            device: "1".to_owned(),
+            area,
+        };
+        let p = screenshot(
+            Path::new("/o/s.png"),
+            &ScreenshotOptions::default(),
+            &capture,
+        );
+        assert!(
+            p.args
+                .iter()
+                .any(|a| a == "crop=100:50:5:6,select=gte(n\\,10),null"),
+            "{:?}",
+            p.args
+        );
     }
 
     #[test]
