@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense,
+    self, emath, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense,
     Stroke, StrokeKind, TextStyle, Vec2, WidgetInfo,
 };
 
@@ -15,8 +15,10 @@ use crate::theme::{
 };
 
 const LARGE_BUTTON_HEIGHT: f32 = 40.0;
-const SEGMENT_HEIGHT: f32 = 30.0;
+const SEGMENT_HEIGHT: f32 = 28.0;
 const SEGMENT_PAD: f32 = 12.0;
+/// The track's margin around a toggle group's items.
+const SEGMENT_INSET: f32 = 3.0;
 const STEP_BADGE: f32 = 28.0;
 
 const FOCUS_RING: f32 = 2.0;
@@ -54,7 +56,7 @@ fn colors(kind: Kind, p: &Palette) -> ([Color32; 3], Color32, Option<Color32>) {
         Kind::Secondary => (
             [p.control, p.control_hover, p.control_pressed],
             p.text,
-            Some(p.border),
+            None,
         ),
         Kind::Ghost => (
             [Color32::TRANSPARENT, p.control_hover, p.control_pressed],
@@ -68,7 +70,7 @@ fn colors(kind: Kind, p: &Palette) -> ([Color32; 3], Color32, Option<Color32>) {
                 p.danger.gamma_multiply(0.3),
             ],
             p.danger,
-            Some(p.border),
+            None,
         ),
     }
 }
@@ -197,12 +199,10 @@ pub fn button_tinted(
             MOTION * 0.5,
         );
         let fill = mix(mix(fills[0], fills[1], hover), fills[2], press);
-        // A subtle "push" when pressed.
-        let rect = rect.shrink(press * 0.8);
         let opacity = if enabled { 1.0 } else { DISABLED_OPACITY };
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
         let stroke = border.map_or(Stroke::NONE, |c| {
-            Stroke::new(1.0, mix(c, p.accent, hover * 0.5).gamma_multiply(opacity))
+            Stroke::new(1.0, c.gamma_multiply(opacity))
         });
         painter.rect(
             rect,
@@ -215,7 +215,7 @@ pub fn button_tinted(
             painter.rect_stroke(
                 rect.expand(FOCUS_RING),
                 CornerRadius::same(RADIUS + 2),
-                Stroke::new(FOCUS_RING, p.accent),
+                Stroke::new(FOCUS_RING, p.accent.gamma_multiply(0.5)),
                 StrokeKind::Outside,
             );
         }
@@ -308,7 +308,8 @@ pub fn icon_tile(ui: &mut egui::Ui, art: Art, size: f32, solid: bool) -> Respons
     response
 }
 
-/// A full-width sidebar entry with an icon tile, animated highlight and accent bar.
+/// A full-width sidebar row like GNOME Settings': a symbolic icon and its
+/// label, on a soft neutral highlight when hovered or selected.
 pub fn nav_item(
     ui: &mut egui::Ui,
     art: Option<Art>,
@@ -320,71 +321,85 @@ pub fn nav_item(
     let p = theme::palette(ui);
     let font = TextStyle::Body.resolve(ui.style());
     let color = if dimmed { p.text_weak } else { p.text };
-    let height = if art.is_some() { 38.0 } else { 30.0 };
+    let height = if art.is_some() { 40.0 } else { 32.0 };
     let width = ui.available_width();
     let reserved =
-        10.0 + if art.is_some() { 36.0 } else { 0.0 } + if badge.is_some() { 44.0 } else { 12.0 };
+        12.0 + if art.is_some() { 30.0 } else { 0.0 } + if badge.is_some() { 44.0 } else { 12.0 };
     let galley = elided(ui, text, font, color, width - reserved);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(egui::Role::Tab, true, selected, text));
     if ui.is_rect_visible(rect) {
         let id = response.id;
         let hover = animate(ui, id.with("hover"), response.hovered(), MOTION);
-        let active = animate(ui, id.with("selected"), selected, MOTION * 1.5);
-        let tint = art.map_or(p.accent, |a| a.hue);
-        let fill = mix(
-            mix(Color32::TRANSPARENT, p.control_hover, hover),
-            tint.gamma_multiply(0.18),
-            active,
+        let press = animate(
+            ui,
+            id.with("press"),
+            response.is_pointer_button_down_on(),
+            MOTION * 0.5,
         );
+        let active = animate(ui, id.with("selected"), selected, MOTION);
+        // Adwaita's sidebar: 6 % ink on hover, 10 % when selected, more while pressed.
+        let ink = if ui.visuals().dark_mode {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(0, 0, 6)
+        };
+        let alpha = (0.06 * hover).max(0.1 * active) + 0.08 * press;
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(8), fill);
+        painter.rect_filled(rect, CornerRadius::same(RADIUS), ink.gamma_multiply(alpha));
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(RADIUS),
+                Stroke::new(FOCUS_RING, p.accent.gamma_multiply(0.5)),
+                StrokeKind::Inside,
+            );
+        }
         // Laid out left to right, then mirrored for right-to-left languages.
-        if active > 0.0 {
-            let bar_x = dir::mirror_x(rect, rect.left() + 0.5, 3.0);
-            let bar = Rect::from_center_size(
-                Pos2::new(bar_x + 1.5, rect.center().y),
-                Vec2::new(3.0, rect.height() * 0.55 * active),
-            );
-            painter.rect_filled(bar, CornerRadius::same(2), tint);
-        }
-        let mut x = rect.left() + 10.0 + 2.0 * hover;
+        let mut x = rect.left() + 12.0;
         if let Some(art) = art {
-            let tile = Rect::from_min_size(
-                Pos2::new(dir::mirror_x(rect, x, 26.0), rect.center().y - 13.0),
-                Vec2::splat(26.0),
+            let glyph = painter.layout_no_wrap(
+                art.glyph.to_owned(),
+                crate::icons::fill(17.0),
+                color,
             );
-            paint_tile(painter, tile, art, active > 0.5, ui.visuals().dark_mode);
-            x += 26.0 + 10.0;
+            painter.galley_with_override_text_color(
+                Pos2::new(
+                    dir::mirror_x(rect, x + (18.0 - glyph.size().x) / 2.0, glyph.size().x),
+                    rect.center().y - glyph.size().y / 2.0,
+                ),
+                glyph,
+                color,
+            );
+            x += 18.0 + 12.0;
         }
-        let text_color = mix(color, p.text, active);
         painter.galley_with_override_text_color(
             Pos2::new(
                 dir::mirror_x(rect, x, galley.size().x),
                 rect.center().y - galley.size().y / 2.0,
             ),
             galley,
-            text_color,
+            color,
         );
         if let Some(count) = badge {
             let label = ui.painter().layout_no_wrap(
                 count.to_string(),
                 FontId::proportional(11.5),
-                p.text_weak,
+                p.on_accent,
             );
             let pill = Rect::from_center_size(
                 rect.right_center() - Vec2::new(10.0 + label.size().x / 2.0 + 6.0, 0.0),
-                label.size() + Vec2::new(12.0, 4.0),
+                Vec2::new((label.size().x + 12.0).max(20.0), 20.0),
             );
             let pill = pill.translate(Vec2::new(
                 dir::mirror_x(rect, pill.min.x, pill.width()) - pill.min.x,
                 0.0,
             ));
-            painter.rect_filled(pill, CornerRadius::same(255), p.control);
+            painter.rect_filled(pill, CornerRadius::same(255), p.accent);
             painter.galley_with_override_text_color(
                 pill.center() - label.size() / 2.0,
                 label,
-                p.text_weak,
+                p.on_accent,
             );
         }
     }
@@ -412,18 +427,52 @@ fn elided(
     ui.painter().layout_job(job)
 }
 
-pub const CARD_SIZE: Vec2 = Vec2::new(172.0, 104.0);
+/// The soft shadow under a libadwaita card; dark cards are lit instead.
+pub fn card_shadow(dark: bool) -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 1],
+        blur: if dark { 0 } else { 4 },
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 0 } else { 20 }),
+    }
+}
 
-/// A colorful tool card for the tool grid; lifts and glows in its hue on hover.
+/// The hairline around a card.
+pub fn card_stroke(p: &Palette, dark: bool) -> Stroke {
+    let ink = if dark {
+        Color32::from_white_alpha(10)
+    } else {
+        Color32::from_black_alpha(14)
+    };
+    let _ = p;
+    Stroke::new(1.0, ink)
+}
+
+/// Paints an empty card into `rect`.
+pub fn paint_card(painter: &egui::Painter, rect: Rect, p: &Palette, dark: bool) {
+    let radius = CornerRadius::same(theme::CARD_RADIUS);
+    painter.add(card_shadow(dark).as_shape(rect, radius));
+    painter.rect(rect, radius, p.surface, card_stroke(p, dark), StrokeKind::Inside);
+}
+
+/// A tool card's smallest size; cards grow to fill the row evenly.
+pub const CARD_SIZE: Vec2 = Vec2::new(172.0, 104.0);
+/// The widest a tool card grows.
+pub const CARD_MAX_WIDTH: f32 = 260.0;
+
+/// A tool card for the tool grid, flat like a libadwaita card: hovering and
+/// pressing only darken it a little.
 pub fn tool_card(
     ui: &mut egui::Ui,
+    width: f32,
     art: Art,
     title: &str,
     subtitle: &str,
     unavailable: bool,
 ) -> Response {
     let p = theme::palette(ui);
-    let (rect, response) = ui.allocate_exact_size(CARD_SIZE, Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, CARD_SIZE.y), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
     if ui.is_rect_visible(rect) {
         let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
@@ -433,25 +482,27 @@ pub fn tool_card(
             response.is_pointer_button_down_on(),
             MOTION * 0.5,
         );
-        let card = rect
-            .translate(Vec2::new(0.0, -2.0 * hover + press))
-            .shrink(2.0);
+        let card = rect.shrink(3.0);
         let painter = ui.painter();
-        if hover > 0.0 {
-            painter.rect_filled(
-                card.translate(Vec2::new(0.0, 4.0)),
-                CornerRadius::same(14),
-                Color32::from_black_alpha((40.0 * hover) as u8),
+        paint_card(painter, card, &p, ui.visuals().dark_mode);
+        let ink = if ui.visuals().dark_mode {
+            Color32::WHITE
+        } else {
+            Color32::from_rgb(0, 0, 6)
+        };
+        painter.rect_filled(
+            card,
+            CornerRadius::same(theme::CARD_RADIUS),
+            ink.gamma_multiply(0.03 * hover + 0.05 * press),
+        );
+        if response.has_focus() {
+            painter.rect_stroke(
+                card,
+                CornerRadius::same(theme::CARD_RADIUS),
+                Stroke::new(FOCUS_RING, p.accent.gamma_multiply(0.5)),
+                StrokeKind::Inside,
             );
         }
-        let border = mix(p.border, art.hue, hover * 0.8);
-        painter.rect(
-            card,
-            CornerRadius::same(14),
-            p.surface,
-            Stroke::new(1.0 + hover * 0.5, border),
-            StrokeKind::Inside,
-        );
         let opacity = if unavailable { DISABLED_OPACITY } else { 1.0 };
         let tile_x = dir::mirror_x(card, card.min.x + 14.0, 38.0);
         let tile = Rect::from_min_size(Pos2::new(tile_x, card.min.y + 12.0), Vec2::splat(38.0));
@@ -585,26 +636,39 @@ fn paint_bar(ui: &egui::Ui, rect: Rect, fill: Option<Rect>, text: String) {
 }
 
 /// A row of joined choices where exactly one is selected: radio buttons that
-/// read as one control. Returns `true` when the selection changed.
+/// read as one control, drawn like libadwaita's toggle group with a raised
+/// pill that slides to the chosen item. Returns `true` when the selection changed.
 pub fn segmented<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     value: &mut T,
     choices: &[(T, &str)],
 ) -> bool {
     let p = theme::palette(ui);
+    let dark = ui.visuals().dark_mode;
     let font = TextStyle::Button.resolve(ui.style());
     let mut changed = false;
+    let group_id = ui.next_auto_id();
     ui.scope(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(0.0, 4.0);
-        ui.horizontal_wrapped(|ui| {
-            let last = choices.len().saturating_sub(1);
-            for (i, (choice, text)) in choices.iter().enumerate() {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        ui.horizontal(|ui| {
+            // The track goes under the items, so reserve its place first.
+            let track = ui.painter().add(egui::Shape::Noop);
+            let pill = ui.painter().add(egui::Shape::Noop);
+            ui.add_space(SEGMENT_INSET);
+            let mut outer = Rect::NOTHING;
+            let mut chosen = None;
+            for (choice, text) in choices {
                 let selected = *value == *choice;
                 let galley = ui
                     .painter()
                     .layout_no_wrap((*text).to_owned(), font.clone(), p.text);
-                let size = Vec2::new(galley.size().x + SEGMENT_PAD * 2.0, SEGMENT_HEIGHT);
-                let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+                let size = Vec2::new(
+                    galley.size().x + SEGMENT_PAD * 2.0,
+                    SEGMENT_HEIGHT + SEGMENT_INSET * 2.0,
+                );
+                let (cell, response) = ui.allocate_exact_size(size, Sense::click());
+                outer = outer.union(cell);
+                let rect = cell.shrink2(Vec2::new(0.0, SEGMENT_INSET));
                 response.widget_info(|| {
                     WidgetInfo::selected(egui::Role::RadioButton, true, selected, *text)
                 });
@@ -612,48 +676,124 @@ pub fn segmented<T: PartialEq + Copy>(
                     *value = *choice;
                     changed = true;
                 }
+                if *value == *choice {
+                    chosen = Some(rect);
+                }
                 if !ui.is_rect_visible(rect) {
                     continue;
                 }
                 let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
-                let active = animate(ui, response.id.with("on"), *value == *choice, MOTION);
-                let r = RADIUS;
-                // Choices flow from the start edge, so round the outer ends.
-                let (left, right) = if dir::is_rtl() { (last, 0) } else { (0, last) };
-                let corners = CornerRadius {
-                    nw: if i == left { r } else { 0 },
-                    sw: if i == left { r } else { 0 },
-                    ne: if i == right { r } else { 0 },
-                    se: if i == right { r } else { 0 },
-                };
-                let fill = mix(mix(p.control, p.control_hover, hover), p.accent, active);
                 let painter = ui.painter();
-                painter.rect(
-                    rect,
-                    corners,
-                    fill,
-                    Stroke::new(1.0, mix(p.border, p.accent, active)),
-                    StrokeKind::Inside,
-                );
-                if response.has_focus() {
-                    painter.rect_stroke(
-                        rect.expand(FOCUS_RING),
-                        corners,
-                        Stroke::new(FOCUS_RING, p.accent),
-                        StrokeKind::Outside,
+                if hover > 0.0 && *value != *choice {
+                    painter.rect_filled(
+                        rect.shrink(1.0),
+                        CornerRadius::same(RADIUS - 1),
+                        p.control_hover.gamma_multiply(hover),
                     );
                 }
-                let color = mix(p.text, p.on_accent, active);
+                if response.has_focus() {
+                    painter.rect_stroke(
+                        rect,
+                        CornerRadius::same(RADIUS - 1),
+                        Stroke::new(FOCUS_RING, p.accent.gamma_multiply(0.5)),
+                        StrokeKind::Inside,
+                    );
+                }
                 painter.galley_with_override_text_color(
                     rect.center() - galley.size() / 2.0,
                     galley,
-                    color,
+                    p.text,
                 );
                 response.on_hover_cursor(CursorIcon::PointingHand);
+            }
+            ui.add_space(SEGMENT_INSET);
+            let outer = outer.expand2(Vec2::new(SEGMENT_INSET, 0.0));
+            ui.painter().set(
+                track,
+                egui::epaint::RectShape::filled(outer, CornerRadius::same(RADIUS + 2), p.control),
+            );
+            if let Some(target) = chosen {
+                let time = if ui.style().animation_time == 0.0 {
+                    0.0
+                } else {
+                    MOTION
+                };
+                let ctx = ui.ctx();
+                let left = ctx.animate_value_with_time(group_id.with("l"), target.left(), time);
+                let right = ctx.animate_value_with_time(group_id.with("r"), target.right(), time);
+                let rect = Rect::from_x_y_ranges(left..=right, target.y_range());
+                let raised = if dark { p.control_pressed } else { p.surface };
+                let radius = CornerRadius::same(RADIUS);
+                ui.painter().set(
+                    pill,
+                    egui::Shape::Vec(vec![
+                        egui::Shadow {
+                            offset: [0, 1],
+                            blur: 3,
+                            spread: 0,
+                            color: Color32::from_black_alpha(if dark { 60 } else { 30 }),
+                        }
+                        .as_shape(rect, radius)
+                        .into(),
+                        egui::epaint::RectShape::filled(rect, radius, raised).into(),
+                    ]),
+                );
             }
         });
     });
     changed
+}
+
+/// How far a page slides in when going deeper or back, in points.
+const PAGE_SLIDE: f32 = 48.0;
+
+/// Shows `content` as a page that eases in whenever `key` changes, like
+/// libadwaita's navigation: a deeper `depth` slides in from the end edge, a
+/// shallower one from the start edge, and a page at the same depth fades in.
+pub fn page_transition<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    key: impl std::hash::Hash + std::fmt::Debug,
+    depth: u8,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let id = Id::unique(("page_transition", id_salt));
+    let key = Id::unique(key);
+    let now = ui.input(|i| i.time);
+    // The shown page, its depth, when it arrived and which way it slid in.
+    let previous: Option<(Id, u8, f64, f32)> = ui.data(|d| d.get_temp(id));
+    let (start, slide) = match previous {
+        Some((k, _, start, slide)) if k == key => (start, slide),
+        Some((_, old_depth, ..)) => {
+            let slide = f32::from(depth.cmp(&old_depth) as i8);
+            ui.data_mut(|d| d.insert_temp(id, (key, depth, now, slide)));
+            (now, slide)
+        }
+        // The first page shows as it is.
+        None => {
+            ui.data_mut(|d| d.insert_temp(id, (key, depth, f64::MIN, 0.0)));
+            (f64::MIN, 0.0)
+        }
+    };
+    let elapsed = ((now - start) as f32 / theme::PAGE_MOTION).clamp(0.0, 1.0);
+    if elapsed >= 1.0 || ui.style().animation_time == 0.0 {
+        return content(ui);
+    }
+    ui.ctx().request_repaint();
+    let eased = emath::easing::cubic_out(elapsed);
+    let toward_end = if dir::is_rtl() { -1.0 } else { 1.0 };
+    let dx = slide * toward_end * PAGE_SLIDE * (1.0 - eased);
+    let rect = ui.available_rect_before_wrap();
+    let clip = ui.clip_rect();
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(rect.translate(Vec2::new(dx, 0.0))),
+        |ui| {
+            ui.set_clip_rect(clip);
+            ui.multiply_opacity(0.2 + 0.8 * eased);
+            content(ui)
+        },
+    )
+    .inner
 }
 
 /// A numbered step marker: the number in a circle, or a check once the step is complete.

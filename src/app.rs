@@ -42,6 +42,8 @@ use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
 const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
 const SIDEBAR_WIDTH: f32 = 230.0;
+/// The height of the header bar's row, matched by the sidebar's title row.
+const HEADER_HEIGHT: f32 = 30.0;
 const QUEUE_HEIGHT: f32 = 180.0;
 const PROGRESS_WIDTH: f32 = 220.0;
 /// The task editor's content is kept to a usable width on very wide windows.
@@ -989,8 +991,11 @@ impl FmxApp {
     /// and the output folder sits beside the button that adds jobs.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            widgets::icon_tile(ui, art::LOGO, 30.0, true);
-            ui.label(RichText::new(tr("app.name")).heading().strong());
+            ui.set_min_height(HEADER_HEIGHT);
+            // With the sidebar shown, the app's name heads the sidebar instead.
+            if self.in_editor {
+                app_title(ui);
+            }
             ui.with_layout(dir::trailing(Align::Center), |ui| self.settings_button(ui));
         });
     }
@@ -1203,14 +1208,11 @@ impl FmxApp {
     // ── Sidebar ─────────────────────────────────────────────────────────
 
     fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new(tr("sidebar.title"))
-                .small()
-                .strong()
-                .color(theme::palette(ui).text_weak),
-        );
-        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.set_min_height(HEADER_HEIGHT);
+            app_title(ui);
+        });
+        ui.add_space(10.0);
         ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
@@ -1286,8 +1288,15 @@ impl FmxApp {
             return;
         }
         let mut picked = None;
+        // As many columns as fit, the cards stretched to fill the row exactly.
+        let gap = 12.0;
+        let available = ui.available_width();
+        let columns = ((available + gap) / (widgets::CARD_SIZE.x + gap)).floor().max(1.0);
+        let card_width = ((available - gap * (columns - 1.0)) / columns)
+            .min(widgets::CARD_MAX_WIDTH)
+            .floor();
         ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             for tool in tools {
                 let reason = self.unavailable_reason(tool);
                 let subtitle = if searching {
@@ -1301,6 +1310,7 @@ impl FmxApp {
                 };
                 if widgets::tool_card(
                     ui,
+                    card_width,
                     art::tool(tool),
                     tool.label(),
                     &subtitle,
@@ -2890,25 +2900,109 @@ impl FmxApp {
 
     // ── Windows ─────────────────────────────────────────────────────────
 
+    /// Settings as a GNOME-style dialog: it fades and grows in over a
+    /// dimmed window, and fades back out when closed.
     fn settings_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_settings;
-        let screen = ctx.content_rect().size();
+        let time = if ctx.global_style().animation_time == 0.0 {
+            0.0
+        } else {
+            theme::MOTION
+        };
+        let shown = ctx.animate_bool_with_time(
+            egui::Id::unique("settings_dialog_shown"),
+            self.show_settings,
+            time,
+        );
+        if shown == 0.0 {
+            return;
+        }
+        let eased = egui::emath::easing::cubic_out(shown);
+        let screen = ctx.content_rect();
         let size = egui::vec2(
-            SETTINGS_WIDTH.min(screen.x - SETTINGS_SCREEN_MARGIN),
-            SETTINGS_HEIGHT.min(screen.y - SETTINGS_SCREEN_MARGIN),
+            SETTINGS_WIDTH.min(screen.width() - SETTINGS_SCREEN_MARGIN),
+            SETTINGS_HEIGHT.min(screen.height() - SETTINGS_SCREEN_MARGIN),
         )
         .max(egui::vec2(480.0, 320.0));
-        egui::Window::new(icons::label(icons::GEAR, tr("settings.title")))
-            .open(&mut open)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_size(size)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        let dark = ctx.global_style().visuals.dark_mode;
+        let modal = egui::Modal::new(egui::Id::unique("settings_dialog"))
+            .area(egui::Modal::default_area(egui::Id::unique("settings_dialog")).fade_in(false))
+            .frame(egui::Frame::NONE)
+            .backdrop_color(egui::Color32::from_black_alpha(if dark { 110 } else { 70 }).gamma_multiply(eased))
             .show(ctx, |ui| {
-                // A start-aligned column makes the row below flow from the start edge.
-                dir::vertical(ui, |ui| self.settings_contents(ui, ctx));
+                let p = theme::palette(ui);
+                ui.multiply_opacity(eased);
+                // Grows from 94 % around the window's center.
+                let center = screen.center().to_vec2();
+                let scale = 0.94 + 0.06 * eased;
+                let transform = egui::emath::TSTransform::from_translation(center)
+                    * egui::emath::TSTransform::from_scaling(scale)
+                    * egui::emath::TSTransform::from_translation(-center);
+                ui.with_visual_transform(transform, |ui| {
+                    egui::Frame::new()
+                        .fill(p.panel)
+                        .stroke(ui.visuals().window_stroke)
+                        .shadow(ui.visuals().window_shadow)
+                        .corner_radius(ui.visuals().window_corner_radius)
+                        .inner_margin(Margin::symmetric(16, 10))
+                        .show(ui, |ui| {
+                            ui.set_min_size(size);
+                            ui.set_max_size(size);
+                            dir::vertical(ui, |ui| {
+                                if self.settings_header(ui) {
+                                    self.show_settings = false;
+                                }
+                                ui.add_space(8.0);
+                                self.settings_contents(ui, ctx);
+                            });
+                        });
+                });
             });
-        self.show_settings = open;
+        if self.show_settings
+            && modal.is_top_modal
+            && !modal.any_popup_open
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.show_settings = false;
+        }
+    }
+
+    /// The dialog's centered title and round close button, like a libadwaita
+    /// header bar. Returns `true` when the close button was clicked.
+    fn settings_header(&mut self, ui: &mut egui::Ui) -> bool {
+        let p = theme::palette(ui);
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::hover());
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            tr("settings.title"),
+            egui::FontId::proportional(15.5),
+            p.text,
+        );
+        let close = egui::Rect::from_center_size(
+            egui::pos2(dir::mirror_x(rect, rect.max.x - 24.0, 24.0) + 12.0, rect.center().y),
+            egui::Vec2::splat(24.0),
+        );
+        let response = ui
+            .interact(close, ui.scope_id().with("close"), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(tr("action.close"));
+        let hover = ui
+            .ctx()
+            .animate_bool_with_time(response.id, response.hovered(), theme::MOTION);
+        ui.painter().circle_filled(
+            close.center(),
+            12.0,
+            p.control.lerp_to_gamma(p.control_hover, hover),
+        );
+        ui.painter().text(
+            close.center(),
+            egui::Align2::CENTER_CENTER,
+            icons::X,
+            egui::FontId::proportional(13.0),
+            p.text,
+        );
+        response.clicked()
     }
 
     fn settings_contents(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -2933,17 +3027,25 @@ impl FmxApp {
                     }
                 }
             });
-            ui.separator();
+            ui.add_space(12.0);
             let right_width = ui.available_width();
             dir::vertical(ui, |ui| {
                 ui.set_width(right_width);
                 ui.set_max_width(right_width);
                 ui.label(RichText::new(self.settings_tab.label()).heading().strong());
                 ui.add_space(8.0);
-                ScrollArea::vertical()
-                    .id_salt(("settings_page", self.settings_tab as u8))
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| self.settings_page(ui, ctx));
+                // Each section fades in, its rows grouped on one card.
+                let tab = self.settings_tab as u8;
+                widgets::page_transition(ui, "settings", tab, 0, |ui| {
+                    ScrollArea::vertical()
+                        .id_salt(("settings_page", tab))
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            ui.add_space(4.0);
+                            card(ui, |ui| self.settings_page(ui, ctx));
+                            ui.add_space(8.0);
+                        });
+                });
             });
         });
     }
@@ -3760,15 +3862,11 @@ fn step_panel(
     help: &str,
     content: impl FnOnce(&mut egui::Ui),
 ) {
-    let p = theme::palette(ui);
     let margin = 14;
     // The frame's margin and stroke on both sides.
     let inner = size - egui::Vec2::splat(f32::from(margin) * 2.0 + 2.0);
     ui.allocate_ui_with_layout(size, dir::column(), |ui| {
-        egui::Frame::new()
-            .fill(p.surface)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+        card_frame(ui)
             .inner_margin(Margin::same(margin))
             .show(ui, |ui| {
                 ui.set_min_size(inner);
@@ -3948,12 +4046,25 @@ fn human_size(bytes: u64) -> String {
 }
 
 /// A rounded surface that groups related controls.
-fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+/// The app's icon and name, at the top of the sidebar or header bar.
+fn app_title(ui: &mut egui::Ui) {
+    widgets::icon_tile(ui, art::LOGO, 26.0, true);
+    ui.label(RichText::new(tr("app.name")).size(16.0).strong());
+}
+
+/// A libadwaita card: white (lit in dark mode), rounded, softly shadowed.
+fn card_frame(ui: &egui::Ui) -> egui::Frame {
     let p = theme::palette(ui);
+    let dark = ui.visuals().dark_mode;
     egui::Frame::new()
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+        .stroke(widgets::card_stroke(&p, dark))
+        .shadow(widgets::card_shadow(dark))
+        .corner_radius(CornerRadius::same(theme::CARD_RADIUS))
+}
+
+fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    card_frame(ui)
         .inner_margin(Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -4636,17 +4747,21 @@ impl eframe::App for FmxApp {
                 .fill(fill)
                 .inner_margin(Margin::symmetric(14, 10))
         };
-        egui::Panel::top("toolbar")
-            .frame(bar(p.surface).stroke(Stroke::new(1.0, p.border)))
-            .show(ui, |ui| dir::vertical(ui, |ui| self.toolbar(ui)));
+        // Like GNOME Settings, the sidebar runs the window's full height with
+        // the app's name on top, beside a flat header bar over the content.
         // Like a tool dialog, an open tool gets the whole window;
         // the sidebar and queue come back once its jobs are added.
         if !self.in_editor {
             dir::start_panel("tools")
                 .resizable(true)
                 .default_size(SIDEBAR_WIDTH)
-                .frame(bar(p.panel))
+                .frame(bar(p.sidebar))
                 .show(ui, |ui| dir::vertical(ui, |ui| self.sidebar(ui)));
+        }
+        egui::Panel::top("toolbar")
+            .frame(bar(p.panel))
+            .show(ui, |ui| dir::vertical(ui, |ui| self.toolbar(ui)));
+        if !self.in_editor {
             // An empty queue is a single line.
             if self.queue.jobs().is_empty() {
                 egui::Panel::bottom("queue_empty")
@@ -4678,17 +4793,25 @@ impl eframe::App for FmxApp {
                         centered(ui, EDITOR_MAX_WIDTH, |ui| self.action_bar(ui));
                     });
                 });
+            // Opening a tool slides its page in; another category fades in.
+            let page = if self.in_editor {
+                (1, Some(self.tool), None)
+            } else {
+                (0, None, Some((self.category, self.search.is_empty())))
+            };
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(18, 14))
                 .show(ui, |ui| {
-                    dir::vertical(ui, |ui| {
-                        if self.in_editor {
-                            centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
-                        } else {
-                            ScrollArea::vertical()
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| self.tool_grid(ui));
-                        }
+                    widgets::page_transition(ui, "main", page, page.0, |ui| {
+                        dir::vertical(ui, |ui| {
+                            if self.in_editor {
+                                centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
+                            } else {
+                                ScrollArea::vertical()
+                                    .auto_shrink([false; 2])
+                                    .show(ui, |ui| self.tool_grid(ui));
+                            }
+                        });
                     });
                 });
         });
