@@ -70,7 +70,8 @@ fn default_parallel_jobs() -> usize {
         .clamp(1, MAX_PARALLEL_JOBS)
 }
 
-fn default_cd_device() -> &'static str {
+/// The drive assumed until one is found or chosen.
+pub fn default_cd_device() -> &'static str {
     if cfg!(windows) { "D:" } else { "/dev/cdrom" }
 }
 

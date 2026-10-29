@@ -18,6 +18,7 @@ use crate::catalog::{
 };
 use crate::diagnostics;
 use crate::dir;
+use crate::disc;
 use crate::docs;
 use crate::download;
 use crate::exec;
@@ -223,6 +224,11 @@ pub struct FmxApp {
     /// the recorder first opens.
     capture_devices: Option<capture::Devices>,
     capture_rx: Option<mpsc::Receiver<capture::Devices>>,
+    /// The computer's disc drives, found in the background when needed.
+    drives: Option<Vec<disc::Drive>>,
+    drives_rx: Option<mpsc::Receiver<Vec<disc::Drive>>>,
+    /// The drive is typed in rather than picked from the list.
+    other_drive: bool,
     /// Moments typed for Extract Frames, before they are added.
     frame_times_text: String,
     /// The typed moment that could not be read, if any.
@@ -311,6 +317,9 @@ impl FmxApp {
             link: None,
             capture_devices: None,
             capture_rx: None,
+            drives: None,
+            drives_rx: None,
+            other_drive: false,
             frame_times_text: String::new(),
             frame_times_error: None,
             preview_index: 0,
@@ -1453,18 +1462,123 @@ impl FmxApp {
         }
     }
 
+    /// Starts looking for disc drives, or picks up what was found: the drive
+    /// already chosen stays, a default one gives way to the first drive found.
+    fn poll_drives(&mut self, ctx: &egui::Context) {
+        if self.drives.is_some() {
+            return;
+        }
+        if let Some(rx) = &self.drives_rx {
+            if let Ok(drives) = rx.try_recv() {
+                let current = self.settings.cd_device.trim();
+                let known = drives.iter().any(|d| d.path == current);
+                let typed = !current.is_empty() && current != crate::settings::default_cd_device();
+                self.other_drive = !known && typed;
+                if !known
+                    && !typed
+                    && let Some(first) = drives.first()
+                {
+                    self.settings.cd_device = first.path.clone();
+                }
+                self.drives = Some(drives);
+                self.drives_rx = None;
+            }
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(disc::optical_drives());
+            ctx.request_repaint();
+        });
+        self.drives_rx = Some(rx);
+    }
+
+    /// Which drive holds the disc: picked from the drives found, or typed.
+    fn drive_picker(&mut self, ui: &mut egui::Ui) {
+        self.poll_drives(ui.ctx());
+        let p = theme::palette(ui);
+        let Some(drives) = self.drives.clone() else {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new(tr("drive.looking")).color(p.text_weak));
+            });
+            return;
+        };
+        let refresh = |ui: &mut egui::Ui| {
+            widgets::button(
+                ui,
+                Some(icons::ARROW_CLOCKWISE),
+                "",
+                Kind::Ghost,
+                Size::Regular,
+            )
+            .on_hover_text(tr("drive.refresh"))
+            .clicked()
+        };
+        let mut look_again = false;
+        if drives.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(icons::label(icons::DISC, tr("drive.none_found")))
+                        .color(p.text_weak),
+                )
+                .wrap(),
+            );
+            ui.add_space(6.0);
+        } else {
+            ui.horizontal(|ui| {
+                // `None` is "Other drive…", typed in below.
+                let mut choice = if self.other_drive {
+                    None
+                } else {
+                    drives
+                        .iter()
+                        .position(|d| d.path == self.settings.cd_device.trim())
+                };
+                let mut choices: Vec<Option<usize>> = (0..drives.len()).map(Some).collect();
+                choices.push(None);
+                combo(ui, "cd_drive", &mut choice, &choices, |c| match c {
+                    Some(i) => drive_label(&drives[i]),
+                    None => tr("drive.other").to_owned(),
+                });
+                match choice {
+                    Some(i) => {
+                        self.other_drive = false;
+                        self.settings.cd_device = drives[i].path.clone();
+                    }
+                    None => self.other_drive = true,
+                }
+                look_again = refresh(ui);
+            });
+        }
+        if drives.is_empty() || self.other_drive {
+            if self.other_drive {
+                ui.add_space(6.0);
+            }
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.settings.cd_device)
+                        .hint_text(tr("drive.path_hint"))
+                        .desired_width(240.0),
+                );
+                if drives.is_empty() {
+                    look_again = refresh(ui);
+                }
+            });
+        }
+        if look_again {
+            self.drives = None;
+        }
+    }
+
     /// The first step's controls. With `fill`, the file list or drop zone takes
     /// all the height that is left.
     fn input_ui(&mut self, ui: &mut egui::Ui, fill: bool) {
         let p = theme::palette(ui);
         match self.tool.input_kind() {
             InputKind::Url => self.url_input(ui),
-            InputKind::Device => {
-                ui.horizontal(|ui| {
-                    ui.label(tr("input.device"));
-                    ui.add(TextEdit::singleline(&mut self.settings.cd_device).desired_width(220.0));
-                });
-            }
+            InputKind::Device => self.drive_picker(ui),
             InputKind::Capture => {
                 let screenshot = self.tool == Tool::Screenshot;
                 ui.label(tr(if screenshot {
@@ -4154,6 +4268,15 @@ fn fresh_output(spec: &JobSpec, claimed: &mut HashSet<PathBuf>) -> PathBuf {
         .extension()
         .map(|e| e.to_string_lossy().into_owned());
     allocate_output(dir, &stem, "", ext.as_deref(), claimed, Path::exists)
+}
+
+/// A drive as the picker lists it: "HL-DT-ST DVDRAM GH24 (/dev/sr0)".
+fn drive_label(drive: &disc::Drive) -> String {
+    if drive.name.is_empty() {
+        drive.path.clone()
+    } else {
+        format!("{} ({})", drive.name, drive.path)
+    }
 }
 
 fn job_source(spec: &JobSpec) -> String {
