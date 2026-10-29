@@ -155,7 +155,8 @@ pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> Ou
         Tool::PdfToWord => "docx",
         Tool::JoinVideo | Tool::Compress | Tool::VideoMix => "mp4",
         Tool::JoinAudio | Tool::AudioMix => opts.join_audio_format.ext(),
-        Tool::Mux | Tool::Repair | Tool::Record => "mkv",
+        Tool::Mux | Tool::Repair => "mkv",
+        Tool::Record => opts.record.format.ext(),
         Tool::DvdToVideo => opts.disc_video_format.ext(),
         Tool::FolderToIso | Tool::CsoToIso => "iso",
         Tool::IsoToCso => "cso",
@@ -277,7 +278,7 @@ pub fn plan_jobs(
                 &dir,
                 "screen_recording",
                 "",
-                Some("mkv"),
+                Some(sel.options.record.format.ext()),
                 claimed,
                 Path::exists,
             );

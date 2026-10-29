@@ -4457,6 +4457,10 @@ fn record_rows(
     } else {
         row_hint(ui, tr("option.audio"), loopback_hint, audio_row);
     }
+    row_hint(ui, tr("option.output_format"), r.format.hint(), |ui| {
+        let choices = options::RecordFormat::ALL.map(|f| (f, f.label()));
+        widgets::segmented(ui, &mut r.format, &choices);
+    });
     row(ui, tr("option.quality"), |ui| {
         let choices = RecordQuality::ALL.map(|q| (q, q.label()));
         widgets::segmented(ui, &mut r.quality, &choices);

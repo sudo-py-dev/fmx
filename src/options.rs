@@ -441,6 +441,55 @@ impl RecordQuality {
             Self::High => ("18", "ultrafast"),
         }
     }
+
+    /// VP9's constant quality for WebM recordings.
+    pub fn vp9_crf(self) -> &'static str {
+        match self {
+            Self::Small => "40",
+            Self::Balanced => "34",
+            Self::High => "28",
+        }
+    }
+}
+
+/// The file a screen recording is saved as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordFormat {
+    Mkv,
+    Mp4,
+    Mov,
+    Webm,
+}
+
+impl RecordFormat {
+    pub const ALL: [Self; 4] = [Self::Mp4, Self::Mkv, Self::Webm, Self::Mov];
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Mkv => "mkv",
+            Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+            Self::Webm => "webm",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mkv => "MKV",
+            Self::Mp4 => "MP4",
+            Self::Mov => "MOV",
+            Self::Webm => "WebM",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Mkv => tr("record.format_mkv_hint"),
+            Self::Mp4 => tr("download.container_mp4_hint"),
+            Self::Mov => tr("record.format_mov_hint"),
+            Self::Webm => tr("record.format_webm_hint"),
+        }
+    }
 }
 
 pub const MIN_RECORD_SIDE: u32 = 16;
@@ -456,6 +505,7 @@ pub struct RecordOptions {
     pub region: ScreenRect,
     pub cursor: bool,
     pub quality: RecordQuality,
+    pub format: RecordFormat,
     /// Wait three seconds before recording starts.
     pub countdown: bool,
     /// Minimize FMX, then wait three seconds before recording starts.
@@ -476,6 +526,7 @@ impl Default for RecordOptions {
             },
             cursor: true,
             quality: RecordQuality::Balanced,
+            format: RecordFormat::Mkv,
             countdown: true,
             minimize: false,
         }

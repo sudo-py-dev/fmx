@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use crate::catalog::{AudioFormat, Device, Tool, VideoEncoder, VideoFormat};
 use crate::i18n::{tr, trf};
 use crate::options::{
-    self, Corner, Edit, HwAccel, MixLayout, Options, Quality, RecordArea, RecordOptions, Rect,
-    ScreenRect, parse_timestamp,
+    self, Corner, Edit, HwAccel, MixLayout, Options, Quality, RecordArea, RecordFormat,
+    RecordOptions, Rect, ScreenRect, parse_timestamp,
 };
 use crate::probe::MediaInfo;
 use crate::process::StopMode;
@@ -1584,18 +1584,44 @@ pub fn record(
             Some("[a]".to_owned())
         }
     };
-    let (crf, preset) = rec.quality.x264();
-    args = args
-        .flag("-filter_complex", graph)
-        .flag("-map", "[v]")
-        .extend(strings(&[
+    args = args.flag("-filter_complex", graph).flag("-map", "[v]");
+    let webm = rec.format == RecordFormat::Webm;
+    args = if webm {
+        // VP9's fastest settings, so it keeps up with the screen.
+        args.extend(strings(&[
+            "-c:v",
+            "libvpx-vp9",
+            "-deadline",
+            "realtime",
+            "-cpu-used",
+            "8",
+            "-row-mt",
+            "1",
+            "-crf",
+            rec.quality.vp9_crf(),
+            "-b:v",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+        ]))
+    } else {
+        let (crf, preset) = rec.quality.x264();
+        args.extend(strings(&[
             "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
-        ]));
+        ]))
+    };
+    if matches!(rec.format, RecordFormat::Mp4 | RecordFormat::Mov) {
+        // The index goes first, so the file starts playing before it is all read.
+        args = args.flag("-movflags", "+faststart");
+    }
     args = match audio_map {
         Some(map) => {
-            let args = args
-                .flag("-map", map)
-                .extend(strings(&["-c:a", "aac", "-b:a", "160k"]));
+            let codec = if webm {
+                ["-c:a", "libopus", "-b:a", "128k"]
+            } else {
+                ["-c:a", "aac", "-b:a", "160k"]
+            };
+            let args = args.flag("-map", map).extend(strings(&codec));
             // Sound never ends on its own: finish with the picture.
             if *capture == Capture::Stdin {
                 args.switch("-shortest")
@@ -2221,6 +2247,47 @@ mod tests {
         assert!(cmd.contains("-capture_cursor 1 -i 2:none"), "{cmd}");
         assert!(cmd.contains("-f avfoundation -i :1"), "{cmd}");
         assert!(cmd.contains("[0:v]crop=1280:720:0:0,"), "{cmd}");
+    }
+
+    #[test]
+    fn webm_recordings_use_vp9_and_opus() {
+        let rec = RecordOptions {
+            format: RecordFormat::Webm,
+            ..RecordOptions::default()
+        };
+        let p = record(
+            Path::new("/o/rec.webm"),
+            &rec,
+            &Capture::Desktop { area: None },
+            &[pulse("default")],
+        );
+        let cmd = p
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(cmd.contains("-c:v libvpx-vp9 -deadline realtime"), "{cmd}");
+        assert!(cmd.contains("-c:a libopus"), "{cmd}");
+        assert!(
+            !cmd.contains("libx264") && !cmd.contains("faststart"),
+            "{cmd}"
+        );
+    }
+
+    #[test]
+    fn mp4_recordings_start_playing_early() {
+        let rec = RecordOptions {
+            format: RecordFormat::Mp4,
+            ..RecordOptions::default()
+        };
+        let p = record(
+            Path::new("/o/rec.mp4"),
+            &rec,
+            &Capture::Desktop { area: None },
+            &[],
+        );
+        assert!(p.args.iter().any(|a| a == "+faststart"));
     }
 
     #[test]
