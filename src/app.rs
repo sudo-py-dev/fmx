@@ -1129,9 +1129,8 @@ impl FmxApp {
         }
     }
 
-    /// The Settings button, with a dot when an update is waiting there.
     /// The Settings button in the sidebar's header, like the menu button in
-    /// GNOME Settings.
+    /// GNOME Settings, with a dot when an update is waiting there.
     fn settings_button(&mut self, ui: &mut egui::Ui) {
         let news = self.update_news();
         let settings = widgets::button(ui, Some(icons::GEAR), "", Kind::Ghost, Size::Regular);
