@@ -5,6 +5,7 @@
 //! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings (`=queue`, `=updates`,
 //!   `=programs` or `=about` opens that section);
 //! - `FMX_SCREENSHOT_EXPAND=1` opens every collapsible section;
+//! - `FMX_SCREENSHOT_RECORD=1` opens the screen recorder;
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue
 //!   (`FMX_SCREENSHOT_RUNNING=1` then shows the first two as running);
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
@@ -40,6 +41,11 @@ pub fn wants_settings() -> Option<String> {
 /// Whether collapsible sections should start open.
 pub fn expand_sections() -> bool {
     std::env::var_os("FMX_SCREENSHOT_EXPAND").is_some()
+}
+
+/// Whether the screen recorder should open.
+pub fn wants_recorder() -> bool {
+    std::env::var_os("FMX_SCREENSHOT_RECORD").is_some()
 }
 
 /// Whether the files on the command line should go straight into the queue.

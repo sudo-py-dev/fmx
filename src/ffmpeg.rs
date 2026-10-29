@@ -120,7 +120,7 @@ pub fn probe(ffmpeg: &Path, path: &Path, demuxer: Option<&str>) -> Result<MediaI
 }
 
 /// Parses one `-progress` line into seconds of output written.
-fn progress_seconds(line: &str) -> Option<f64> {
+pub fn progress_seconds(line: &str) -> Option<f64> {
     // `out_time_us` and the misnamed `out_time_ms` both carry microseconds.
     let (key, value) = line.split_once('=')?;
     match key {

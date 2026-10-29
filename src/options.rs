@@ -364,6 +364,131 @@ impl DownloadAudio {
     }
 }
 
+/// What sound a screen recording carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordAudio {
+    None,
+    Microphone,
+    /// What the computer plays (the default output's monitor).
+    System,
+    /// Microphone and system sound mixed together.
+    Both,
+}
+
+impl RecordAudio {
+    /// The choices this system can record: Windows and macOS have no way to
+    /// capture the sound they play without extra drivers.
+    pub fn available() -> &'static [Self] {
+        if cfg!(target_os = "linux") {
+            &[Self::None, Self::Microphone, Self::System, Self::Both]
+        } else {
+            &[Self::None, Self::Microphone]
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => tr("record.audio_none"),
+            Self::Microphone => tr("record.audio_mic"),
+            Self::System => tr("record.audio_system"),
+            Self::Both => tr("record.audio_both"),
+        }
+    }
+
+    pub fn microphone(self) -> bool {
+        matches!(self, Self::Microphone | Self::Both)
+    }
+
+    pub fn system(self) -> bool {
+        matches!(self, Self::System | Self::Both)
+    }
+}
+
+/// Which part of the screen is recorded (where the system lets FMX choose).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordArea {
+    /// Every screen.
+    Screen,
+    /// One monitor, by its place in the system's list.
+    Monitor(u32),
+    /// The rectangle in [`RecordOptions::region`].
+    Region,
+}
+
+/// A rectangle of the screen in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Size against smoothness of a recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordQuality {
+    Small,
+    Balanced,
+    High,
+}
+
+impl RecordQuality {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Balanced, Self::High];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => tr("record.quality_small"),
+            Self::Balanced => tr("record.quality_balanced"),
+            Self::High => tr("record.quality_high"),
+        }
+    }
+
+    /// x264's constant rate factor and preset, fast enough to keep up live.
+    pub fn x264(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Small => ("28", "veryfast"),
+            Self::Balanced => ("23", "superfast"),
+            Self::High => ("18", "ultrafast"),
+        }
+    }
+}
+
+pub const MIN_RECORD_SIDE: u32 = 16;
+pub const MAX_RECORD_SIDE: u32 = 16_384;
+
+/// The screen recorder's choices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordOptions {
+    pub fps: u32,
+    pub audio: RecordAudio,
+    pub area: RecordArea,
+    pub region: ScreenRect,
+    pub cursor: bool,
+    pub quality: RecordQuality,
+    /// Wait three seconds before recording starts.
+    pub countdown: bool,
+}
+
+impl Default for RecordOptions {
+    fn default() -> Self {
+        Self {
+            fps: 30,
+            audio: RecordAudio::Microphone,
+            area: RecordArea::Screen,
+            region: ScreenRect {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+            cursor: true,
+            quality: RecordQuality::Balanced,
+            countdown: true,
+        }
+    }
+}
+
 /// Picture heights offered as the downloader's quality limit.
 pub const DOWNLOAD_HEIGHTS: [u32; 7] = [4320, 2160, 1440, 1080, 720, 480, 360];
 /// Longest subtitle-language list passed to yt-dlp.
@@ -552,8 +677,7 @@ pub struct Options {
     pub cd_audio_format: AudioFormat,
     pub iso_label: String,
     pub cso_level: u32,
-    pub record_fps: u32,
-    pub record_audio: bool,
+    pub record: RecordOptions,
     pub download: DownloadOptions,
     pub join_layout: JoinLayout,
     /// Text appended to every output file name, e.g. `_converted`.
@@ -590,8 +714,7 @@ impl Default for Options {
             cd_audio_format: AudioFormat::Mp3,
             iso_label: "DISC".to_owned(),
             cso_level: 9,
-            record_fps: 30,
-            record_audio: true,
+            record: RecordOptions::default(),
             download: DownloadOptions::default(),
             join_layout: JoinLayout::Vertical,
             name_tag: String::new(),

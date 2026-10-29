@@ -19,6 +19,7 @@ use crate::diagnostics;
 use crate::dir;
 use crate::docs;
 use crate::download;
+use crate::exec;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
@@ -216,6 +217,8 @@ pub struct FmxApp {
     /// When the web address last changed, to wait for typing to pause.
     url_edited: Option<Instant>,
     link: Option<LinkPreview>,
+    /// Monitors the screen recorder can pick from, read when first needed.
+    monitors: Option<Vec<exec::Monitor>>,
     /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
     preview_index: usize,
     /// Size and length of added files, for the file list.
@@ -298,6 +301,7 @@ impl FmxApp {
             focus_url: false,
             url_edited: None,
             link: None,
+            monitors: None,
             preview_index: 0,
             details: HashMap::new(),
             probe_tx,
@@ -348,6 +352,9 @@ impl FmxApp {
                     }
                 };
                 app.settings_tab = SettingsTab::Updates;
+            }
+            if crate::devshot::wants_recorder() {
+                app.select_tool(Tool::Record);
             }
             if let Some(section) = crate::devshot::wants_settings() {
                 app.show_settings = true;
@@ -1489,12 +1496,9 @@ impl FmxApp {
             }
             InputKind::Capture => {
                 ui.label(tr("input.capture"));
-                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                if exec::system_picks_area() {
                     ui.add_space(4.0);
-                    ui.colored_label(
-                        p.warning,
-                        icons::label(icons::WARNING, tr("warning.wayland_capture")),
-                    );
+                    ui.colored_label(p.text_weak, tr("record.system_picks"));
                 }
             }
             _ => self.file_list(ui, fill),
@@ -2275,6 +2279,9 @@ impl FmxApp {
 
     fn options_ui(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
+        if tool == Tool::Record && self.monitors.is_none() {
+            self.monitors = Some(exec::monitors());
+        }
         let opts = &mut self.settings.options;
         match tool {
             Tool::ToVideo(_) | Tool::JoinVideo | Tool::VideoMix => {
@@ -2528,12 +2535,11 @@ impl FmxApp {
                 download_rows(ui, &mut opts.download, best);
             }
             Tool::Record => {
-                row(ui, tr("option.fps"), |ui| {
-                    ui.add(DragValue::new(&mut opts.record_fps).range(1..=options::MAX_RECORD_FPS));
-                });
-                row(ui, tr("option.audio"), |ui| {
-                    dir::checkbox(ui, &mut opts.record_audio, tr("option.record_audio"));
-                });
+                record_rows(
+                    ui,
+                    &mut opts.record,
+                    self.monitors.as_deref().unwrap_or_default(),
+                );
             }
             // The tools `has_options` lists have nothing to set.
             _ => {}
@@ -4341,6 +4347,75 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
     );
 }
 
+/// The screen recorder's options.
+fn record_rows(ui: &mut egui::Ui, r: &mut options::RecordOptions, monitors: &[exec::Monitor]) {
+    use options::{RecordArea, RecordAudio, RecordQuality};
+    if !exec::system_picks_area() {
+        let mut areas = vec![RecordArea::Screen];
+        areas.extend((0..monitors.len() as u32).map(RecordArea::Monitor));
+        areas.push(RecordArea::Region);
+        if !areas.contains(&r.area) {
+            r.area = RecordArea::Screen;
+        }
+        row(ui, tr("record.area"), |ui| {
+            combo(ui, "record_area", &mut r.area, &areas, |a| match a {
+                RecordArea::Screen => tr("record.area_screen").to_owned(),
+                RecordArea::Monitor(i) => monitors.get(i as usize).map_or_else(String::new, |m| {
+                    format!("{} ({}×{})", m.name, m.rect.width, m.rect.height)
+                }),
+                RecordArea::Region => tr("record.area_region").to_owned(),
+            });
+        });
+        if r.area == RecordArea::Region {
+            let side = options::MIN_RECORD_SIDE..=options::MAX_RECORD_SIDE;
+            let region = &mut r.region;
+            row(ui, tr("record.position"), |ui| {
+                ui.add(
+                    DragValue::new(&mut region.x)
+                        .range(0..=options::MAX_RECORD_SIDE)
+                        .prefix("x "),
+                );
+                ui.add(
+                    DragValue::new(&mut region.y)
+                        .range(0..=options::MAX_RECORD_SIDE)
+                        .prefix("y "),
+                );
+            });
+            row(ui, tr("record.size"), |ui| {
+                ui.add(
+                    DragValue::new(&mut region.width)
+                        .range(side.clone())
+                        .suffix(" px"),
+                );
+                ui.label("×");
+                ui.add(DragValue::new(&mut region.height).range(side).suffix(" px"));
+            });
+        }
+    }
+    row(ui, tr("option.audio"), |ui| {
+        combo(
+            ui,
+            "record_audio",
+            &mut r.audio,
+            RecordAudio::available(),
+            |a| a.label().to_owned(),
+        );
+    });
+    row(ui, tr("option.quality"), |ui| {
+        let choices = RecordQuality::ALL.map(|q| (q, q.label()));
+        widgets::segmented(ui, &mut r.quality, &choices);
+    });
+    row(ui, tr("option.fps"), |ui| {
+        ui.add(DragValue::new(&mut r.fps).range(1..=options::MAX_RECORD_FPS));
+    });
+    row(ui, tr("record.extras"), |ui| {
+        dir::vertical(ui, |ui| {
+            dir::checkbox(ui, &mut r.cursor, tr("record.cursor"));
+            dir::checkbox(ui, &mut r.countdown, tr("record.countdown"));
+        });
+    });
+}
+
 /// The video downloader's options. `best` is the link's tallest picture, if known.
 fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Option<u32>) {
     row(ui, tr("option.download_kind"), |ui| {
@@ -4762,11 +4837,14 @@ fn status_cell(ui: &mut egui::Ui, job: &Job) {
             widgets::chip(ui, icons::LIST_PLUS, tr("status.queued"), p.text_weak);
         }
         JobState::Running { .. } if job.spec.tool == Tool::Record => {
-            let text = format!(
-                "{} {}",
-                tr("status.recording"),
-                clock(job.elapsed().unwrap_or_default())
-            );
+            // The recorder's own detail: the countdown, then time and size.
+            let text = job.detail.clone().unwrap_or_else(|| {
+                format!(
+                    "{} {}",
+                    tr("status.recording"),
+                    clock(job.elapsed().unwrap_or_default())
+                )
+            });
             widgets::chip(ui, icons::RECORD, &text, p.danger);
             ui.ctx().request_repaint_after(Duration::from_millis(500));
         }

@@ -1320,6 +1320,7 @@ dependencies = [
  "rfd",
  "rodio",
  "rust_xlsxwriter",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "tar",

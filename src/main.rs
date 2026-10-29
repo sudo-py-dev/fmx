@@ -31,6 +31,8 @@ mod preview;
 mod probe;
 mod process;
 mod queue;
+#[cfg(target_os = "linux")]
+mod screencast;
 mod settings;
 mod sheet;
 mod shell;

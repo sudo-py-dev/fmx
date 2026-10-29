@@ -160,7 +160,7 @@ pub fn run_watching(
     stop: StopMode,
     watch: Watch,
     cancel: &AtomicBool,
-    mut on_line: impl FnMut(&str),
+    on_line: impl FnMut(&str),
 ) -> Result<(), RunError> {
     let name = program_name(program);
     tracing::debug!(program = %name, ?args, "running");
@@ -168,18 +168,84 @@ pub fn run_watching(
     if stop == StopMode::Quit {
         cmd.stdin(Stdio::piped());
     }
-    let mut child = cmd
-        .args(args)
-        .stdout(Stdio::piped())
+    let mut child = spawn(cmd.args(args), &name)?;
+    let quit = match stop {
+        StopMode::Kill => None,
+        StopMode::Quit => {
+            let mut stdin = child.0.stdin.take();
+            Some(move || {
+                if let Some(stdin) = stdin.as_mut() {
+                    let _ = stdin.write_all(b"q\n").and_then(|()| stdin.flush());
+                }
+            })
+        }
+    };
+    supervise(
+        name,
+        child,
+        None::<std::process::ChildStderr>,
+        watch,
+        cancel,
+        quit,
+        on_line,
+    )
+}
+
+/// Runs `program args…` reading `producer`'s stdout as its stdin, watching
+/// its stdout. Cancelling calls `end` on the producer, so its output ends and
+/// the program finishes its file; the job then counts as done.
+pub fn run_fed(
+    mut producer: Child,
+    mut end: impl FnMut(&mut Child),
+    program: &Path,
+    args: &[OsString],
+    cancel: &AtomicBool,
+    on_line: impl FnMut(&str),
+) -> Result<(), RunError> {
+    let name = program_name(program);
+    tracing::debug!(program = %name, ?args, "running fed");
+    let feed = producer.stdout.take().map_or_else(Stdio::null, Stdio::from);
+    let producer_log = producer.stderr.take();
+    let mut producer = KillOnDrop(producer);
+    let mut cmd = command(program);
+    let child = spawn(cmd.args(args).stdin(feed), &name)?;
+    supervise(
+        name,
+        child,
+        producer_log,
+        Watch::Stdout,
+        cancel,
+        Some(move || end(&mut producer.0)),
+        on_line,
+    )
+}
+
+fn spawn(cmd: &mut Command, name: &str) -> Result<KillOnDrop, RunError> {
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map(KillOnDrop)
-        .map_err(|e| RunError::Spawn(name.clone(), e))?;
+        .map_err(|e| RunError::Spawn(name.to_owned(), e))
+}
 
+/// Streams a started program's lines until it exits or is cancelled. With
+/// `quit`, cancelling asks it to finish gracefully instead of killing it.
+fn supervise(
+    name: String,
+    mut child: KillOnDrop,
+    extra_log: Option<impl Read + Send + 'static>,
+    watch: Watch,
+    cancel: &AtomicBool,
+    mut quit: Option<impl FnMut()>,
+    mut on_line: impl FnMut(&str),
+) -> Result<(), RunError> {
     let (out_tx, out_rx) = mpsc::channel();
     let (log_tx, log_rx) = mpsc::channel();
     if let Some(out) = child.0.stdout.take() {
         spawn_line_reader(out, out_tx);
+    }
+    if let Some(log) = extra_log {
+        spawn_line_reader(log, log_tx.clone());
     }
     if let Some(err) = child.0.stderr.take() {
         spawn_line_reader(err, log_tx);
@@ -195,15 +261,13 @@ pub fn run_watching(
     let mut quit_sent: Option<Instant> = None;
     let status = loop {
         if cancel.load(Ordering::Relaxed) {
-            match (stop, quit_sent) {
-                (StopMode::Kill, _) => return Err(RunError::Cancelled),
-                (StopMode::Quit, None) => {
-                    if let Some(stdin) = child.0.stdin.as_mut() {
-                        let _ = stdin.write_all(b"q\n").and_then(|()| stdin.flush());
-                    }
+            match (quit.as_mut(), quit_sent) {
+                (None, _) => return Err(RunError::Cancelled),
+                (Some(quit), None) => {
+                    quit();
                     quit_sent = Some(Instant::now());
                 }
-                (StopMode::Quit, Some(at)) if at.elapsed() > QUIT_GRACE => {
+                (Some(_), Some(at)) if at.elapsed() > QUIT_GRACE => {
                     return Err(RunError::Cancelled);
                 }
                 _ => {}
@@ -304,6 +368,35 @@ mod tests {
         );
         assert!(matches!(err, Err(RunError::Cancelled)));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn fed_program_finishes_when_its_producer_ends() {
+        let producer = command(Path::new("/bin/sh"))
+            .args(sh("echo one; echo two; exec sleep 30"))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("producer");
+        let cancel = AtomicBool::new(false);
+        let mut lines = Vec::new();
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                thread::sleep(Duration::from_millis(300));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            run_fed(
+                producer,
+                |p| {
+                    let _ = p.kill();
+                },
+                Path::new("/bin/cat"),
+                &[],
+                &cancel,
+                |l| lines.push(l.to_owned()),
+            )
+        });
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(lines, ["one", "two"]);
     }
 
     #[test]
