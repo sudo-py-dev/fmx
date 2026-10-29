@@ -2,8 +2,8 @@
 //! running app as a PNG and quits, for checking layouts (such as right to
 //! left) without clicking through the UI. Files on the command line open the
 //! task editor, and these also set the scene:
-//! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings (`=queue`, `=updates` or
-//!   `=programs` opens that section);
+//! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings (`=queue`, `=updates`,
+//!   `=programs` or `=about` opens that section);
 //! - `FMX_SCREENSHOT_EXPAND=1` opens every collapsible section;
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue
 //!   (`FMX_SCREENSHOT_RUNNING=1` then shows the first two as running);

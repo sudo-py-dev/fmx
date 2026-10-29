@@ -63,6 +63,7 @@ pub mod glyph {
     pub const HARD_DRIVE: &str = "\u{E29E}";
     pub const IMAGE: &str = "\u{E2CA}";
     pub const IMAGES: &str = "\u{E836}";
+    pub const INFO: &str = "\u{E2CE}";
     pub const LINK: &str = "\u{E2E2}";
     pub const MERGE: &str = "\u{E280}";
     pub const MOBILE: &str = "\u{E1E0}";
@@ -88,7 +89,7 @@ pub mod glyph {
 
     /// Every glyph above, for the font-coverage test.
     #[cfg(test)]
-    pub const ALL: [&str; 52] = [
+    pub const ALL: [&str; 53] = [
         ANDROID,
         APPLE,
         ARROW_CLOCKWISE,
@@ -119,6 +120,7 @@ pub mod glyph {
         HARD_DRIVE,
         IMAGE,
         IMAGES,
+        INFO,
         LINK,
         MERGE,
         MOBILE,

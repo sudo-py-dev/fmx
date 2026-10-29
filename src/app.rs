@@ -41,6 +41,8 @@ use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
 
 const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
+/// FMX's GitHub page, for the links in Settings → About.
+const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const SIDEBAR_WIDTH: f32 = 230.0;
 /// The height of the header bar's row, matched by the sidebar's title row.
 const HEADER_HEIGHT: f32 = 30.0;
@@ -138,10 +140,17 @@ enum SettingsTab {
     Queue,
     Updates,
     Programs,
+    About,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 4] = [Self::General, Self::Queue, Self::Updates, Self::Programs];
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Queue,
+        Self::Updates,
+        Self::Programs,
+        Self::About,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -149,6 +158,7 @@ impl SettingsTab {
             Self::Queue => tr("settings.section_queue_title"),
             Self::Updates => tr("settings.section_updates_title"),
             Self::Programs => tr("settings.section_programs_title"),
+            Self::About => tr("settings.section_about_title"),
         }
     }
 
@@ -158,6 +168,7 @@ impl SettingsTab {
             Self::Queue => (art::glyph::STACK, art::hue::VIOLET),
             Self::Updates => (art::glyph::DOWNLOAD, art::hue::GREEN),
             Self::Programs => (art::glyph::WRENCH, art::hue::AMBER),
+            Self::About => (art::glyph::INFO, art::hue::SLATE),
         };
         art::Art { glyph, hue }
     }
@@ -342,6 +353,7 @@ impl FmxApp {
                     "queue" => SettingsTab::Queue,
                     "updates" => SettingsTab::Updates,
                     "programs" => SettingsTab::Programs,
+                    "about" => SettingsTab::About,
                     _ => app.settings_tab,
                 };
             }
@@ -3207,6 +3219,7 @@ impl FmxApp {
             }
             SettingsTab::Updates => self.update_settings(ui),
             SettingsTab::Programs => self.programs_settings(ui),
+            SettingsTab::About => about_page(ui),
         }
     }
 
@@ -3890,6 +3903,97 @@ fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: 
             }
         });
     });
+}
+
+/// Settings → About, like GNOME's About windows: the app's icon, name and
+/// version, then links to its page and its licenses.
+fn about_page(ui: &mut egui::Ui) {
+    let p = theme::palette(ui);
+    let repo = REPOSITORY;
+    ui.vertical_centered(|ui| {
+        ui.add_space(8.0);
+        widgets::icon_tile(ui, art::LOGO, 72.0, true);
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("app.name")).size(22.0).strong());
+        ui.label(RichText::new("Free Media Xpress").color(p.text_weak));
+        ui.add_space(6.0);
+        // The version in an accent pill, only as wide as its text.
+        let version = ui.painter().layout_no_wrap(
+            update::VERSION.to_owned(),
+            egui::FontId::proportional(12.5),
+            p.accent,
+        );
+        let (pill, _) =
+            ui.allocate_exact_size(version.size() + egui::vec2(20.0, 6.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(pill, CornerRadius::same(255), p.accent.gamma_multiply(0.14));
+        ui.painter()
+            .galley(pill.center() - version.size() / 2.0, version, p.accent);
+        ui.add_space(10.0);
+        ui.add(Label::new(RichText::new(tr("about.description")).color(p.text_weak)).wrap());
+    });
+    ui.add_space(18.0);
+    pref_group(ui, None, |ui| {
+        link_row(ui, tr("about.website"), "github.com/sudo-py-dev/fmx", repo);
+        link_row(ui, tr("about.report"), "", &format!("{repo}/issues"));
+        link_row(ui, tr("about.releases"), "", &format!("{repo}/releases"));
+    });
+    ui.add_space(18.0);
+    pref_group(
+        ui,
+        Some((tr("about.license_title"), tr("about.license"))),
+        |ui| {
+            link_row(
+                ui,
+                "MIT License",
+                "",
+                &format!("{repo}/blob/master/LICENSE-MIT"),
+            );
+            link_row(
+                ui,
+                "Apache License 2.0",
+                "",
+                &format!("{repo}/blob/master/LICENSE-APACHE"),
+            );
+            link_row(
+                ui,
+                tr("about.third_party"),
+                tr("about.third_party_hint"),
+                &format!("{repo}/blob/master/packaging/THIRD-PARTY-NOTICES.md"),
+            );
+        },
+    );
+    ui.add_space(8.0);
+}
+
+/// A [`widgets::pref_row`] that opens `url` in the browser when clicked,
+/// with the "opens outside" arrow on its end edge.
+fn link_row(ui: &mut egui::Ui, title: &str, subtitle: &str, url: &str) {
+    let p = theme::palette(ui);
+    let row = widgets::pref_row(ui, title, subtitle, |ui| {
+        ui.label(
+            RichText::new(icons::ARROW_SQUARE_OUT)
+                .size(16.0)
+                .color(p.text_weak),
+        );
+    });
+    let click = ui
+        .interact(row.rect, row.id.with("link"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(url);
+    let hover = ui
+        .ctx()
+        .animate_bool_with_time(click.id, click.hovered(), theme::MOTION);
+    if hover > 0.0 {
+        ui.painter().rect_filled(
+            row.rect.shrink(1.0),
+            CornerRadius::same(theme::RADIUS),
+            p.text.gamma_multiply(0.04 * hover),
+        );
+    }
+    if click.clicked() {
+        open_url(url);
+    }
 }
 
 /// A libadwaita preferences group: an optional title and description,
