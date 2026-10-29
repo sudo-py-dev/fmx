@@ -2442,27 +2442,7 @@ impl FmxApp {
                 });
             }
             Tool::Trim => {
-                row_hint(ui, tr("option.clip_times"), tr("hint.timestamp"), |ui| {
-                    let edit = &mut opts.edit;
-                    ui.label(RichText::new(tr("option.start")).weak());
-                    let end_clone = edit.trim_end.clone();
-                    time_input(
-                        ui,
-                        &mut edit.trim_start,
-                        110.0,
-                        "",
-                        Some((&end_clone, false)),
-                    );
-                    ui.label(RichText::new(tr("option.end_short")).weak());
-                    let start_clone = edit.trim_start.clone();
-                    time_input(
-                        ui,
-                        &mut edit.trim_end,
-                        110.0,
-                        "",
-                        Some((&start_clone, true)),
-                    );
-                });
+                // The in and out points are set under the video.
                 row_hint(ui, tr("option.mode"), tr("hint.stream_copy"), |ui| {
                     dir::checkbox(ui, &mut opts.stream_copy, tr("option.stream_copy"));
                 });

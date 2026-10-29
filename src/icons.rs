@@ -23,6 +23,8 @@ pub fn fill(size: f32) -> egui::FontId {
 pub const ARROW_CLOCKWISE: &str = "\u{E036}";
 pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
 pub const ARROW_LEFT: &str = "\u{E058}";
+pub const ARROW_LINE_LEFT: &str = "\u{E062}";
+pub const ARROW_LINE_RIGHT: &str = "\u{E064}";
 pub const ARROW_RIGHT: &str = "\u{E06C}";
 pub const FLIP_HORIZONTAL: &str = "\u{ED6A}";
 pub const FLIP_VERTICAL: &str = "\u{ED6C}";

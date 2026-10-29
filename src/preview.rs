@@ -16,7 +16,7 @@ use crate::dir;
 use crate::i18n::{tr, trf};
 use crate::icons;
 use crate::options::{
-    Edit, Orientation, Rect, add_frame_time, display_time, format_timestamp, parse_timestamp,
+    Edit, Orientation, Rect, add_frame_time, compact_timestamp, display_time, parse_timestamp,
 };
 use crate::plan::input_url;
 use crate::probe::MediaInfo;
@@ -39,6 +39,10 @@ const TIMELINE_HEIGHT: f32 = 38.0;
 const HANDLE_GRAB: f32 = 10.0;
 /// The shortest clip the handles allow, in seconds.
 const MIN_CLIP_S: f64 = 0.1;
+/// Width of a typed in or out point.
+const TIME_FIELD_WIDTH: f32 = 84.0;
+/// Space around the clip's length, between its in and out points.
+const CLIP_GAP: f32 = 10.0;
 /// How far the skip buttons move, in seconds; the arrow keys move one.
 const SKIP_S: f64 = 5.0;
 /// Frames per second shown while playing; enough to watch, light to decode.
@@ -644,11 +648,14 @@ impl Preview {
             }
         });
 
+        if mode.clip {
+            ui.add_space(4.0);
+            self.clip_controls(ui, width, edit, duration);
+        }
+
         // Clearing is offered only once there is something to clear.
         let rotating = mode.rotate && orientation.is_some();
-        let has_edit = (mode.clip && edit.has_trim())
-            || (mode.area && rect.is_some())
-            || (rotating && !turned.is_unchanged());
+        let has_edit = (mode.area && rect.is_some()) || (rotating && !turned.is_unchanged());
         // Turning and flipping, as in GNOME's image viewer: icon buttons.
         let turns = [
             (
@@ -687,20 +694,6 @@ impl Preview {
                 Size::Regular,
             ));
         }
-        if mode.clip {
-            add_w(widgets::button_width(
-                ui,
-                None,
-                tr("preview.start"),
-                Size::Regular,
-            ));
-            add_w(widgets::button_width(
-                ui,
-                None,
-                tr("preview.end"),
-                Size::Regular,
-            ));
-        }
         if has_edit {
             add_w(icon_w(ui, icons::X));
         }
@@ -730,35 +723,11 @@ impl Preview {
                 {
                     add_frame_time(marks, self.time);
                 }
-                if mode.clip {
-                    if widgets::button(
-                        ui,
-                        None,
-                        tr("preview.start"),
-                        Kind::Secondary,
-                        Size::Regular,
-                    )
-                    .on_hover_text(tr("preview.set_start_hint"))
-                    .clicked()
-                    {
-                        edit.trim_start = format_timestamp(self.time);
-                    }
-                    if widgets::button(ui, None, tr("preview.end"), Kind::Secondary, Size::Regular)
-                        .on_hover_text(tr("preview.set_end_hint"))
-                        .clicked()
-                    {
-                        edit.trim_end = format_timestamp(self.time);
-                    }
-                }
                 if has_edit
                     && widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Regular)
                         .on_hover_text(tr("preview.clear"))
                         .clicked()
                 {
-                    if mode.clip {
-                        edit.trim_start.clear();
-                        edit.trim_end.clear();
-                    }
                     if mode.area {
                         *rect = None;
                     }
@@ -769,18 +738,7 @@ impl Preview {
             });
         }
         ui.add_space(4.0);
-        let (start, end) = clip_range(edit, duration);
         let mut lines = Vec::new();
-        if mode.clip {
-            lines.push(trf(
-                "preview.summary",
-                &[
-                    ("start", &display_time(start)),
-                    ("end", &display_time(end)),
-                    ("length", &display_time((end - start).max(0.0))),
-                ],
-            ));
-        }
         if mode.area {
             lines.push(match *rect {
                 Some(r) => trf(
@@ -805,6 +763,71 @@ impl Preview {
         for line in lines {
             ui.label(RichText::new(line).color(p.text_weak));
         }
+    }
+
+    /// The clip's in and out points, as in a video editor: set either one
+    /// to the playhead, or type it; the clip's length sits between them.
+    fn clip_controls(&mut self, ui: &mut egui::Ui, width: f32, edit: &mut Edit, duration: f64) {
+        let p = theme::palette(ui);
+        let (start, end) = clip_range(edit, duration);
+        let empty = end <= start;
+        let length = RichText::new(display_time((end - start).max(0.0))).color(p.text_weak);
+        let length_w = ui
+            .painter()
+            .layout_no_wrap(
+                length.text().to_owned(),
+                egui::TextStyle::Body.resolve(ui.style()),
+                p.text_weak,
+            )
+            .size()
+            .x;
+        let gap = ui.spacing().item_spacing.x;
+        let icon_w = widgets::button_width(ui, Some(icons::ARROW_LINE_LEFT), "", Size::Regular);
+        let clear = edit.has_trim();
+        let content = 2.0 * (icon_w + TIME_FIELD_WIDTH)
+            + length_w
+            + 2.0 * CLIP_GAP
+            + 4.0 * gap
+            + if clear { icon_w + gap } else { 0.0 };
+        centered_row(ui, width, content, |ui| {
+            if widgets::button(
+                ui,
+                Some(icons::ARROW_LINE_LEFT),
+                "",
+                Kind::Ghost,
+                Size::Regular,
+            )
+            .on_hover_text(tr("preview.set_start_hint"))
+            .clicked()
+            {
+                edit.trim_start = compact_timestamp(self.time);
+            }
+            time_field(ui, &mut edit.trim_start, &display_time(0.0), empty);
+            ui.add_space(CLIP_GAP);
+            ui.label(length).on_hover_text(tr("preview.length"));
+            ui.add_space(CLIP_GAP);
+            time_field(ui, &mut edit.trim_end, &display_time(duration), empty);
+            if widgets::button(
+                ui,
+                Some(icons::ARROW_LINE_RIGHT),
+                "",
+                Kind::Ghost,
+                Size::Regular,
+            )
+            .on_hover_text(tr("preview.set_end_hint"))
+            .clicked()
+            {
+                edit.trim_end = compact_timestamp(self.time);
+            }
+            if clear
+                && widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Regular)
+                    .on_hover_text(tr("preview.clear"))
+                    .clicked()
+            {
+                edit.trim_start.clear();
+                edit.trim_end.clear();
+            }
+        });
     }
 
     /// Space plays or pauses and the arrow keys step a second, while no
@@ -877,12 +900,12 @@ impl Preview {
                 Grab::Playhead => self.time = t,
                 Grab::Start => {
                     let t = t.min(end - MIN_CLIP_S).max(0.0);
-                    edit.trim_start = format_timestamp(t);
+                    edit.trim_start = compact_timestamp(t);
                     self.time = t;
                 }
                 Grab::End => {
                     let t = t.max(start + MIN_CLIP_S).min(duration);
-                    edit.trim_end = format_timestamp(t);
+                    edit.trim_end = compact_timestamp(t);
                     self.time = t;
                 }
             }
@@ -953,6 +976,40 @@ impl Preview {
     }
 }
 
+/// A typed in or out point; empty means the start or end of the video,
+/// shown as `hint`. It is outlined in red when it cannot be read, or when the
+/// clip it makes is empty.
+fn time_field(ui: &mut egui::Ui, text: &mut String, hint: &str, empty_clip: bool) {
+    let p = theme::palette(ui);
+    let response = ui.add(
+        egui::TextEdit::singleline(text)
+            .hint_text(hint)
+            .desired_width(TIME_FIELD_WIDTH)
+            .align(egui::Align2::CENTER_CENTER),
+    );
+    let problem = if parse_timestamp(text).is_err() {
+        Some(trf("error.bad_timestamp", &[("value", &text.trim())]))
+    } else if empty_clip && !text.trim().is_empty() {
+        Some(tr("error.empty_trim").to_owned())
+    } else {
+        None
+    };
+    match problem {
+        Some(problem) => {
+            ui.painter().rect_stroke(
+                response.rect,
+                CornerRadius::same(theme::RADIUS),
+                Stroke::new(1.5, p.danger),
+                StrokeKind::Inside,
+            );
+            response.on_hover_text(problem);
+        }
+        None => {
+            response.on_hover_text(tr("hint.timestamp"));
+        }
+    }
+}
+
 /// A left-to-right row of `content_w` points, centred in `width`.
 fn centered_row(ui: &mut egui::Ui, width: f32, content_w: f32, add: impl FnOnce(&mut egui::Ui)) {
     let row = egui::Layout::left_to_right(egui::Align::Center);
@@ -962,22 +1019,36 @@ fn centered_row(ui: &mut egui::Ui, width: f32, content_w: f32, add: impl FnOnce(
     });
 }
 
-/// The kept part as `(start, end)` seconds; empty fields mean the whole file.
+/// The kept part as `(start, end)` seconds inside the video; empty fields
+/// mean the whole file, and an end past the video stops at its end.
 fn clip_range(edit: &Edit, duration: f64) -> (f64, f64) {
     let start = parse_timestamp(&edit.trim_start)
         .ok()
         .flatten()
-        .unwrap_or(0.0);
+        .unwrap_or(0.0)
+        .min(duration);
     let end = parse_timestamp(&edit.trim_end)
         .ok()
         .flatten()
-        .unwrap_or(duration);
+        .unwrap_or(duration)
+        .min(duration);
     (start, end)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_range_stays_inside_the_video() {
+        let edit = Edit {
+            trim_start: "1.2".into(),
+            trim_end: "3:9".into(),
+            ..Edit::default()
+        };
+        assert_eq!(clip_range(&edit, 4.0), (1.2, 4.0));
+        assert_eq!(clip_range(&Edit::default(), 4.0), (0.0, 4.0));
+    }
 
     #[test]
     fn played_frames_keep_the_shape_with_even_sides() {

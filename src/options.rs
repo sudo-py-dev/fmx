@@ -988,11 +988,22 @@ pub fn sanitize_name_tag(tag: &str) -> String {
         .to_owned()
 }
 
-/// Formats seconds as `h:mm:ss.mmm`, which [`parse_timestamp`] reads back.
-pub fn format_timestamp(secs: f64) -> String {
+/// A short exact time to type or edit, such as `3:41.6`, `0:10` or
+/// `1:02:05.25`: milliseconds kept, trailing zeros dropped.
+pub fn compact_timestamp(secs: f64) -> String {
     let millis = (secs.max(0.0) * 1000.0).round() as u64;
     let (s, ms) = (millis / 1000, millis % 1000);
-    format!("{}:{:02}:{:02}.{ms:03}", s / 3600, s / 60 % 60, s % 60)
+    let clock = if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    };
+    if ms == 0 {
+        clock
+    } else {
+        let fraction = format!("{ms:03}");
+        format!("{clock}.{}", fraction.trim_end_matches('0'))
+    }
 }
 
 /// A short, readable time such as `1:05.5` or `1:02:05.0`, for display only.
@@ -1052,6 +1063,16 @@ mod tests {
     }
 
     #[test]
+    fn compact_timestamps_round_trip() {
+        assert_eq!(compact_timestamp(221.6), "3:41.6");
+        assert_eq!(compact_timestamp(10.0), "0:10");
+        assert_eq!(compact_timestamp(3725.25), "1:02:05.25");
+        for secs in [0.0, 0.001, 59.999, 221.6, 3725.25] {
+            assert_eq!(parse_timestamp(&compact_timestamp(secs)), Ok(Some(secs)));
+        }
+    }
+
+    #[test]
     fn display_time_is_short_and_readable() {
         assert_eq!(display_time(0.0), "0:00.0");
         assert_eq!(display_time(65.46), "1:05.5");
@@ -1077,7 +1098,7 @@ mod tests {
     #[test]
     fn timestamps_round_trip() {
         for secs in [0.0, 5.25, 65.5, 3723.125] {
-            assert_eq!(parse_timestamp(&format_timestamp(secs)), Ok(Some(secs)));
+            assert_eq!(parse_timestamp(&compact_timestamp(secs)), Ok(Some(secs)));
         }
     }
 
