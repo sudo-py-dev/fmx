@@ -989,18 +989,6 @@ impl FmxApp {
 
     /// Just the app's name and Settings: queue controls live on the queue,
     /// and the output folder sits beside the button that adds jobs.
-    /// Shown only while a tool is open; otherwise the sidebar's header holds
-    /// the app's name and Settings, so the content gets the whole height.
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.set_min_height(HEADER_HEIGHT);
-            app_title(ui);
-            ui.with_layout(dir::trailing(Align::Center), |ui| {
-                self.settings_button(ui, true);
-            });
-        });
-    }
-
     /// Start or Pause, then the buttons for what is in the queue right now:
     /// a button only shows when it has something to act on.
     fn queue_controls(&mut self, ui: &mut egui::Ui) {
@@ -1142,18 +1130,11 @@ impl FmxApp {
     }
 
     /// The Settings button, with a dot when an update is waiting there.
-    /// The Settings button; without its label in the sidebar's header,
-    /// like the menu button in GNOME Settings.
-    fn settings_button(&mut self, ui: &mut egui::Ui, labelled: bool) {
+    /// The Settings button in the sidebar's header, like the menu button in
+    /// GNOME Settings.
+    fn settings_button(&mut self, ui: &mut egui::Ui) {
         let news = self.update_news();
-        let settings = widgets::button_tinted(
-            ui,
-            Some(icons::GEAR),
-            labelled.then_some(art::hue::SLATE),
-            if labelled { tr("action.settings") } else { "" },
-            Kind::Ghost,
-            Size::Regular,
-        );
+        let settings = widgets::button(ui, Some(icons::GEAR), "", Kind::Ghost, Size::Regular);
         if news {
             // A dot on the button's top end corner: an update is waiting in Settings.
             let r = settings.rect;
@@ -1179,6 +1160,20 @@ impl FmxApp {
 
     /// "Change…" (and "Reset" once changed) beside the sentence that says
     /// where the files will be saved.
+    /// How wide [`Self::output_dir_picker`] draws its buttons.
+    fn output_dir_picker_width(&self, ui: &egui::Ui) -> f32 {
+        let change =
+            widgets::button_width(ui, Some(icons::FOLDER), tr("action.change"), Size::Small);
+        match self.settings.output_dir {
+            Some(_) => {
+                change
+                    + ui.spacing().item_spacing.x
+                    + widgets::button_width(ui, Some(icons::X), tr("action.reset"), Size::Small)
+            }
+            None => change,
+        }
+    }
+
     fn output_dir_picker(&mut self, ui: &mut egui::Ui) {
         if widgets::button(
             ui,
@@ -1215,9 +1210,22 @@ impl FmxApp {
             ui.set_min_height(HEADER_HEIGHT);
             app_title(ui);
             ui.with_layout(dir::trailing(Align::Center), |ui| {
-                self.settings_button(ui, false);
+                self.settings_button(ui);
             });
         });
+        ui.add_space(10.0);
+        // Searching shows the matching tools from every category, and leaves
+        // an open tool to show them.
+        let search = ui.add(
+            TextEdit::singleline(&mut self.search)
+                .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
+                .align(egui::Align2([dir::start(), Align::Center]))
+                .margin(Margin::symmetric(10, 7))
+                .desired_width(f32::INFINITY),
+        );
+        if search.changed() && !self.search.trim().is_empty() {
+            self.in_editor = false;
+        }
         ui.add_space(10.0);
         ScrollArea::vertical()
             .auto_shrink([false; 2])
@@ -1254,14 +1262,6 @@ impl FmxApp {
                 ui.add_space(4.0);
                 ui.label(RichText::new(self.category.label()).heading().strong());
             }
-            ui.with_layout(dir::trailing(Align::Center), |ui| {
-                ui.add(
-                    TextEdit::singleline(&mut self.search)
-                        .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
-                        .align(egui::Align2([dir::start(), Align::Center]))
-                        .desired_width(240.0),
-                );
-            });
         });
         ui.add_space(12.0);
         if self.toolbox.get(External::Ffmpeg).is_none() {
@@ -1407,35 +1407,49 @@ impl FmxApp {
         }
     }
 
-    /// One compact row: back to the category, the tool's icon, name and purpose.
+    /// A GNOME-style page header: a back button at the start edge and the
+    /// tool's name centered over the page, with its purpose below.
     fn editor_header(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
-        ui.horizontal(|ui| {
-            // A plain back arrow at the start edge, pointing that way.
-            let back = if dir::is_rtl() {
-                icons::ARROW_RIGHT
-            } else {
-                icons::ARROW_LEFT
-            };
-            if widgets::button(ui, Some(back), "", Kind::Ghost, Size::Regular)
-                .on_hover_text(trf(
-                    "hint.back_to",
-                    &[("category", &self.tool.category().label())],
-                ))
-                .clicked()
-            {
-                self.in_editor = false;
-            }
-            ui.add_space(4.0);
-            dir::vertical(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(RichText::new(self.tool_title()).size(19.0).strong());
-                ui.label(RichText::new(self.tool.description()).color(p.text_weak));
-            });
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), theme::BUTTON_HEIGHT),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            row.center(),
+            egui::Align2::CENTER_CENTER,
+            self.tool_title(),
+            egui::FontId::proportional(17.0),
+            p.text,
+        );
+        // GNOME's thin back chevron at the start edge, pointing that way.
+        let back = if dir::is_rtl() {
+            icons::CARET_RIGHT
+        } else {
+            icons::CARET_LEFT
+        };
+        let mut start = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(row)
+                .layout(dir::leading(Align::Center)),
+        );
+        if widgets::button(&mut start, Some(back), "", Kind::Ghost, Size::Regular)
+            .on_hover_text(trf(
+                "hint.back_to",
+                &[("category", &self.tool.category().label())],
+            ))
+            .clicked()
+        {
+            self.in_editor = false;
+        }
+        ui.vertical_centered(|ui| {
+            ui.add(
+                egui::Label::new(RichText::new(self.tool.description()).color(p.text_weak)).wrap(),
+            );
         });
         if let Some(reason) = self.unavailable_reason(self.tool) {
             ui.add_space(4.0);
-            widgets::chip(ui, icons::WARNING, &reason, p.warning);
+            ui.vertical_centered(|ui| widgets::chip(ui, icons::WARNING, &reason, p.warning));
         }
     }
 
@@ -1622,7 +1636,16 @@ impl FmxApp {
                         None => (icons::CHECK_CIRCLE, p.success, self.ready_summary(), p.text),
                     };
                     ui.label(RichText::new(glyph).size(20.0).color(color));
-                    ui.add(Label::new(RichText::new(text).color(text_color)).wrap());
+                    // The sentence wraps in the room the folder buttons leave.
+                    let picker = if blocker.is_none() {
+                        self.output_dir_picker_width(ui) + ui.spacing().item_spacing.x
+                    } else {
+                        0.0
+                    };
+                    ui.scope(|ui| {
+                        ui.set_max_width((ui.available_width() - picker).max(80.0));
+                        ui.add(Label::new(RichText::new(text).color(text_color)).wrap());
+                    });
                     if blocker.is_none() {
                         self.output_dir_picker(ui);
                     }
@@ -3049,7 +3072,7 @@ impl FmxApp {
                 ui.add_space(8.0);
                 // Each section fades in, its rows grouped on one card.
                 let tab = self.settings_tab as u8;
-                widgets::page_transition(ui, "settings", tab, 0, |ui| {
+                widgets::navigation(ui, "settings", 0, tab, |ui, _| {
                     ScrollArea::vertical()
                         .id_salt(("settings_page", tab))
                         .auto_shrink([false; 2])
@@ -4761,21 +4784,15 @@ impl eframe::App for FmxApp {
                 .inner_margin(Margin::symmetric(14, 10))
         };
         // Like GNOME Settings, the sidebar runs the window's full height with
-        // the app's name and Settings on top, and the content has no header bar.
-        // Like a tool dialog, an open tool gets the whole window;
-        // the sidebar and queue come back once its jobs are added.
+        // the app's name and Settings on top, and the content has no header bar:
+        // an open tool is a page with its own back button. The queue makes way
+        // for the tool's action bar and comes back once its jobs are added.
+        dir::start_panel("tools")
+            .resizable(true)
+            .default_size(SIDEBAR_WIDTH)
+            .frame(bar(p.sidebar))
+            .show(ui, |ui| dir::vertical(ui, |ui| self.sidebar(ui)));
         if !self.in_editor {
-            dir::start_panel("tools")
-                .resizable(true)
-                .default_size(SIDEBAR_WIDTH)
-                .frame(bar(p.sidebar))
-                .show(ui, |ui| dir::vertical(ui, |ui| self.sidebar(ui)));
-        }
-        if self.in_editor {
-            egui::Panel::top("toolbar")
-                .frame(bar(p.panel))
-                .show(ui, |ui| dir::vertical(ui, |ui| self.toolbar(ui)));
-        } else {
             // An empty queue is a single line.
             if self.queue.jobs().is_empty() {
                 egui::Panel::bottom("queue_empty")
@@ -4807,18 +4824,23 @@ impl eframe::App for FmxApp {
                         centered(ui, EDITOR_MAX_WIDTH, |ui| self.action_bar(ui));
                     });
                 });
-            // Opening a tool slides its page in; another category fades in.
-            let page = if self.in_editor {
-                (1, Some(self.tool), None)
-            } else {
-                (0, None, Some((self.category, self.search.is_empty())))
-            };
-            egui::Frame::new()
-                .inner_margin(Margin::symmetric(18, 14))
-                .show(ui, |ui| {
-                    widgets::page_transition(ui, "main", page, page.0, |ui| {
+            // Opening a tool slides its page in over the tools, like a GNOME
+            // subpage; another category fades in.
+            let depth = u8::from(self.in_editor);
+            let key = (self.tool, self.category, self.search.is_empty());
+            widgets::navigation(ui, "main", depth, key, |ui, depth| {
+                egui::Frame::new()
+                    // The same top margin as the sidebar, so a page's header row
+                    // lines up with the sidebar's.
+                    .inner_margin(Margin {
+                        left: 18,
+                        right: 18,
+                        top: 10,
+                        bottom: 14,
+                    })
+                    .show(ui, |ui| {
                         dir::vertical(ui, |ui| {
-                            if self.in_editor {
+                            if depth == 1 {
                                 centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                             } else {
                                 ScrollArea::vertical()
@@ -4827,7 +4849,7 @@ impl eframe::App for FmxApp {
                             }
                         });
                     });
-                });
+            });
         });
         self.settings_window(&ctx);
         self.media_info_window(&ctx);

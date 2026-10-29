@@ -13,8 +13,8 @@ use crate::i18n::tr;
 pub const MOTION: f32 = 0.2;
 /// Seconds for value changes such as progress bars.
 pub const VALUE_MOTION: f32 = 0.35;
-/// Seconds for a page sliding or fading in, like libadwaita's navigation.
-pub const PAGE_MOTION: f32 = 0.25;
+/// Seconds for a page sliding in or out, like libadwaita's navigation.
+pub const PAGE_MOTION: f32 = 0.3;
 /// Buttons, entries and sidebar rows.
 pub const RADIUS: u8 = 6;
 /// Cards and boxed lists.

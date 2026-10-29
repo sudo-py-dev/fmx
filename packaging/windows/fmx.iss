@@ -81,10 +81,14 @@ Type: filesandordirs; Name: "{app}\tools"
 Type: files; Name: "{app}\ffmpeg.exe"
 Type: files; Name: "{app}\ffprobe.exe"
 Type: files; Name: "{app}\yt-dlp.exe"
+; Shortcuts were "FMX.lnk" up to 0.2.0. Windows keeps a file name's old case
+; when it is overwritten, so remove them for the new "fmx.lnk" to take over.
+Type: files; Name: "{autoprograms}\FMX.lnk"
+Type: files; Name: "{autodesktop}\FMX.lnk"
 
 [Icons]
-Name: "{autoprograms}\FMX"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Comment: "Free Media Xpress - Video, audio, image, document and disc converter"
-Name: "{autodesktop}\FMX"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Tasks: desktopicon
+Name: "{autoprograms}\fmx"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Comment: "Free Media Xpress - Video, audio, image, document and disc converter"
+Name: "{autodesktop}\fmx"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Tasks: desktopicon
 
 [CustomMessages]
 ContextMenu=Add "Convert with FMX" to the right-click menu of files

@@ -746,56 +746,102 @@ pub fn segmented<T: PartialEq + Copy>(
     changed
 }
 
-/// How far a page slides in when going deeper or back, in points.
-const PAGE_SLIDE: f32 = 48.0;
+/// How far the page underneath drifts while another slides over it, as a
+/// share of the width.
+const PAGE_PARALLAX: f32 = 0.25;
+/// How dark the page underneath gets once fully covered.
+const PAGE_DIM: f32 = 0.12;
 
-/// Shows `content` as a page that eases in whenever `key` changes, like
-/// libadwaita's navigation: a deeper `depth` slides in from the end edge, a
-/// shallower one from the start edge, and a page at the same depth fades in.
-pub fn page_transition<R>(
+/// Shows the page at `depth`, animated like libadwaita's navigation view:
+/// going deeper slides the new page in from the end edge over the old one,
+/// which drifts back and dims under its shadow; going back slides the top page
+/// away again. A new `key` at the same depth fades in instead. `page` draws
+/// the page at the depth it is given, so both can show during a slide.
+pub fn navigation(
     ui: &mut egui::Ui,
     id_salt: &str,
-    key: impl std::hash::Hash + std::fmt::Debug,
     depth: u8,
-    content: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    let id = Id::unique(("page_transition", id_salt));
+    key: impl std::hash::Hash + std::fmt::Debug,
+    mut page: impl FnMut(&mut egui::Ui, u8),
+) {
+    let id = Id::unique(("navigation", id_salt));
     let key = Id::unique(key);
     let now = ui.input(|i| i.time);
-    // The shown page, its depth, when it arrived and which way it slid in.
-    let previous: Option<(Id, u8, f64, f32)> = ui.data(|d| d.get_temp(id));
-    let (start, slide) = match previous {
-        Some((k, _, start, slide)) if k == key => (start, slide),
+    // The shown page, its depth, when it arrived and the depth it came from.
+    let state: Option<(Id, u8, f64, u8)> = ui.data(|d| d.get_temp(id));
+    let (start, from) = match state {
+        Some((k, d, start, from)) if k == key && d == depth => (start, from),
         Some((_, old_depth, ..)) => {
-            let slide = f32::from(depth.cmp(&old_depth) as i8);
-            ui.data_mut(|d| d.insert_temp(id, (key, depth, now, slide)));
-            (now, slide)
+            ui.data_mut(|d| d.insert_temp(id, (key, depth, now, old_depth)));
+            (now, old_depth)
         }
         // The first page shows as it is.
         None => {
-            ui.data_mut(|d| d.insert_temp(id, (key, depth, f64::MIN, 0.0)));
-            (f64::MIN, 0.0)
+            ui.data_mut(|d| d.insert_temp(id, (key, depth, f64::MIN, depth)));
+            (f64::MIN, depth)
         }
     };
-    let elapsed = ((now - start) as f32 / theme::PAGE_MOTION).clamp(0.0, 1.0);
-    if elapsed >= 1.0 || ui.style().animation_time == 0.0 {
-        return content(ui);
-    }
-    ui.ctx().request_repaint();
-    let eased = emath::easing::cubic_out(elapsed);
-    let toward_end = if dir::is_rtl() { -1.0 } else { 1.0 };
-    let dx = slide * toward_end * PAGE_SLIDE * (1.0 - eased);
+    let duration = if from == depth {
+        MOTION
+    } else {
+        theme::PAGE_MOTION
+    };
+    let elapsed = ((now - start) as f32 / duration).clamp(0.0, 1.0);
     let rect = ui.available_rect_before_wrap();
-    let clip = ui.clip_rect();
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(rect.translate(Vec2::new(dx, 0.0))),
-        |ui| {
-            ui.set_clip_rect(clip);
-            ui.multiply_opacity(0.2 + 0.8 * eased);
-            content(ui)
-        },
-    )
-    .inner
+    let clip = ui.clip_rect().intersect(rect);
+    let layout = *ui.layout();
+    // Each depth keeps its own ids, so scroll positions survive a slide.
+    let mut show = |ui: &mut egui::Ui, depth: u8, dx: f32, opacity: f32| {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("page", depth))
+                .max_rect(rect.translate(Vec2::new(dx, 0.0)))
+                .layout(layout),
+        );
+        child.set_clip_rect(clip);
+        child.multiply_opacity(opacity);
+        page(&mut child, depth);
+    };
+    if elapsed >= 1.0 || ui.style().animation_time == 0.0 {
+        show(ui, depth, 0.0, 1.0);
+    } else {
+        ui.ctx().request_repaint();
+        let eased = emath::easing::cubic_out(elapsed);
+        if from == depth {
+            show(ui, depth, 0.0, 0.2 + 0.8 * eased);
+        } else {
+            // How far the deeper page covers the other: 0 to 1 going in, 1 to 0 going back.
+            let covered = if depth > from { eased } else { 1.0 - eased };
+            let toward_end = if dir::is_rtl() { -1.0 } else { 1.0 };
+            let width = clip.width();
+            show(
+                ui,
+                depth.min(from),
+                -toward_end * PAGE_PARALLAX * width * covered,
+                1.0,
+            );
+            let painter = ui.painter().with_clip_rect(clip);
+            painter.rect_filled(
+                clip,
+                CornerRadius::ZERO,
+                Color32::BLACK.gamma_multiply(PAGE_DIM * covered),
+            );
+            let dx = toward_end * width * (1.0 - covered);
+            let top = clip.translate(Vec2::new(dx, 0.0));
+            let shadow = egui::Shadow {
+                offset: [0, 0],
+                blur: 24,
+                spread: 0,
+                color: Color32::from_black_alpha(50),
+            };
+            painter.add(shadow.as_shape(top, CornerRadius::ZERO));
+            painter.rect_filled(top, CornerRadius::ZERO, ui.visuals().panel_fill);
+            show(ui, depth.max(from), dx, 1.0);
+            // Nothing takes clicks until the page has settled.
+            ui.interact(clip, id.with("settling"), Sense::click_and_drag());
+        }
+    }
+    ui.advance_cursor_after_rect(rect);
 }
 
 /// A numbered step marker: the number in a circle, or a check once the step is complete.
