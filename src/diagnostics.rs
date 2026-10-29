@@ -33,7 +33,9 @@ const CRASH_PREFIX: &str = "crash-";
 /// Crash reports beyond this many are deleted, oldest first.
 const MAX_CRASH_REPORTS: usize = 10;
 
-const NORMAL_FILTER: &str = "warn,fmx=info";
+/// The clipboard warns on every start under GNOME, which lacks Wayland's
+/// data-control protocol; its X11 fallback works, so that is not worth showing.
+const NORMAL_FILTER: &str = "warn,fmx=info,arboard=error";
 /// Everything from FMX and its UI; the graphics stack's per-frame chatter is left out.
 const DEBUG_FILTER: &str = "debug,naga=info,wgpu_core=info,wgpu_hal=info,calloop=info";
 
