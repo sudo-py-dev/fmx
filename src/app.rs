@@ -2814,7 +2814,9 @@ impl FmxApp {
         let mut cancel = None;
         let mut remove = None;
         theme::page_scroll().auto_shrink([false; 2]).show(ui, |ui| {
-            pref_group(ui, None, |ui| {
+            // Plain rows split by hairlines, without a card around them.
+            dir::vertical(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 for job in self.queue.jobs() {
                     job_row(ui, job, &mut cancel, &mut remove);
                 }

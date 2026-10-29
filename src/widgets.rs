@@ -1055,7 +1055,8 @@ pub fn pref_row(
     response
 }
 
-/// A compact boxed-list row for a list of items, such as the queue: an
+/// A compact row for a list of items, such as the queue, split from the one
+/// above by a hairline and flush with the list's edges: an
 /// icon tile, a title and a subtitle each kept to one line (cut short with
 /// "…"), and controls at the end. The response covers the text, for hover
 /// details.
@@ -1082,7 +1083,7 @@ pub fn list_row(
             Stroke::new(1.0, ink(ui).gamma_multiply(0.08)),
         );
     }
-    let inner = rect.shrink2(Vec2::new(ROW_PAD, 0.0));
+    let inner = rect;
     // The tile at the start edge.
     let tile_x = dir::mirror_x(inner, inner.left(), TILE);
     let tile = Rect::from_min_size(
