@@ -648,8 +648,11 @@ impl Preview {
             }
         });
 
+        // A line between playing and the tool's own controls.
+        if mode.clip || mode.marks || (mode.rotate && orientation.is_some()) {
+            separator(ui, width);
+        }
         if mode.clip {
-            ui.add_space(4.0);
             self.clip_controls(ui, width, edit, duration);
         }
 
@@ -698,7 +701,9 @@ impl Preview {
             add_w(icon_w(ui, icons::X));
         }
         if actions_w > 0.0 {
-            ui.add_space(4.0);
+            if mode.clip {
+                ui.add_space(4.0);
+            }
             centered_row(ui, width, actions_w, |ui| {
                 if let Some(o) = orientation.as_deref_mut().filter(|_| rotating) {
                     for (icon, hint, turn) in turns {
@@ -1008,6 +1013,22 @@ fn time_field(ui: &mut egui::Ui, text: &mut String, hint: &str, empty_clip: bool
             response.on_hover_text(tr("hint.timestamp"));
         }
     }
+}
+
+/// A hairline `width` wide, centred, with a little room around it.
+fn separator(ui: &mut egui::Ui, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 13.0), Sense::hover());
+    let x = rect.center().x;
+    let color = if ui.visuals().dark_mode {
+        Color32::from_white_alpha(20)
+    } else {
+        Color32::from_black_alpha(20)
+    };
+    ui.painter().hline(
+        x - width / 2.0..=x + width / 2.0,
+        rect.center().y,
+        Stroke::new(1.0, color),
+    );
 }
 
 /// A left-to-right row of `content_w` points, centred in `width`.
