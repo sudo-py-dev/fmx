@@ -184,16 +184,6 @@ impl Grid {
         self
     }
 
-    pub fn min_col_width(mut self, width: f32) -> Self {
-        self.min_col_width = width;
-        self
-    }
-
-    pub fn max_col_width(mut self, width: f32) -> Self {
-        self.max_col_width = width;
-        self
-    }
-
     pub fn min_row_height(mut self, height: f32) -> Self {
         self.min_row_height = height;
         self

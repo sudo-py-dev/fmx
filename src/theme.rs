@@ -24,6 +24,16 @@ pub const CARD_RADIUS: u8 = 12;
 pub const BUTTON_HEIGHT: f32 = 32.0;
 pub const SMALL_BUTTON_HEIGHT: f32 = 26.0;
 
+/// A page's vertical scroll area. Its scroll bar floats over a margin of its
+/// own on the right, where egui puts it even in right-to-left layouts, so the
+/// bar never covers text and content keeps its width when the bar shows.
+pub fn page_scroll() -> egui::ScrollArea {
+    egui::ScrollArea::vertical().content_margin(Margin {
+        right: 10,
+        ..Margin::ZERO
+    })
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeChoice {
     #[default]
@@ -151,9 +161,6 @@ fn style_for(base: &egui::Style, p: &Palette, dark: bool, reduce_motion: bool) -
     s.menu_margin = Margin::same(8);
     s.indent = 18.0;
     s.combo_width = 140.0;
-    // Overlay scroll bars like GNOME's, but in a lane of their own: egui puts
-    // them on the right even in right-to-left layouts, where text starts there.
-    s.scroll.floating_allocated_width = 10.0;
 
     style.animation_time = if reduce_motion { 0.0 } else { MOTION };
     style.scroll_animation = if reduce_motion {

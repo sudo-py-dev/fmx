@@ -940,6 +940,114 @@ pub fn navigation(
     ui.advance_cursor_after_rect(rect);
 }
 
+const SWITCH_SIZE: Vec2 = Vec2::new(46.0, 26.0);
+/// A preference row's inner margin on the start and end edges.
+const ROW_PAD: f32 = 14.0;
+/// The gap between a row's text and its controls.
+const ROW_GAP: f32 = 16.0;
+const ROW_MIN_HEIGHT: f32 = 52.0;
+
+/// An on/off switch like GNOME's, its knob sliding to the end edge when on.
+pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> Response {
+    let p = theme::palette(ui);
+    let (rect, mut response) = ui.allocate_exact_size(SWITCH_SIZE, Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| WidgetInfo::selected(egui::Role::Switch, true, *on, ""));
+    if ui.is_rect_visible(rect) {
+        let t = animate(ui, response.id, *on, MOTION);
+        let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
+        let off = mix(p.control_pressed, p.text_weak, hover * 0.25);
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(255), mix(off, p.accent, t));
+        let radius = rect.height() / 2.0 - 3.0;
+        let start = rect.left() + rect.height() / 2.0;
+        let end = rect.right() - rect.height() / 2.0;
+        let x = start + (end - start) * if dir::is_rtl() { 1.0 - t } else { t };
+        let knob = Pos2::new(x, rect.center().y);
+        painter.circle_filled(
+            knob + Vec2::new(0.0, 1.0),
+            radius,
+            Color32::from_black_alpha(40),
+        );
+        painter.circle_filled(knob, radius, Color32::WHITE);
+        if response.has_focus() {
+            painter.rect_stroke(
+                rect.expand(FOCUS_RING),
+                CornerRadius::same(255),
+                Stroke::new(FOCUS_RING, p.accent.gamma_multiply(0.5)),
+                StrokeKind::Outside,
+            );
+        }
+    }
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// One row of a libadwaita preferences list: a title with an optional
+/// one-line description on the start edge, and `controls`, in reading
+/// order, against the end edge. Rows after the first get a hairline above.
+pub fn pref_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: &str,
+    controls: impl FnOnce(&mut egui::Ui),
+) -> Response {
+    let p = theme::palette(ui);
+    let id = ui.next_auto_id().with("pref_row");
+    let first = ui.min_rect().height() < 1.0;
+    let width = ui.available_width();
+    // The controls' width from the last frame, to know how much the text gets.
+    let controls_width: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(160.0);
+    let text_width = (width - ROW_PAD * 2.0 - ROW_GAP - controls_width).max(120.0);
+    let body = TextStyle::Body.resolve(ui.style());
+    let small = TextStyle::Small.resolve(ui.style());
+    let wrapped = |text: &str, font: FontId, color: Color32| {
+        ui.painter()
+            .layout(text.to_owned(), font, color, text_width)
+    };
+    let title_g = wrapped(title, body, p.text);
+    let sub_g = (!subtitle.is_empty()).then(|| wrapped(subtitle, small, p.text_weak));
+    let text_height = title_g.size().y + sub_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y);
+    let height = (text_height + 24.0).max(ROW_MIN_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    if !first {
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top(),
+            Stroke::new(1.0, ink(ui).gamma_multiply(0.08)),
+        );
+    }
+    let mut y = rect.center().y - text_height / 2.0;
+    let x = |w: f32| dir::mirror_x(rect, rect.left() + ROW_PAD, w);
+    let title_w = title_g.size().x;
+    let title_h = title_g.size().y;
+    ui.painter()
+        .galley(Pos2::new(x(title_w), y), title_g, p.text);
+    y += title_h + 2.0;
+    if let Some(g) = sub_g {
+        ui.painter()
+            .galley(Pos2::new(x(g.size().x), y), g, p.text_weak);
+    }
+    // Laid out from the start edge of a space as wide as the controls were.
+    let area = rect.shrink2(Vec2::new(ROW_PAD, 0.0));
+    let x = dir::mirror_x(area, area.right() - controls_width, controls_width);
+    let slot = Rect::from_x_y_ranges(x..=x + controls_width, area.y_range());
+    let mut end = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(slot)
+            .layout(dir::leading(egui::Align::Center)),
+    );
+    controls(&mut end);
+    let used = end.min_rect().width();
+    if (used - controls_width).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(id, used));
+        ui.ctx().request_repaint();
+    }
+    response
+}
+
 /// A numbered step marker: the number in a circle, or a check once the step is complete.
 pub fn step_badge(ui: &mut egui::Ui, number: usize, done: bool) -> Response {
     let p = theme::palette(ui);

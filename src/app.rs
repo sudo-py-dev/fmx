@@ -77,8 +77,6 @@ const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
 const SETTINGS_WIDTH: f32 = 820.0;
 const SETTINGS_HEIGHT: f32 = 540.0;
 const SETTINGS_NAV_WIDTH: f32 = 190.0;
-/// Every settings grid uses this label width, so all controls line up.
-const SETTINGS_LABEL_WIDTH: f32 = 210.0;
 /// Space kept free around the Settings window on small screens.
 const SETTINGS_SCREEN_MARGIN: f32 = 80.0;
 /// Task-list files larger than this are refused.
@@ -1387,7 +1385,7 @@ impl FmxApp {
                             };
                             let preview_height =
                                 (ui.available_height() - reserve).max(MIN_PREVIEW_HEIGHT);
-                            ScrollArea::vertical()
+                            theme::page_scroll()
                                 .id_salt("settings_panel")
                                 .auto_shrink([false; 2])
                                 .show(ui, |ui| self.settings_step(ui, preview_height));
@@ -1396,7 +1394,7 @@ impl FmxApp {
                 });
             }
             Some((settings_title, settings_help)) => {
-                ScrollArea::vertical()
+                theme::page_scroll()
                     .id_salt("editor_stacked")
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
@@ -1970,7 +1968,7 @@ impl FmxApp {
             .corner_radius(CornerRadius::same(10))
             .inner_margin(Margin::same(2))
             .show(ui, |ui| {
-                ScrollArea::vertical()
+                theme::page_scroll()
                     .id_salt("file_list")
                     .max_height(list_height)
                     .show(ui, |ui| {
@@ -2821,111 +2819,107 @@ impl FmxApp {
         ui.add_space(4.0);
         let mut cancel = None;
         let mut remove = None;
-        ScrollArea::vertical()
-            .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                dir::Grid::new("queue", 4)
-                    .striped(true)
-                    .spacing([18.0, 8.0])
-                    .min_row_height(30.0)
-                    .show(ui, |ui| {
-                        for job in self.queue.jobs() {
-                            let (cancel, remove) = (&mut cancel, &mut remove);
-                            let actions: dir::Cell<'_> = Box::new(move |ui| {
-                                ui.horizontal(|ui| match job.state {
-                                    JobState::Queued | JobState::Running { .. } => {
-                                        let label = if job.spec.tool == Tool::Record
-                                            && job.state != JobState::Queued
-                                        {
-                                            tr("action.stop_recording")
-                                        } else {
-                                            tr("action.cancel")
-                                        };
-                                        if widgets::button(
-                                            ui,
-                                            Some(icons::X),
-                                            label,
-                                            Kind::Ghost,
-                                            Size::Small,
-                                        )
-                                        .clicked()
-                                        {
-                                            *cancel = Some(job.id);
-                                        }
+        theme::page_scroll().auto_shrink([false; 2]).show(ui, |ui| {
+            dir::Grid::new("queue", 4)
+                .striped(true)
+                .spacing([18.0, 8.0])
+                .min_row_height(30.0)
+                .show(ui, |ui| {
+                    for job in self.queue.jobs() {
+                        let (cancel, remove) = (&mut cancel, &mut remove);
+                        let actions: dir::Cell<'_> = Box::new(move |ui| {
+                            ui.horizontal(|ui| match job.state {
+                                JobState::Queued | JobState::Running { .. } => {
+                                    let label = if job.spec.tool == Tool::Record
+                                        && job.state != JobState::Queued
+                                    {
+                                        tr("action.stop_recording")
+                                    } else {
+                                        tr("action.cancel")
+                                    };
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::X),
+                                        label,
+                                        Kind::Ghost,
+                                        Size::Small,
+                                    )
+                                    .clicked()
+                                    {
+                                        *cancel = Some(job.id);
                                     }
-                                    JobState::Done { .. } => {
-                                        if job.spec.output.is_file()
-                                            && widgets::button(
-                                                ui,
-                                                Some(icons::ARROW_SQUARE_OUT),
-                                                tr("action.open"),
-                                                Kind::Ghost,
-                                                Size::Small,
-                                            )
-                                            .clicked()
-                                        {
-                                            open_path(&job.spec.output);
-                                        }
-                                        if widgets::button(
+                                }
+                                JobState::Done { .. } => {
+                                    if job.spec.output.is_file()
+                                        && widgets::button(
                                             ui,
-                                            Some(icons::FOLDER),
-                                            tr("action.open_folder"),
+                                            Some(icons::ARROW_SQUARE_OUT),
+                                            tr("action.open"),
                                             Kind::Ghost,
                                             Size::Small,
                                         )
                                         .clicked()
-                                        {
-                                            reveal(&job.spec.output);
-                                        }
-                                        if widgets::button(
-                                            ui,
-                                            Some(icons::X),
-                                            "",
-                                            Kind::Ghost,
-                                            Size::Small,
-                                        )
-                                        .on_hover_text(tr("action.remove"))
-                                        .clicked()
-                                        {
-                                            *remove = Some(job.id);
-                                        }
+                                    {
+                                        open_path(&job.spec.output);
                                     }
-                                    _ => {
-                                        if widgets::button(
-                                            ui,
-                                            Some(icons::X),
-                                            tr("action.remove"),
-                                            Kind::Ghost,
-                                            Size::Small,
-                                        )
-                                        .clicked()
-                                        {
-                                            *remove = Some(job.id);
-                                        }
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::FOLDER),
+                                        tr("action.open_folder"),
+                                        Kind::Ghost,
+                                        Size::Small,
+                                    )
+                                    .clicked()
+                                    {
+                                        reveal(&job.spec.output);
                                     }
-                                });
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::X),
+                                        "",
+                                        Kind::Ghost,
+                                        Size::Small,
+                                    )
+                                    .on_hover_text(tr("action.remove"))
+                                    .clicked()
+                                    {
+                                        *remove = Some(job.id);
+                                    }
+                                }
+                                _ => {
+                                    if widgets::button(
+                                        ui,
+                                        Some(icons::X),
+                                        tr("action.remove"),
+                                        Kind::Ghost,
+                                        Size::Small,
+                                    )
+                                    .clicked()
+                                    {
+                                        *remove = Some(job.id);
+                                    }
+                                }
                             });
-                            dir::grid_row(
-                                ui,
-                                vec![
-                                    Box::new(|ui| {
-                                        ui.label(RichText::new(job.spec.tool.label()).strong());
-                                    }),
-                                    Box::new(|ui| {
-                                        ui.label(
-                                            job.title
-                                                .clone()
-                                                .unwrap_or_else(|| job_source(&job.spec)),
-                                        )
-                                        .on_hover_text(job.spec.output.display().to_string());
-                                    }),
-                                    Box::new(|ui| status_cell(ui, job)),
-                                    actions,
-                                ],
-                            );
-                        }
-                    });
-            });
+                        });
+                        dir::grid_row(
+                            ui,
+                            vec![
+                                Box::new(|ui| {
+                                    ui.label(RichText::new(job.spec.tool.label()).strong());
+                                }),
+                                Box::new(|ui| {
+                                    ui.label(
+                                        job.title.clone().unwrap_or_else(|| job_source(&job.spec)),
+                                    )
+                                    .on_hover_text(job.spec.output.display().to_string());
+                                }),
+                                Box::new(|ui| status_cell(ui, job)),
+                                actions,
+                            ],
+                        );
+                    }
+                });
+        });
         if let Some(id) = cancel {
             self.queue.cancel(id);
         }
@@ -3080,17 +3074,15 @@ impl FmxApp {
             dir::vertical(ui, |ui| {
                 ui.set_width(right_width);
                 ui.set_max_width(right_width);
-                ui.label(RichText::new(self.settings_tab.label()).heading().strong());
-                ui.add_space(8.0);
-                // Each section fades and rises in, its rows grouped on one card.
+                // Each section fades and rises in.
                 let tab = self.settings_tab as u8;
                 widgets::navigation(ui, "settings", 0, tab.into(), tab, |ui, _| {
-                    ScrollArea::vertical()
+                    theme::page_scroll()
                         .id_salt(("settings_page", tab))
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
                             ui.add_space(4.0);
-                            card(ui, |ui| self.settings_page(ui, ctx));
+                            self.settings_page(ui, ctx);
                             ui.add_space(8.0);
                         });
                 });
@@ -3098,27 +3090,26 @@ impl FmxApp {
         });
     }
 
-    /// The controls of the selected Settings section.
+    /// The controls of the selected Settings section, as GNOME-style
+    /// groups of rows: what a setting is on the start edge, its control on
+    /// the end edge.
     fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let p = theme::palette(ui);
         match self.settings_tab {
             SettingsTab::General => {
                 let mut theme_changed = false;
-                settings_grid(ui, "settings_general", |ui| {
-                    row(ui, tr("settings.language"), |ui| self.language_picker(ui));
-                    row(ui, tr("settings.theme"), |ui| {
+                pref_group(ui, None, |ui| {
+                    widgets::pref_row(ui, tr("settings.language"), "", |ui| {
+                        self.language_picker(ui);
+                    });
+                    widgets::pref_row(ui, tr("settings.theme"), "", |ui| {
                         let choices = ThemeChoice::ALL.map(|t| (t, t.label()));
                         theme_changed |= widgets::segmented(ui, &mut self.settings.theme, &choices);
                     });
-                    row(ui, tr("settings.motion"), |ui| {
-                        theme_changed |= dir::checkbox(
-                            ui,
-                            &mut self.settings.reduce_motion,
-                            tr("settings.reduce_motion"),
-                        )
-                        .changed();
+                    widgets::pref_row(ui, tr("settings.reduce_motion"), "", |ui| {
+                        theme_changed |=
+                            widgets::switch(ui, &mut self.settings.reduce_motion).changed();
                     });
-                    row_hint(
+                    widgets::pref_row(
                         ui,
                         tr("settings.name_tag"),
                         tr("settings.name_tag_hint"),
@@ -3127,65 +3118,52 @@ impl FmxApp {
                                 TextEdit::singleline(&mut self.settings.options.name_tag)
                                     .hint_text("_converted")
                                     .char_limit(options::MAX_NAME_TAG_LEN)
-                                    .desired_width(180.0),
+                                    .desired_width(150.0),
                             );
                         },
                     );
+                });
+                ui.add_space(18.0);
+                pref_group(ui, None, |ui| {
                     if shell::supported() {
-                        row_hint(
+                        widgets::pref_row(
                             ui,
                             tr("settings.shell_label"),
-                            tr("settings.shell_hint"),
+                            tr("settings.shell_short"),
                             |ui| {
-                                if dir::checkbox(
-                                    ui,
-                                    &mut self.shell_menu,
-                                    tr("settings.shell_toggle"),
-                                )
-                                .changed()
+                                if widgets::switch(ui, &mut self.shell_menu)
+                                    .on_hover_text(tr("settings.shell_hint"))
+                                    .changed()
                                 {
-                                    let done = if self.shell_menu {
-                                        shell::register()
-                                    } else {
-                                        shell::unregister()
-                                    };
-                                    if let Err(e) = done {
-                                        self.shell_menu = shell::is_registered();
-                                        self.toasts.push(
-                                            ToastKind::Error,
-                                            trf("settings.shell_failed", &[("error", &e)]),
-                                        );
-                                    }
+                                    self.toggle_shell_menu();
                                 }
                             },
                         );
                     }
-                    row_hint(
+                    widgets::pref_row(
                         ui,
-                        tr("settings.diagnostics"),
-                        tr("settings.debug_hint"),
+                        tr("settings.debug_logging"),
+                        tr("settings.debug_short"),
                         |ui| {
-                            if dir::checkbox(
-                                ui,
-                                &mut self.debug_logging,
-                                tr("settings.debug_logging"),
-                            )
-                            .changed()
-                            {
-                                diagnostics::set_debug(self.debug_logging);
-                            }
                             if widgets::button(
                                 ui,
                                 Some(icons::FOLDER_OPEN),
-                                tr("settings.open_logs"),
-                                Kind::Secondary,
-                                Size::Small,
+                                "",
+                                Kind::Ghost,
+                                Size::Regular,
                             )
+                            .on_hover_text(tr("settings.open_logs"))
                             .clicked()
                                 && let Some(dir) = diagnostics::logs_dir()
                             {
                                 let _ = std::fs::create_dir_all(&dir);
                                 open_path(&dir);
+                            }
+                            if widgets::switch(ui, &mut self.debug_logging)
+                                .on_hover_text(tr("settings.debug_hint"))
+                                .changed()
+                            {
+                                diagnostics::set_debug(self.debug_logging);
                             }
                         },
                     );
@@ -3195,8 +3173,8 @@ impl FmxApp {
                 }
             }
             SettingsTab::Queue => {
-                settings_grid(ui, "settings_queue", |ui| {
-                    row_hint(
+                pref_group(ui, None, |ui| {
+                    widgets::pref_row(
                         ui,
                         tr("settings.parallel"),
                         tr("settings.parallel_hint"),
@@ -3207,126 +3185,105 @@ impl FmxApp {
                             );
                         },
                     );
-                    row(ui, tr("settings.start_label"), |ui| {
-                        dir::checkbox(
-                            ui,
-                            &mut self.settings.start_on_add,
-                            tr("settings.auto_start"),
-                        );
+                    widgets::pref_row(ui, tr("settings.auto_start"), "", |ui| {
+                        widgets::switch(ui, &mut self.settings.start_on_add);
                     });
-                    row(ui, tr("settings.notify_label"), |ui| {
-                        dir::checkbox(
-                            ui,
-                            &mut self.settings.notify_when_done,
-                            tr("settings.notify"),
-                        );
+                    widgets::pref_row(ui, tr("settings.notify"), "", |ui| {
+                        widgets::switch(ui, &mut self.settings.notify_when_done);
                     });
-                    row(ui, tr("settings.sound_label"), |ui| {
-                        use crate::settings::CompletionSound;
-                        let label_for = |s: &CompletionSound| match s {
-                            CompletionSound::Off => tr("settings.sound_off"),
-                            CompletionSound::Default => tr("settings.sound_default"),
-                            CompletionSound::Bell => tr("settings.sound_bell"),
-                            CompletionSound::Victory => tr("settings.sound_victory"),
-                            CompletionSound::Custom(_) => tr("settings.sound_custom"),
-                        };
-                        ComboBox::from_id_salt("completion_sound")
-                            .selected_text(label_for(&self.settings.completion_sound))
-                            .show_ui(ui, |ui| {
-                                dir::menu(ui, |ui| {
-                                    for choice in [
-                                        CompletionSound::Default,
-                                        CompletionSound::Bell,
-                                        CompletionSound::Victory,
-                                        CompletionSound::Custom(std::path::PathBuf::new()),
-                                        CompletionSound::Off,
-                                    ] {
-                                        let is_custom_variant =
-                                            matches!(choice, CompletionSound::Custom(_));
-                                        let text = label_for(&choice);
-                                        let currently_custom = matches!(
-                                            self.settings.completion_sound,
-                                            CompletionSound::Custom(_)
-                                        );
-                                        let selected = if is_custom_variant {
-                                            currently_custom
-                                        } else {
-                                            self.settings.completion_sound == choice
-                                        };
-                                        if ui.selectable_label(selected, text).clicked() {
-                                            if !is_custom_variant {
-                                                self.settings.completion_sound = choice;
-                                            } else if !currently_custom
-                                                && let Some(file) = pick_sound_file()
-                                            {
-                                                // Picking "Custom file…" asks for the file right away.
-                                                self.settings.completion_sound =
-                                                    CompletionSound::Custom(file);
-                                            }
-                                        }
-                                    }
-                                });
-                            });
-                        if self.settings.completion_sound != CompletionSound::Off
-                            && widgets::button(
-                                ui,
-                                Some(icons::PLAY),
-                                tr("settings.sound_test"),
-                                Kind::Secondary,
-                                Size::Small,
-                            )
-                            .clicked()
-                        {
-                            sound::play(
-                                self.settings.completion_sound.clone(),
-                                self.toolbox.get(External::Ffmpeg).map(Path::to_path_buf),
-                            );
-                        }
-                        // A custom sound shows its file, which can be changed.
-                        if let CompletionSound::Custom(path) = &mut self.settings.completion_sound {
-                            if widgets::button(
-                                ui,
-                                Some(icons::FOLDER_OPEN),
-                                tr("action.change"),
-                                Kind::Ghost,
-                                Size::Small,
-                            )
-                            .clicked()
-                                && let Some(file) = pick_sound_file()
-                            {
-                                *path = file;
-                            }
-                            ui.label(
-                                RichText::new(
-                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("…"),
-                                )
-                                .small()
-                                .weak(),
-                            )
-                            .on_hover_text(path.display().to_string());
-                        }
+                    // A custom sound names its file under the title.
+                    let file = match &self.settings.completion_sound {
+                        crate::settings::CompletionSound::Custom(path) => path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("…")
+                            .to_owned(),
+                        _ => String::new(),
+                    };
+                    widgets::pref_row(ui, tr("settings.sound_label"), &file, |ui| {
+                        self.sound_picker(ui);
                     });
                 });
             }
             SettingsTab::Updates => self.update_settings(ui),
-            SettingsTab::Programs => {
-                ui.label(RichText::new(tr("settings.ffmpeg")).strong());
-                ui.add_space(2.0);
-                self.ffmpeg_setting(ui);
-                ui.add_space(14.0);
-                ui.label(RichText::new("yt-dlp").strong());
-                ui.add_space(2.0);
-                self.ytdlp_setting(ui);
-                ui.add_space(14.0);
-                ui.label(RichText::new(tr("settings.programs")).strong());
-                ui.label(
-                    RichText::new(tr("settings.programs_hint"))
-                        .small()
-                        .color(p.text_weak),
-                );
-                ui.add_space(4.0);
-                self.programs_list(ui);
-            }
+            SettingsTab::Programs => self.programs_settings(ui),
+        }
+    }
+
+    /// Adds or removes the right-click menu after its switch was flipped.
+    fn toggle_shell_menu(&mut self) {
+        let done = if self.shell_menu {
+            shell::register()
+        } else {
+            shell::unregister()
+        };
+        if let Err(e) = done {
+            self.shell_menu = shell::is_registered();
+            self.toasts.push(
+                ToastKind::Error,
+                trf("settings.shell_failed", &[("error", &e)]),
+            );
+        }
+    }
+
+    /// The completion sound's drop-down, then Play, then Change for a custom file.
+    fn sound_picker(&mut self, ui: &mut egui::Ui) {
+        use crate::settings::CompletionSound;
+        let label_for = |s: &CompletionSound| match s {
+            CompletionSound::Off => tr("settings.sound_off"),
+            CompletionSound::Default => tr("settings.sound_default"),
+            CompletionSound::Bell => tr("settings.sound_bell"),
+            CompletionSound::Victory => tr("settings.sound_victory"),
+            CompletionSound::Custom(_) => tr("settings.sound_custom"),
+        };
+        ComboBox::from_id_salt("completion_sound")
+            .selected_text(label_for(&self.settings.completion_sound))
+            .show_ui(ui, |ui| {
+                dir::menu(ui, |ui| {
+                    for choice in [
+                        CompletionSound::Default,
+                        CompletionSound::Bell,
+                        CompletionSound::Victory,
+                        CompletionSound::Custom(std::path::PathBuf::new()),
+                        CompletionSound::Off,
+                    ] {
+                        let is_custom_variant = matches!(choice, CompletionSound::Custom(_));
+                        let text = label_for(&choice);
+                        let currently_custom =
+                            matches!(self.settings.completion_sound, CompletionSound::Custom(_));
+                        let selected = if is_custom_variant {
+                            currently_custom
+                        } else {
+                            self.settings.completion_sound == choice
+                        };
+                        if ui.selectable_label(selected, text).clicked() {
+                            if !is_custom_variant {
+                                self.settings.completion_sound = choice;
+                            } else if !currently_custom && let Some(file) = pick_sound_file() {
+                                // Picking "Custom file…" asks for the file right away.
+                                self.settings.completion_sound = CompletionSound::Custom(file);
+                            }
+                        }
+                    }
+                });
+            });
+        if self.settings.completion_sound != CompletionSound::Off
+            && widgets::button(ui, Some(icons::PLAY), "", Kind::Ghost, Size::Regular)
+                .on_hover_text(tr("settings.sound_test"))
+                .clicked()
+        {
+            sound::play(
+                self.settings.completion_sound.clone(),
+                self.toolbox.get(External::Ffmpeg).map(Path::to_path_buf),
+            );
+        }
+        if let CompletionSound::Custom(path) = &mut self.settings.completion_sound
+            && widgets::button(ui, Some(icons::FOLDER_OPEN), "", Kind::Ghost, Size::Regular)
+                .on_hover_text(path.display().to_string())
+                .clicked()
+            && let Some(file) = pick_sound_file()
+        {
+            *path = file;
         }
     }
 
@@ -3358,38 +3315,103 @@ impl FmxApp {
         }
     }
 
-    fn programs_list(&mut self, ui: &mut egui::Ui) {
+    /// ffmpeg and yt-dlp, then the optional helper programs, each a row
+    /// with whether it was found.
+    fn programs_settings(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
-        let mut seen = HashSet::new();
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            let shown_above = [External::Ffmpeg, External::YtDlp];
-            for ext in External::ALL
-                .into_iter()
-                .filter(|e| !shown_above.contains(e))
-            {
-                if !seen.insert(ext.name()) {
-                    continue;
-                }
-                if self.toolbox.get(ext).is_some() {
-                    widgets::chip(ui, icons::CHECK_CIRCLE, ext.name(), p.success)
-                        .on_hover_text(tr("settings.program_found"));
-                } else {
-                    widgets::chip(ui, icons::X_CIRCLE, ext.name(), p.text_weak)
-                        .on_hover_text(tr("settings.program_missing"));
-                }
+        let status = |ui: &mut egui::Ui, found: bool| {
+            if found {
+                widgets::chip(
+                    ui,
+                    icons::CHECK_CIRCLE,
+                    tr("settings.ffmpeg_found"),
+                    p.success,
+                );
+            } else {
+                widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
             }
+        };
+        let path_of = |ext| {
+            self.toolbox
+                .get(ext)
+                .map(|path: &Path| path.display().to_string())
+        };
+        let ffmpeg = path_of(External::Ffmpeg);
+        let ytdlp = path_of(External::YtDlp);
+        pref_group(ui, None, |ui| {
+            let sub = ffmpeg.clone().unwrap_or_default();
+            widgets::pref_row(ui, tr("settings.ffmpeg"), &sub, |ui| {
+                status(ui, ffmpeg.is_some());
+                if self.settings.ffmpeg_path.is_some()
+                    && widgets::button(ui, None, tr("action.auto_detect"), Kind::Ghost, Size::Small)
+                        .clicked()
+                {
+                    self.settings.ffmpeg_path = None;
+                    self.toolbox = Toolbox::detect(None);
+                }
+                if widgets::button(ui, Some(icons::FOLDER_OPEN), "", Kind::Ghost, Size::Regular)
+                    .on_hover_text(tr("action.browse"))
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_file()
+                {
+                    self.settings.ffmpeg_path = Some(path);
+                    self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
+                }
+            });
+            let sub = ytdlp
+                .clone()
+                .unwrap_or_else(|| tr("settings.ytdlp_hint").to_owned());
+            widgets::pref_row(ui, "yt-dlp", &sub, |ui| status(ui, ytdlp.is_some()))
+                .on_hover_text(tr("settings.ytdlp_hint"));
         });
-        ui.add_space(6.0);
-        if widgets::button(
+        ui.add_space(18.0);
+        let mut rescan = false;
+        pref_group(
             ui,
-            Some(icons::ARROW_CLOCKWISE),
-            tr("action.rescan"),
-            Kind::Secondary,
-            Size::Small,
-        )
-        .clicked()
-        {
+            Some((tr("settings.programs"), tr("settings.programs_hint"))),
+            |ui| {
+                let mut seen = HashSet::new();
+                let shown_above = [External::Ffmpeg, External::YtDlp];
+                for ext in External::ALL
+                    .into_iter()
+                    .filter(|e| !shown_above.contains(e))
+                {
+                    if !seen.insert(ext.name()) {
+                        continue;
+                    }
+                    let found = self.toolbox.get(ext).is_some();
+                    widgets::pref_row(ui, ext.name(), "", |ui| {
+                        if found {
+                            widgets::chip(
+                                ui,
+                                icons::CHECK_CIRCLE,
+                                tr("settings.program_found"),
+                                p.success,
+                            );
+                        } else {
+                            widgets::chip(
+                                ui,
+                                icons::X_CIRCLE,
+                                tr("settings.program_missing"),
+                                p.text_weak,
+                            );
+                        }
+                    });
+                }
+            },
+        );
+        ui.add_space(10.0);
+        ui.with_layout(dir::leading(Align::Center), |ui| {
+            rescan = widgets::button(
+                ui,
+                Some(icons::ARROW_CLOCKWISE),
+                tr("action.rescan"),
+                Kind::Secondary,
+                Size::Small,
+            )
+            .clicked();
+        });
+        if rescan {
             self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
         }
     }
@@ -3661,48 +3683,37 @@ impl FmxApp {
     fn update_settings(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
         let mut check_now = false;
-        settings_grid(ui, "settings_updates", |ui| {
-            row(ui, tr("update.version_label"), |ui| {
-                ui.label(
-                    RichText::new(format!("FMX (Free Media Xpress) {}", update::VERSION)).strong(),
+        let version = format!("{} {}", tr("update.version_label"), update::VERSION);
+        let status = match &self.update {
+            UpdateState::Checking { .. } => format!("{version} · {}", tr("update.checking")),
+            UpdateState::UpToDate => format!("{version} · {}", tr("update.up_to_date")),
+            // The card below has the details and the buttons.
+            _ => version,
+        };
+        pref_group(ui, None, |ui| {
+            widgets::pref_row(ui, "FMX (Free Media Xpress)", &status, |ui| {
+                let busy = matches!(
+                    self.update,
+                    UpdateState::Checking { .. } | UpdateState::Downloading { .. }
                 );
-            });
-            row(ui, tr("update.automatic_label"), |ui| {
-                dir::checkbox(ui, &mut self.settings.check_updates, tr("update.automatic"));
-            });
-            row(ui, "", |ui| {
-                dir::vertical(ui, |ui| {
-                    let checking = matches!(self.update, UpdateState::Checking { .. });
-                    check_now = ui
-                        .add_enabled_ui(
-                            !checking && !matches!(self.update, UpdateState::Downloading { .. }),
-                            |ui| {
-                                widgets::button(
-                                    ui,
-                                    Some(icons::ARROW_CLOCKWISE),
-                                    tr("update.check_now"),
-                                    Kind::Secondary,
-                                    Size::Small,
-                                )
-                            },
+                check_now = ui
+                    .add_enabled_ui(!busy, |ui| {
+                        widgets::button(
+                            ui,
+                            Some(icons::ARROW_CLOCKWISE),
+                            tr("update.check_now"),
+                            Kind::Secondary,
+                            Size::Small,
                         )
-                        .inner
-                        .clicked();
-                    let (text, color) = match &self.update {
-                        UpdateState::Checking { .. } => {
-                            (tr("update.checking").to_owned(), p.text_weak)
-                        }
-                        UpdateState::UpToDate => (tr("update.up_to_date").to_owned(), p.success),
-                        // The card below has the details and the buttons.
-                        _ => (String::new(), p.text_weak),
-                    };
-                    if !text.is_empty() {
-                        ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
-                    }
-                });
+                    })
+                    .inner
+                    .clicked();
+            });
+            widgets::pref_row(ui, tr("update.automatic"), "", |ui| {
+                widgets::switch(ui, &mut self.settings.check_updates);
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(14.0);
         self.update_card(ui);
         ui.add_space(8.0);
         ui.add(
@@ -3719,84 +3730,6 @@ impl FmxApp {
     }
 
     /// yt-dlp's status in Settings.
-    fn ytdlp_setting(&mut self, ui: &mut egui::Ui) {
-        let p = theme::palette(ui);
-        let found = self.toolbox.get(External::YtDlp).map(Path::to_path_buf);
-        match &found {
-            Some(path) => {
-                ui.horizontal(|ui| {
-                    widgets::chip(
-                        ui,
-                        icons::CHECK_CIRCLE,
-                        tr("settings.ffmpeg_found"),
-                        p.success,
-                    );
-                    ui.add(
-                        Label::new(RichText::new(path.display().to_string()).monospace())
-                            .truncate(),
-                    )
-                    .on_hover_text(path.display().to_string());
-                });
-            }
-            None => {
-                widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
-            }
-        }
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(tr("settings.ytdlp_hint"))
-                .small()
-                .color(p.text_weak),
-        );
-    }
-
-    fn ffmpeg_setting(&mut self, ui: &mut egui::Ui) {
-        let p = theme::palette(ui);
-        match self.toolbox.get(External::Ffmpeg) {
-            Some(path) => {
-                ui.horizontal(|ui| {
-                    widgets::chip(
-                        ui,
-                        icons::CHECK_CIRCLE,
-                        tr("settings.ffmpeg_found"),
-                        p.success,
-                    );
-                    ui.add(
-                        Label::new(RichText::new(path.display().to_string()).monospace())
-                            .truncate(),
-                    )
-                    .on_hover_text(path.display().to_string());
-                });
-            }
-            None => {
-                widgets::chip(ui, icons::X_CIRCLE, tr("settings.ffmpeg_missing"), p.danger);
-            }
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if widgets::button(
-                ui,
-                Some(icons::FOLDER_OPEN),
-                tr("action.browse"),
-                Kind::Secondary,
-                Size::Small,
-            )
-            .clicked()
-                && let Some(path) = rfd::FileDialog::new().pick_file()
-            {
-                self.settings.ffmpeg_path = Some(path);
-                self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
-            }
-            if self.settings.ffmpeg_path.is_some()
-                && widgets::button(ui, None, tr("action.auto_detect"), Kind::Ghost, Size::Small)
-                    .clicked()
-            {
-                self.settings.ffmpeg_path = None;
-                self.toolbox = Toolbox::detect(None);
-            }
-        });
-    }
-
     fn media_info_window(&mut self, ctx: &egui::Context) {
         let Some((title, text)) = &self.media_info else {
             return;
@@ -3959,13 +3892,22 @@ fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: 
     });
 }
 
-/// A settings grid whose labels share one fixed-width column.
-fn settings_grid(ui: &mut egui::Ui, id: &'static str, rows: impl FnOnce(&mut egui::Ui)) {
-    dir::Grid::new(id, 2)
-        .min_col_width(SETTINGS_LABEL_WIDTH)
-        .max_col_width(SETTINGS_WIDTH - SETTINGS_LABEL_WIDTH)
-        .spacing([18.0, 12.0])
-        .show(ui, rows);
+/// A libadwaita preferences group: an optional title and description,
+/// then one card of [`widgets::pref_row`]s split by hairlines.
+fn pref_group(ui: &mut egui::Ui, heading: Option<(&str, &str)>, rows: impl FnOnce(&mut egui::Ui)) {
+    if let Some((title, description)) = heading {
+        let p = theme::palette(ui);
+        ui.label(RichText::new(title).strong());
+        if !description.is_empty() {
+            ui.add(Label::new(RichText::new(description).small().color(p.text_weak)).wrap());
+        }
+        ui.add_space(6.0);
+    }
+    card_frame(ui).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 0.0;
+        rows(ui);
+    });
 }
 
 /// A small circled position number for ordered lists.
@@ -4941,7 +4883,7 @@ impl eframe::App for FmxApp {
                             if depth == 1 {
                                 centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                             } else {
-                                ScrollArea::vertical()
+                                theme::page_scroll()
                                     .auto_shrink([false; 2])
                                     .show(ui, |ui| self.tool_grid(ui));
                             }
