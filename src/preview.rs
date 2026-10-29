@@ -16,7 +16,7 @@ use crate::dir;
 use crate::i18n::{tr, trf};
 use crate::icons;
 use crate::options::{
-    Edit, Rect, Rotation, add_frame_time, display_time, format_timestamp, parse_timestamp,
+    Edit, Orientation, Rect, add_frame_time, display_time, format_timestamp, parse_timestamp,
 };
 use crate::plan::input_url;
 use crate::probe::MediaInfo;
@@ -85,7 +85,7 @@ impl Mode {
     const BOTH: Self = Self {
         clip: true,
         area: true,
-        rotate: true,
+        rotate: false,
         marks: false,
     };
 }
@@ -258,66 +258,23 @@ fn to_screen(rect: Rect, shown: ScreenRect, source: (u32, u32)) -> ScreenRect {
     )
 }
 
-fn paint_rotated_image(
+/// Paints the frame turned and mirrored as `orientation` says, filling `rect`.
+fn paint_oriented(
     painter: &egui::Painter,
     texture_id: egui::TextureId,
     rect: ScreenRect,
-    rotation: Rotation,
+    orientation: Orientation,
 ) {
     let mut mesh = egui::Mesh::with_texture(texture_id);
-    let (tl_uv, tr_uv, br_uv, bl_uv) = match rotation {
-        Rotation::Clockwise => (
-            Pos2::new(0.0, 1.0),
-            Pos2::new(0.0, 0.0),
-            Pos2::new(1.0, 0.0),
-            Pos2::new(1.0, 1.0),
-        ),
-        Rotation::CounterClockwise => (
-            Pos2::new(1.0, 0.0),
-            Pos2::new(1.0, 1.0),
-            Pos2::new(0.0, 1.0),
-            Pos2::new(0.0, 0.0),
-        ),
-        Rotation::UpsideDown => (
-            Pos2::new(1.0, 1.0),
-            Pos2::new(0.0, 1.0),
-            Pos2::new(0.0, 0.0),
-            Pos2::new(1.0, 0.0),
-        ),
-        Rotation::FlipHorizontal => (
-            Pos2::new(1.0, 0.0),
-            Pos2::new(0.0, 0.0),
-            Pos2::new(0.0, 1.0),
-            Pos2::new(1.0, 1.0),
-        ),
-        Rotation::FlipVertical => (
-            Pos2::new(0.0, 1.0),
-            Pos2::new(1.0, 1.0),
-            Pos2::new(1.0, 0.0),
-            Pos2::new(0.0, 0.0),
-        ),
-    };
-    let c = Color32::WHITE;
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: rect.left_top(),
-        uv: tl_uv,
-        color: c,
-    });
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: rect.right_top(),
-        uv: tr_uv,
-        color: c,
-    });
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: rect.right_bottom(),
-        uv: br_uv,
-        color: c,
-    });
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: rect.left_bottom(),
-        uv: bl_uv,
-        color: c,
-    });
+    // Each corner of the frame goes where the orientation sends it.
+    for uv in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+        let (x, y) = orientation.map_point(uv);
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: rect.lerp_inside(Vec2::new(x, y)),
+            uv: Pos2::new(uv.0, uv.1),
+            color: Color32::WHITE,
+        });
+    }
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
     painter.add(egui::Shape::mesh(mesh));
 }
@@ -485,7 +442,7 @@ impl Preview {
                         &mut Vec::new(),
                         Mode::BOTH,
                         DISPLAY_MAX_HEIGHT,
-                        edit.rotation,
+                        edit.rotation.map(Orientation::from).as_mut(),
                     );
                 });
             });
@@ -494,7 +451,8 @@ impl Preview {
 
     /// Draws the preview inside the current layout, for tools whose main job is
     /// picking a part of the video. The picture is at most `max_height` tall;
-    /// `marks` are the moments [`Mode::marks`] lets the user choose.
+    /// `marks` are the moments [`Mode::marks`] lets the user choose, and
+    /// `orientation` how the picture is turned ([`Mode::rotate`] changes it).
     #[allow(clippy::too_many_arguments)]
     pub fn inline(
         &mut self,
@@ -504,12 +462,12 @@ impl Preview {
         marks: &mut Vec<f64>,
         mode: Mode,
         max_height: f32,
-        rotation: Option<Rotation>,
+        orientation: Option<&mut Orientation>,
     ) {
         self.poll(ui.ctx());
         // Centred in the panel, like a video in GNOME's players.
         ui.vertical_centered(|ui| {
-            self.contents(ui, edit, rect, marks, mode, max_height, rotation);
+            self.contents(ui, edit, rect, marks, mode, max_height, orientation);
         });
     }
 
@@ -522,9 +480,10 @@ impl Preview {
         marks: &mut Vec<f64>,
         mode: Mode,
         max_height: f32,
-        rotation: Option<Rotation>,
+        mut orientation: Option<&mut Orientation>,
     ) {
         let p = theme::palette(ui);
+        let turned = orientation.as_deref().copied().unwrap_or_default();
         if let Some(error) = &self.error {
             widgets::chip(ui, icons::WARNING, error, p.danger);
         }
@@ -537,7 +496,7 @@ impl Preview {
             }
             return;
         };
-        let swaps = rotation.is_some_and(|r| r.swaps_dimensions());
+        let swaps = turned.swaps_dimensions();
         let (src_w, src_h) = if swaps {
             (source.1, source.0)
         } else {
@@ -558,8 +517,8 @@ impl Preview {
         let painter = ui.painter_at(shown);
         painter.rect_filled(shown, CornerRadius::same(6), p.sunken);
         if let Some(texture) = &self.texture {
-            if let Some(rot) = rotation {
-                paint_rotated_image(&painter, texture.id(), shown, rot);
+            if !turned.is_unchanged() {
+                paint_oriented(&painter, texture.id(), shown, turned);
             } else {
                 painter.image(
                     texture.id(),
@@ -569,16 +528,21 @@ impl Preview {
                 );
             }
         }
-        // The clock sits on the picture, as in a video player.
-        let clock = painter.layout_no_wrap(
+        // The clock sits on the picture, as in a video player; a narrow
+        // picture shows only where the playhead is.
+        let clock_font = egui::FontId::monospace(12.0);
+        let mut clock = painter.layout_no_wrap(
             format!(
                 "{} / {}",
                 display_time(self.time),
                 display_time(self.duration())
             ),
-            egui::FontId::monospace(12.0),
+            clock_font.clone(),
             Color32::WHITE,
         );
+        if clock.size().x + 32.0 > shown.width() {
+            clock = painter.layout_no_wrap(display_time(self.time), clock_font, Color32::WHITE);
+        }
         let at = shown.right_bottom() - Vec2::new(10.0, 8.0) - clock.size();
         let badge = ScreenRect::from_min_size(at, clock.size()).expand2(Vec2::new(6.0, 3.0));
         painter.rect_filled(badge, CornerRadius::same(4), Color32::from_black_alpha(160));
@@ -681,9 +645,40 @@ impl Preview {
         });
 
         // Clearing is offered only once there is something to clear.
-        let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
+        let rotating = mode.rotate && orientation.is_some();
+        let has_edit = (mode.clip && edit.has_trim())
+            || (mode.area && rect.is_some())
+            || (rotating && !turned.is_unchanged());
+        // Turning and flipping, as in GNOME's image viewer: icon buttons.
+        let turns = [
+            (
+                icons::ARROW_COUNTER_CLOCKWISE,
+                tr("rotation.rotate_ccw"),
+                Orientation::rotate_ccw as fn(Orientation) -> Orientation,
+            ),
+            (
+                icons::ARROW_CLOCKWISE,
+                tr("rotation.rotate_cw"),
+                Orientation::rotate_cw,
+            ),
+            (
+                icons::FLIP_HORIZONTAL,
+                tr("rotation.flip_h"),
+                Orientation::flip_horizontal,
+            ),
+            (
+                icons::FLIP_VERTICAL,
+                tr("rotation.flip_v"),
+                Orientation::flip_vertical,
+            ),
+        ];
         let mut actions_w = 0.0;
         let mut add_w = |w: f32| actions_w += w + if actions_w > 0.0 { gap } else { 0.0 };
+        if rotating {
+            for (icon, _, _) in &turns {
+                add_w(icon_w(ui, icon));
+            }
+        }
         if mode.marks {
             add_w(widgets::button_width(
                 ui,
@@ -712,6 +707,16 @@ impl Preview {
         if actions_w > 0.0 {
             ui.add_space(4.0);
             centered_row(ui, width, actions_w, |ui| {
+                if let Some(o) = orientation.as_deref_mut().filter(|_| rotating) {
+                    for (icon, hint, turn) in turns {
+                        if widgets::button(ui, Some(icon), "", Kind::Secondary, Size::Regular)
+                            .on_hover_text(hint)
+                            .clicked()
+                        {
+                            *o = turn(*o);
+                        }
+                    }
+                }
                 if mode.marks
                     && widgets::button(
                         ui,
@@ -757,6 +762,9 @@ impl Preview {
                     if mode.area {
                         *rect = None;
                     }
+                    if let Some(o) = orientation.filter(|_| rotating) {
+                        *o = Orientation::default();
+                    }
                 }
             });
         }
@@ -783,16 +791,16 @@ impl Preview {
             });
         }
         if mode.rotate {
-            let (out_w, out_h) =
-                rotation.map_or(source, |r| r.transformed_size(source.0, source.1));
-            let is_portrait = out_h > out_w;
-            let orientation = if is_portrait {
+            let (out_w, out_h) = turned.transformed_size(source.0, source.1);
+            let shape = if out_h > out_w {
                 tr("rotation.portrait")
             } else {
                 tr("rotation.landscape")
             };
-            let rot_label = rotation.map_or("—", |r| r.label());
-            lines.push(format!("{rot_label}  •  {out_w} × {out_h} ({orientation})"));
+            lines.push(format!(
+                "{}  •  {out_w} × {out_h} ({shape})",
+                turned.describe()
+            ));
         }
         for line in lines {
             ui.label(RichText::new(line).color(p.text_weak));

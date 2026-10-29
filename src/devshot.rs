@@ -5,7 +5,7 @@
 //! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings (`=queue`, `=updates`,
 //!   `=programs` or `=about` opens that section);
 //! - `FMX_SCREENSHOT_EXPAND=1` opens every collapsible section;
-//! - `FMX_SCREENSHOT_TOOL=record` opens that tool (`screenshot`, `frames`, `trim`);
+//! - `FMX_SCREENSHOT_TOOL=record` opens that tool (`screenshot`, `frames`, `trim`, `rotate`);
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue
 //!   (`FMX_SCREENSHOT_RUNNING=1` then shows the first two as running);
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
@@ -51,6 +51,7 @@ pub fn wants_tool() -> Option<crate::catalog::Tool> {
         "screenshot" => Some(Tool::Screenshot),
         "frames" => Some(Tool::ExtractFrames),
         "trim" => Some(Tool::Trim),
+        "rotate" => Some(Tool::Rotate),
         _ => None,
     }
 }

@@ -901,6 +901,12 @@ mod e2e {
             split_parts: 2,
             ..Options::default()
         };
+        let turned = Options {
+            orientation: crate::options::Orientation::default()
+                .rotate_cw()
+                .flip_horizontal(),
+            ..Options::default()
+        };
         let mut louder = Options::default();
         louder.audio.volume_db = 6.0;
         let mut cases: Vec<(Tool, Vec<PathBuf>, &Options)> = VideoFormat::ALL
@@ -954,7 +960,7 @@ mod e2e {
             (Tool::RemoveAudio, vec![fx.video.clone()], &opts),
             (Tool::Delogo, vec![fx.video.clone()], &opts),
             (Tool::ExtractFrames, vec![fx.video.clone()], &opts),
-            (Tool::Rotate, vec![fx.video2.clone()], &opts),
+            (Tool::Rotate, vec![fx.video2.clone()], &turned),
             (Tool::Speed, vec![fx.video.clone()], &opts),
             (Tool::Volume, vec![fx.audio.clone()], &louder),
             (Tool::Normalize, vec![fx.audio.clone()], &opts),

@@ -1674,11 +1674,11 @@ impl FmxApp {
                 &mut opts.frame_times,
                 mode,
                 max_height,
-                Some(opts.rotation),
+                Some(&mut opts.orientation),
             );
             opts.edit.crop = crop;
         } else {
-            let rotation = opts.edit.rotation;
+            let mut turned = opts.edit.rotation.map(options::Orientation::from);
             let mut crop = opts.edit.crop.take();
             preview.inline(
                 ui,
@@ -1687,7 +1687,7 @@ impl FmxApp {
                 &mut opts.frame_times,
                 mode,
                 max_height,
-                rotation,
+                turned.as_mut(),
             );
             opts.edit.crop = crop;
         }
@@ -2644,99 +2644,6 @@ impl FmxApp {
             }
             // The tools `has_options` lists have nothing to set.
             _ => {}
-        }
-        if tool == Tool::Rotate {
-            row(ui, tr("option.rotation"), |ui| {
-                dir::vertical(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if widgets::button(
-                            ui,
-                            Some(icons::ARROW_COUNTER_CLOCKWISE),
-                            tr("rotation.rotate_ccw"),
-                            Kind::Secondary,
-                            Size::Regular,
-                        )
-                        .on_hover_text(tr("rotation.ccw"))
-                        .clicked()
-                        {
-                            opts.rotation = opts.rotation.next_ccw();
-                        }
-                        if widgets::button(
-                            ui,
-                            Some(icons::ARROW_CLOCKWISE),
-                            tr("rotation.rotate_cw"),
-                            Kind::Secondary,
-                            Size::Regular,
-                        )
-                        .on_hover_text(tr("rotation.cw"))
-                        .clicked()
-                        {
-                            opts.rotation = opts.rotation.next_cw();
-                        }
-                        if widgets::button(
-                            ui,
-                            Some(icons::ARROWS_HORIZONTAL),
-                            tr("rotation.flip_h"),
-                            if opts.rotation == Rotation::FlipHorizontal {
-                                Kind::Primary
-                            } else {
-                                Kind::Secondary
-                            },
-                            Size::Regular,
-                        )
-                        .on_hover_text(tr("rotation.flip_h"))
-                        .clicked()
-                        {
-                            opts.rotation = Rotation::FlipHorizontal;
-                        }
-                        if widgets::button(
-                            ui,
-                            Some(icons::ARROWS_VERTICAL),
-                            tr("rotation.flip_v"),
-                            if opts.rotation == Rotation::FlipVertical {
-                                Kind::Primary
-                            } else {
-                                Kind::Secondary
-                            },
-                            Size::Regular,
-                        )
-                        .on_hover_text(tr("rotation.flip_v"))
-                        .clicked()
-                        {
-                            opts.rotation = Rotation::FlipVertical;
-                        }
-                    });
-
-                    ui.add_space(4.0);
-
-                    let choices = [
-                        (Rotation::Clockwise, tr("rotation.cw")),
-                        (Rotation::CounterClockwise, tr("rotation.ccw")),
-                        (Rotation::UpsideDown, tr("rotation.180")),
-                        (Rotation::FlipHorizontal, tr("rotation.flip_h")),
-                        (Rotation::FlipVertical, tr("rotation.flip_v")),
-                    ];
-                    widgets::segmented(ui, &mut opts.rotation, &choices);
-
-                    if let Some(preview) = &self.preview
-                        && let Some((w, h)) = preview.source_size()
-                    {
-                        let (out_w, out_h) = opts.rotation.transformed_size(w, h);
-                        let is_portrait = out_h > out_w;
-                        let orientation_badge = if is_portrait {
-                            tr("rotation.portrait")
-                        } else {
-                            tr("rotation.landscape")
-                        };
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            let text =
-                                format!("{w} × {h}  ➜  {out_w} × {out_h} ({orientation_badge})");
-                            widgets::chip(ui, icons::INFO, &text, theme::palette(ui).accent);
-                        });
-                    }
-                });
-            });
         }
         if tool == Tool::Speed {
             row_hint(ui, tr("option.speed"), tr("hint.speed"), |ui| {

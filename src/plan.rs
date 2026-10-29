@@ -52,6 +52,8 @@ pub enum PlanError {
     InvalidValue(String),
     /// Extract Frames at chosen moments, but none are chosen (or inside the video).
     NoFrameTimes,
+    /// Rotate, with the picture neither turned nor flipped.
+    NoRotation,
 }
 
 impl fmt::Display for PlanError {
@@ -76,6 +78,7 @@ impl fmt::Display for PlanError {
             Self::InvalidWatermark => f.write_str(tr("error.invalid_watermark")),
             Self::InvalidValue(name) => f.write_str(&trf("error.invalid_value", &[("name", name)])),
             Self::NoFrameTimes => f.write_str(tr("error.no_frame_times")),
+            Self::NoRotation => f.write_str(tr("error.no_rotation")),
         }
     }
 }
@@ -776,6 +779,7 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
                 return Err(PlanError::TargetTooSmall);
             }
         }
+        Tool::Rotate if opts.orientation.is_unchanged() => return Err(PlanError::NoRotation),
         Tool::ExtractFrames => match opts.frame_mode {
             FrameMode::Interval
                 if !opts.frame_interval_s.is_finite()
@@ -1056,7 +1060,10 @@ pub fn build(
         }
         Tool::Rotate => {
             let input = with_video(single(inputs)?)?;
-            let filter = opts.rotation.video_filter().to_owned();
+            let filter = opts
+                .orientation
+                .video_filter()
+                .ok_or(PlanError::NoRotation)?;
             Ok(base()
                 .input(&input.path)
                 .extend(video_encode(

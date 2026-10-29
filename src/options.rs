@@ -116,9 +116,57 @@ impl Rotation {
             Self::FlipVertical => "vflip",
         }
     }
+}
+
+/// How a picture is turned and mirrored: any mix of quarter turns and
+/// flips comes down to one of these eight. The mirror is applied first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Orientation {
+    /// Quarter turns clockwise, 0 to 3.
+    pub turns: u8,
+    /// Mirrored left to right.
+    pub mirror: bool,
+}
+
+impl Orientation {
+    pub fn is_unchanged(self) -> bool {
+        self == Self::default()
+    }
+
+    pub fn rotate_cw(self) -> Self {
+        Self {
+            turns: (self.turns + 1) % 4,
+            ..self
+        }
+    }
+
+    pub fn rotate_ccw(self) -> Self {
+        Self {
+            turns: (self.turns + 3) % 4,
+            ..self
+        }
+    }
+
+    /// Mirrors the picture as it looks now (a flip after a turn reverses it).
+    pub fn flip_horizontal(self) -> Self {
+        Self {
+            turns: (4 - self.turns % 4) % 4,
+            mirror: !self.mirror,
+        }
+    }
+
+    /// A vertical flip is a horizontal one turned half way.
+    pub fn flip_vertical(self) -> Self {
+        let h = self.flip_horizontal();
+        Self {
+            turns: (h.turns + 2) % 4,
+            ..h
+        }
+    }
 
     pub fn swaps_dimensions(self) -> bool {
-        matches!(self, Self::Clockwise | Self::CounterClockwise)
+        self.turns % 2 == 1
     }
 
     pub fn transformed_size(self, width: u32, height: u32) -> (u32, u32) {
@@ -129,22 +177,59 @@ impl Rotation {
         }
     }
 
-    pub fn next_cw(self) -> Self {
-        match self {
-            Self::Clockwise => Self::UpsideDown,
-            Self::UpsideDown => Self::CounterClockwise,
-            Self::CounterClockwise => Self::Clockwise,
-            Self::FlipHorizontal | Self::FlipVertical => Self::Clockwise,
-        }
+    /// ffmpeg's filters for it, or `None` when nothing changes.
+    pub fn video_filter(self) -> Option<String> {
+        let turn = match self.turns % 4 {
+            1 => Some("transpose=1"),
+            2 => Some("hflip,vflip"),
+            3 => Some("transpose=2"),
+            _ => None,
+        };
+        let filters: Vec<&str> = self
+            .mirror
+            .then_some("hflip")
+            .into_iter()
+            .chain(turn)
+            .collect();
+        (!filters.is_empty()).then(|| filters.join(","))
     }
 
-    pub fn next_ccw(self) -> Self {
-        match self {
-            Self::Clockwise => Self::CounterClockwise,
-            Self::CounterClockwise => Self::UpsideDown,
-            Self::UpsideDown => Self::Clockwise,
-            Self::FlipHorizontal | Self::FlipVertical => Self::CounterClockwise,
+    /// Where a point of the source (0..1 on both axes) ends up.
+    pub fn map_point(self, (x, y): (f32, f32)) -> (f32, f32) {
+        let mut p = if self.mirror { (1.0 - x, y) } else { (x, y) };
+        for _ in 0..self.turns % 4 {
+            p = (1.0 - p.1, p.0);
         }
+        p
+    }
+
+    /// A short description such as "Turned 90° right, mirrored".
+    pub fn describe(self) -> String {
+        let turn = match self.turns % 4 {
+            1 => Some(tr("rotation.turned_right")),
+            2 => Some(tr("rotation.turned_180")),
+            3 => Some(tr("rotation.turned_left")),
+            _ => None,
+        };
+        match (turn, self.mirror) {
+            (None, false) => tr("rotation.unchanged").to_owned(),
+            (None, true) => tr("rotation.mirrored").to_owned(),
+            (Some(turn), false) => turn.to_owned(),
+            (Some(turn), true) => format!("{turn}, {}", tr("rotation.mirrored_lower")),
+        }
+    }
+}
+
+impl From<Rotation> for Orientation {
+    fn from(r: Rotation) -> Self {
+        let (turns, mirror) = match r {
+            Rotation::Clockwise => (1, false),
+            Rotation::CounterClockwise => (3, false),
+            Rotation::UpsideDown => (2, false),
+            Rotation::FlipHorizontal => (0, true),
+            Rotation::FlipVertical => (2, true),
+        };
+        Self { turns, mirror }
     }
 }
 
@@ -813,7 +898,8 @@ pub struct Options {
     pub frame_mode: FrameMode,
     /// Moments, in seconds, for [`FrameMode::Times`].
     pub frame_times: Vec<f64>,
-    pub rotation: Rotation,
+    /// The Rotate tool's turn and flip.
+    pub orientation: Orientation,
     pub speed: f32,
     pub join_audio_format: AudioFormat,
     /// Longest image side after resizing; `None` keeps the original size.
@@ -855,7 +941,7 @@ impl Default for Options {
             frame_format: ImageFormat::Jpeg,
             frame_mode: FrameMode::Interval,
             frame_times: Vec::new(),
-            rotation: Rotation::Clockwise,
+            orientation: Orientation::default(),
             speed: 1.5,
             join_audio_format: AudioFormat::Mp3,
             image_max_side: None,
@@ -1018,34 +1104,50 @@ mod tests {
     }
 
     #[test]
-    fn rotation_helpers_and_cycling() {
-        assert!(Rotation::Clockwise.swaps_dimensions());
-        assert!(Rotation::CounterClockwise.swaps_dimensions());
-        assert!(!Rotation::UpsideDown.swaps_dimensions());
-        assert!(!Rotation::FlipHorizontal.swaps_dimensions());
-        assert!(!Rotation::FlipVertical.swaps_dimensions());
+    fn orientation_turns_and_flips() {
+        let right = Orientation::from(Rotation::Clockwise);
+        assert!(right.swaps_dimensions());
+        assert!(!Orientation::from(Rotation::FlipVertical).swaps_dimensions());
+        assert_eq!(right.transformed_size(1920, 1080), (1080, 1920));
 
+        // Four turns, or two flips, come back to the start.
+        let o = Orientation::default();
+        assert!(
+            o.rotate_cw()
+                .rotate_cw()
+                .rotate_cw()
+                .rotate_cw()
+                .is_unchanged()
+        );
+        assert!(o.flip_vertical().flip_vertical().is_unchanged());
         assert_eq!(
-            Rotation::Clockwise.transformed_size(1920, 1080),
-            (1080, 1920)
+            o.rotate_ccw(),
+            Orientation {
+                turns: 3,
+                mirror: false
+            }
+        );
+        // Turning right then flipping looks like flipping then turning left.
+        assert_eq!(
+            o.rotate_cw().flip_horizontal(),
+            o.flip_horizontal().rotate_ccw()
+        );
+        // A vertical flip is the old upside-down mirror.
+        assert_eq!(o.flip_vertical(), Rotation::FlipVertical.into());
+        assert_eq!(
+            Orientation::from(Rotation::Clockwise)
+                .video_filter()
+                .as_deref(),
+            Some("transpose=1")
         );
         assert_eq!(
-            Rotation::UpsideDown.transformed_size(1920, 1080),
-            (1920, 1080)
+            o.flip_horizontal().rotate_cw().video_filter().as_deref(),
+            Some("hflip,transpose=1")
         );
-
-        assert_eq!(Rotation::Clockwise.next_cw(), Rotation::UpsideDown);
-        assert_eq!(Rotation::UpsideDown.next_cw(), Rotation::CounterClockwise);
-        assert_eq!(Rotation::CounterClockwise.next_cw(), Rotation::Clockwise);
-        assert_eq!(Rotation::FlipHorizontal.next_cw(), Rotation::Clockwise);
-
-        assert_eq!(Rotation::Clockwise.next_ccw(), Rotation::CounterClockwise);
-        assert_eq!(Rotation::CounterClockwise.next_ccw(), Rotation::UpsideDown);
-        assert_eq!(Rotation::UpsideDown.next_ccw(), Rotation::Clockwise);
-        assert_eq!(
-            Rotation::FlipVertical.next_ccw(),
-            Rotation::CounterClockwise
-        );
+        assert_eq!(o.video_filter(), None);
+        // The top-left corner goes top-right after a turn right.
+        assert_eq!(o.rotate_cw().map_point((0.0, 0.0)), (1.0, 0.0));
+        assert_eq!(o.flip_horizontal().map_point((0.0, 0.0)), (1.0, 0.0));
     }
 
     #[test]
