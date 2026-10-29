@@ -37,8 +37,8 @@ const TIMELINE_HEIGHT: f32 = 38.0;
 const HANDLE_GRAB: f32 = 10.0;
 /// The shortest clip the handles allow, in seconds.
 const MIN_CLIP_S: f64 = 0.1;
-/// Seek steps offered under the timeline, in seconds.
-const NUDGES: [f64; 4] = [-5.0, -1.0, 1.0, 5.0];
+/// How far the skip buttons move, in seconds; the arrow keys move one.
+const SKIP_S: f64 = 5.0;
 /// Frames per second shown while playing; enough to watch, light to decode.
 const PLAY_FPS: u32 = 25;
 
@@ -563,6 +563,20 @@ impl Preview {
                 );
             }
         }
+        // The clock sits on the picture, as in a video player.
+        let clock = painter.layout_no_wrap(
+            format!(
+                "{} / {}",
+                display_time(self.time),
+                display_time(self.duration())
+            ),
+            egui::FontId::monospace(12.0),
+            Color32::WHITE,
+        );
+        let at = shown.right_bottom() - Vec2::new(10.0, 8.0) - clock.size();
+        let badge = ScreenRect::from_min_size(at, clock.size()).expand2(Vec2::new(6.0, 3.0));
+        painter.rect_filled(badge, CornerRadius::same(4), Color32::from_black_alpha(160));
+        painter.galley(at, clock, Color32::WHITE);
         if self.frame_rx.is_some() {
             painter.text(
                 shown.right_top() + Vec2::new(-12.0, 12.0),
@@ -626,110 +640,109 @@ impl Preview {
         let duration = self.duration();
         self.timeline(ui, width, edit, mode.clip, mode.marks.then_some(&*marks));
         ui.add_space(4.0);
-        // Playing, seeking, the clock and the set/clear buttons share one row to save height.
-        ui.horizontal_wrapped(|ui| {
-            let (icon, label) = if self.is_playing() {
+        self.shortcuts(ui, duration);
+        // Like GNOME's players: skip back, play and skip forward, centred
+        // under the picture, then a row with the few actions this tool needs.
+        // Left to right in every language, like the timeline above.
+        let gap = ui.spacing().item_spacing.x;
+        let icon_w = |ui: &egui::Ui, icon| widgets::button_width(ui, Some(icon), "", Size::Regular);
+        let transport_w = icon_w(ui, icons::SKIP_BACK)
+            + icon_w(ui, icons::PLAY)
+            + icon_w(ui, icons::SKIP_FORWARD);
+        centered_row(ui, width, transport_w + 2.0 * gap, |ui| {
+            let skip = |ui: &mut egui::Ui, icon, hint| {
+                widgets::button(ui, Some(icon), "", Kind::Ghost, Size::Regular)
+                    .on_hover_text(hint)
+                    .clicked()
+            };
+            if skip(ui, icons::SKIP_BACK, tr("preview.back")) {
+                self.time = (self.time - SKIP_S).max(0.0);
+            }
+            let (icon, hint) = if self.is_playing() {
                 (icons::PAUSE, tr("preview.pause"))
             } else {
                 (icons::PLAY, tr("preview.play"))
             };
-            if widgets::button(ui, Some(icon), label, Kind::Secondary, Size::Regular).clicked() {
+            if widgets::button(ui, Some(icon), "", Kind::Primary, Size::Regular)
+                .on_hover_text(hint)
+                .clicked()
+            {
                 self.toggle_play(ui.ctx());
             }
-            for step in NUDGES {
-                let label = if step < 0.0 {
-                    format!("\u{2212}{} s", -step)
-                } else {
-                    format!("+{step} s")
-                };
-                if widgets::button(ui, None, &label, Kind::Ghost, Size::Small)
-                    .on_hover_text(tr("preview.nudge"))
-                    .clicked()
-                {
-                    self.time = (self.time + step).clamp(0.0, duration);
-                }
+            if skip(ui, icons::SKIP_FORWARD, tr("preview.forward")) {
+                self.time = (self.time + SKIP_S).min(duration);
             }
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} / {}",
-                    display_time(self.time),
-                    display_time(duration)
-                ))
-                .monospace(),
-            );
-            ui.add_space(10.0);
-            if mode.marks {
-                if widgets::button(
-                    ui,
-                    Some(icons::PLUS),
-                    tr("preview.add_moment"),
-                    Kind::Primary,
-                    Size::Regular,
-                )
-                .on_hover_text(tr("preview.add_moment_hint"))
-                .clicked()
+        });
+
+        // Clearing is offered only once there is something to clear.
+        let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
+        let mut actions_w = 0.0;
+        let mut add_w = |w: f32| actions_w += w + if actions_w > 0.0 { gap } else { 0.0 };
+        if mode.marks {
+            add_w(widgets::button_width(
+                ui,
+                Some(icons::PLUS),
+                tr("preview.add_moment"),
+                Size::Regular,
+            ));
+        }
+        if mode.clip {
+            add_w(widgets::button_width(
+                ui,
+                None,
+                tr("preview.start"),
+                Size::Regular,
+            ));
+            add_w(widgets::button_width(
+                ui,
+                None,
+                tr("preview.end"),
+                Size::Regular,
+            ));
+        }
+        if has_edit {
+            add_w(icon_w(ui, icons::X));
+        }
+        if actions_w > 0.0 {
+            ui.add_space(4.0);
+            centered_row(ui, width, actions_w, |ui| {
+                if mode.marks
+                    && widgets::button(
+                        ui,
+                        Some(icons::PLUS),
+                        tr("preview.add_moment"),
+                        Kind::Secondary,
+                        Size::Regular,
+                    )
+                    .on_hover_text(tr("preview.add_moment_hint"))
+                    .clicked()
                 {
                     add_frame_time(marks, self.time);
                 }
-                let here = marks.iter().position(|t| (t - self.time).abs() < 0.05);
-                if ui
-                    .add_enabled_ui(here.is_some(), |ui| {
-                        widgets::button(
-                            ui,
-                            Some(icons::X),
-                            tr("preview.remove_moment"),
-                            Kind::Ghost,
-                            Size::Regular,
-                        )
-                    })
-                    .inner
+                if mode.clip {
+                    if widgets::button(
+                        ui,
+                        None,
+                        tr("preview.start"),
+                        Kind::Secondary,
+                        Size::Regular,
+                    )
+                    .on_hover_text(tr("preview.set_start_hint"))
                     .clicked()
-                    && let Some(i) = here
-                {
-                    marks.remove(i);
+                    {
+                        edit.trim_start = format_timestamp(self.time);
+                    }
+                    if widgets::button(ui, None, tr("preview.end"), Kind::Secondary, Size::Regular)
+                        .on_hover_text(tr("preview.set_end_hint"))
+                        .clicked()
+                    {
+                        edit.trim_end = format_timestamp(self.time);
+                    }
                 }
-            }
-            if mode.clip {
-                if widgets::button(
-                    ui,
-                    Some(icons::CARET_RIGHT),
-                    tr("preview.set_start"),
-                    Kind::Secondary,
-                    Size::Regular,
-                )
-                .on_hover_text(tr("preview.set_start_hint"))
-                .clicked()
-                {
-                    edit.trim_start = format_timestamp(self.time);
-                }
-                if widgets::button(
-                    ui,
-                    Some(icons::CARET_LEFT),
-                    tr("preview.set_end"),
-                    Kind::Secondary,
-                    Size::Regular,
-                )
-                .on_hover_text(tr("preview.set_end_hint"))
-                .clicked()
-                {
-                    edit.trim_end = format_timestamp(self.time);
-                }
-            }
-            if mode.clip || mode.area {
-                let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
-                if ui
-                    .add_enabled_ui(has_edit, |ui| {
-                        widgets::button(
-                            ui,
-                            Some(icons::X),
-                            tr("preview.clear"),
-                            Kind::Ghost,
-                            Size::Regular,
-                        )
-                    })
-                    .inner
-                    .clicked()
+                if has_edit
+                    && widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Regular)
+                        .on_hover_text(tr("preview.clear"))
+                        .clicked()
                 {
                     if mode.clip {
                         edit.trim_start.clear();
@@ -739,8 +752,8 @@ impl Preview {
                         *rect = None;
                     }
                 }
-            }
-        });
+            });
+        }
         ui.add_space(4.0);
         let (start, end) = clip_range(edit, duration);
         let mut lines = Vec::new();
@@ -753,13 +766,6 @@ impl Preview {
                     ("length", &display_time((end - start).max(0.0))),
                 ],
             ));
-        }
-        if mode.marks {
-            lines.push(if marks.is_empty() {
-                tr("preview.marks_hint").to_owned()
-            } else {
-                trf("preview.marks_summary", &[("count", &marks.len())])
-            });
         }
         if mode.area {
             lines.push(match *rect {
@@ -784,6 +790,30 @@ impl Preview {
         }
         for line in lines {
             ui.label(RichText::new(line).color(p.text_weak));
+        }
+    }
+
+    /// Space plays or pauses and the arrow keys step a second, while no
+    /// field is being typed in.
+    fn shortcuts(&mut self, ui: &egui::Ui, duration: f64) {
+        if ui.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        let (space, left, right) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Space),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+            )
+        });
+        if space {
+            self.toggle_play(ui.ctx());
+        }
+        if left {
+            self.time = (self.time - 1.0).max(0.0);
+        }
+        if right {
+            self.time = (self.time + 1.0).min(duration);
         }
     }
 
@@ -907,6 +937,15 @@ impl Preview {
         );
         painter.circle_filled(Pos2::new(x, rect.top() + 2.0), 4.0, p.text);
     }
+}
+
+/// A left-to-right row of `content_w` points, centred in `width`.
+fn centered_row(ui: &mut egui::Ui, width: f32, content_w: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let row = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(Vec2::new(width, theme::BUTTON_HEIGHT), row, |ui| {
+        ui.add_space(((width - content_w) / 2.0).max(0.0));
+        add(ui);
+    });
 }
 
 /// The kept part as `(start, end)` seconds; empty fields mean the whole file.

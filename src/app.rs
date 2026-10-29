@@ -4448,7 +4448,8 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The screen recorder's options.
-/// The moments Extract Frames saves: removable chips, and a field to type more.
+/// The moments Extract Frames saves, in one row: a removable chip for each,
+/// then a field to type more (Enter adds them).
 fn frame_times_rows(
     ui: &mut egui::Ui,
     times: &mut Vec<f64>,
@@ -4458,10 +4459,6 @@ fn frame_times_rows(
     let p = theme::palette(ui);
     row(ui, tr("frames.moments"), |ui| {
         dir::vertical(ui, |ui| {
-            if times.is_empty() {
-                ui.label(RichText::new(tr("preview.marks_hint")).color(p.text_weak));
-                return;
-            }
             let mut remove = None;
             ui.horizontal_wrapped(|ui| {
                 for (i, t) in times.iter().enumerate() {
@@ -4478,34 +4475,15 @@ fn frame_times_rows(
                         remove = Some(i);
                     }
                 }
-                if widgets::button(ui, None, tr("frames.clear"), Kind::Ghost, Size::Small).clicked()
-                {
-                    times.clear();
-                }
-            });
-            if let Some(i) = remove {
-                times.remove(i);
-            }
-        });
-    });
-    row(ui, tr("frames.type"), |ui| {
-        dir::vertical(ui, |ui| {
-            ui.horizontal(|ui| {
                 let field = ui.add(
                     TextEdit::singleline(text)
                         .hint_text(tr("frames.type_hint"))
-                        .desired_width(180.0),
+                        .desired_width(150.0),
                 );
-                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let add = widgets::button(
-                    ui,
-                    Some(icons::PLUS),
-                    tr("frames.add"),
-                    Kind::Secondary,
-                    Size::Regular,
-                )
-                .clicked();
-                if (entered || add) && !text.trim().is_empty() {
+                if field.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && !text.trim().is_empty()
+                {
                     match options::parse_frame_times(text) {
                         Ok(typed) => {
                             for t in typed {
@@ -4517,9 +4495,24 @@ fn frame_times_rows(
                         Err(bad) => *error = Some(bad),
                     }
                 }
+                if times.len() > 1
+                    && widgets::button(ui, None, tr("frames.clear"), Kind::Ghost, Size::Small)
+                        .clicked()
+                {
+                    times.clear();
+                }
             });
-            if let Some(bad) = error {
-                ui.colored_label(p.danger, trf("frames.bad_time", &[("time", bad)]));
+            if let Some(i) = remove {
+                times.remove(i);
+            }
+            match error {
+                Some(bad) => {
+                    ui.colored_label(p.danger, trf("frames.bad_time", &[("time", bad)]));
+                }
+                None if times.is_empty() => {
+                    ui.label(RichText::new(tr("preview.marks_hint")).color(p.text_weak));
+                }
+                None => {}
             }
         });
     });
