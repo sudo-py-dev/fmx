@@ -193,7 +193,9 @@ pub fn run_watching(
 
 /// Runs `program args…` reading `producer`'s stdout as its stdin, watching
 /// its stdout. Cancelling calls `end` on the producer, so its output ends and
-/// the program finishes its file; the job then counts as done.
+/// the program finishes its file; the job then counts as done. Only the
+/// Wayland screen recorder needs it.
+#[cfg(target_os = "linux")]
 pub fn run_fed(
     mut producer: Child,
     mut end: impl FnMut(&mut Child),
@@ -370,6 +372,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn fed_program_finishes_when_its_producer_ends() {
         let producer = command(Path::new("/bin/sh"))
