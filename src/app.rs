@@ -1579,11 +1579,15 @@ impl FmxApp {
             self.inline_preview(ui, mode, preview_height);
             ui.add_space(12.0);
         }
-        dir::Grid::new("options", 2)
-            .spacing([16.0, 12.0])
-            .show(ui, |ui| {
-                self.options_ui(ui);
-            });
+        if self.tool == Tool::Trim {
+            trim_settings(ui, &mut self.settings.options);
+        } else {
+            dir::Grid::new("options", 2)
+                .spacing([16.0, 12.0])
+                .show(ui, |ui| {
+                    self.options_ui(ui);
+                });
+        }
         if let Tool::ToVideo(format) = self.tool {
             ui.add_space(4.0);
             self.advanced_video(ui, format);
@@ -2440,16 +2444,6 @@ impl FmxApp {
                         |f| f.label().to_owned(),
                     );
                 });
-            }
-            Tool::Trim => {
-                // The in and out points are set under the video.
-                row_hint(ui, tr("option.mode"), tr("hint.stream_copy"), |ui| {
-                    dir::checkbox(ui, &mut opts.stream_copy, tr("option.stream_copy"));
-                });
-                if !opts.stream_copy {
-                    quality_row(ui, &mut opts.quality);
-                    resolution_row(ui, &mut opts.resolution);
-                }
             }
             Tool::Split => {
                 row(ui, tr("option.split_mode"), |ui| {
@@ -4740,6 +4734,32 @@ fn row_hint(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mu
             }),
         ],
     );
+}
+
+/// Trim's options as a GNOME boxed list; its in and out points are set
+/// under the video.
+fn trim_settings(ui: &mut egui::Ui, opts: &mut Options) {
+    pref_group(ui, None, |ui| {
+        widgets::pref_row(ui, tr("option.stream_copy"), tr("hint.stream_copy"), |ui| {
+            widgets::switch(ui, &mut opts.stream_copy);
+        });
+        // Re-encoding settings matter only without a fast cut.
+        if !opts.stream_copy {
+            widgets::pref_row(ui, tr("option.quality"), tr("hint.quality"), |ui| {
+                let choices = Quality::ALL.map(|v| (v, v.label()));
+                widgets::segmented(ui, &mut opts.quality, &choices);
+            });
+            widgets::pref_row(ui, tr("option.resolution"), tr("hint.resolution"), |ui| {
+                combo(
+                    ui,
+                    "resolution",
+                    &mut opts.resolution,
+                    &Resolution::ALL,
+                    |v| v.label(),
+                );
+            });
+        }
+    });
 }
 
 fn quality_row(ui: &mut egui::Ui, q: &mut Quality) {
