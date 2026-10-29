@@ -478,12 +478,9 @@ impl FmxApp {
                 Err(e) => self.toasts.push(ToastKind::Error, e.to_string()),
             }
         }
+        // The queue shows the new jobs; no notice needed.
         if queued > 0 {
             self.queue.is_running = true;
-            self.toasts.push(
-                ToastKind::Success,
-                trf("notice.queued", &[("count", &queued)]),
-            );
         }
         if skipped > 0 {
             self.toasts.push(
@@ -684,7 +681,6 @@ impl FmxApp {
         };
         match plan_jobs(&selection, &mut claimed) {
             Ok(specs) => {
-                let count = specs.len();
                 // Downloads are listed under the video's title once it is known.
                 let title = match self.link.as_ref().map(|l| (&l.url, &l.state)) {
                     Some((url, LinkState::Ready(info)))
@@ -708,13 +704,6 @@ impl FmxApp {
                 {
                     self.queue.is_running = true;
                 }
-                let key = if self.queue.is_running {
-                    "notice.queued"
-                } else {
-                    "notice.queued_press_start"
-                };
-                self.toasts
-                    .push(ToastKind::Success, trf(key, &[("count", &count)]));
             }
             Err(e) => self.toasts.push(ToastKind::Error, e.to_string()),
         }
@@ -934,15 +923,10 @@ impl FmxApp {
                     }
                 }
                 let mut claimed: HashSet<PathBuf> = self.queue.claimed_outputs().cloned().collect();
-                let count = specs.len();
                 for mut spec in specs {
                     spec.output = fresh_output(&spec, &mut claimed);
                     self.queue.push(spec);
                 }
-                self.toasts.push(
-                    ToastKind::Success,
-                    trf("notice.queued", &[("count", &count)]),
-                );
             }
             Err(message) => self.toasts.push(ToastKind::Error, message),
         }
