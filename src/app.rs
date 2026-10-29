@@ -2720,7 +2720,8 @@ impl FmxApp {
             tr("section.output_settings"),
             None,
             |ui| {
-                pref_group(ui, None, |ui| {
+                // The section's card holds the rows; no card of their own.
+                {
                     let choices = format.encoder_choices();
                     if choices.len() > 1 {
                         row(ui, tr("option.codec"), |ui| {
@@ -2761,10 +2762,9 @@ impl FmxApp {
                             f.map_or_else(|| tr("option.original").to_owned(), |n| n.to_string())
                         });
                     });
-                });
+                }
                 if !format.is_animation() {
-                    ui.add_space(8.0);
-                    audio_grid(ui, &mut opts.audio, true);
+                    audio_rows(ui, &mut opts.audio, true);
                 }
             },
         );
@@ -2778,7 +2778,7 @@ impl FmxApp {
             Some(icons::SLIDERS),
             tr("section.output_settings"),
             None,
-            |ui| audio_grid(ui, &mut opts.audio, lossy),
+            |ui| audio_rows(ui, &mut opts.audio, lossy),
         );
     }
 
@@ -2791,16 +2791,16 @@ impl FmxApp {
             tr("section.edit"),
             None,
             |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(icons::INFO).color(theme::palette(ui).accent));
-                    ui.label(RichText::new(tr("hint.edit_applies")).weak());
-                });
-                ui.add_space(6.0);
-                pref_group(ui, None, |ui| {
-                    trim_rows(ui, edit);
-                    if !video {
-                        return;
-                    }
+                egui::Frame::new()
+                    .inner_margin(Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(icons::INFO).color(theme::palette(ui).accent));
+                            ui.label(RichText::new(tr("hint.edit_applies")).weak());
+                        });
+                    });
+                trim_rows(ui, edit);
+                if video {
                     row(ui, tr("option.crop"), |ui| {
                         let mut on = edit.crop.is_some();
                         dir::checkbox(ui, &mut on, "");
@@ -2837,7 +2837,7 @@ impl FmxApp {
                             edit.watermark_corner = Some(corner);
                         }
                     });
-                });
+                }
             },
         );
     }
@@ -3577,7 +3577,11 @@ impl FmxApp {
                         Some(icons::SPARKLE),
                         tr("update.whats_new"),
                         None,
-                        |ui| release_notes(ui, &release.notes),
+                        |ui| {
+                            egui::Frame::new()
+                                .inner_margin(Margin::symmetric(14, 12))
+                                .show(ui, |ui| release_notes(ui, &release.notes));
+                        },
                     );
                 }
             });
@@ -4841,8 +4845,9 @@ fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {
     switch_row(ui, tr("option.grayscale"), &mut opts.grayscale);
 }
 
-fn audio_grid(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool) {
-    pref_group(ui, None, |ui| {
+/// The audio options' rows, for the card they sit in.
+fn audio_rows(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool) {
+    {
         if lossy {
             row(ui, tr("option.audio_bitrate"), |ui| {
                 optional_number(
@@ -4868,7 +4873,7 @@ fn audio_grid(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool
             });
         });
         volume_row(ui, &mut audio.volume_db);
-    });
+    }
 }
 
 /// A checkbox that enables a numeric field; unchecked means `None`.
