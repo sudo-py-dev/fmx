@@ -715,7 +715,7 @@ mod e2e {
     use super::*;
     use crate::catalog::{AudioFormat, ImageFormat, VideoFormat};
     use crate::jobs::{Selection, plan_jobs};
-    use crate::options::{Corner, Options, RecordAudio, Rect, ShotFormat};
+    use crate::options::{Corner, FrameMode, Options, RecordAudio, Rect, ShotFormat};
     use std::collections::HashSet;
     use std::process::Command;
     use std::sync::atomic::Ordering;
@@ -1073,6 +1073,51 @@ mod e2e {
             "failed tools:\n{}",
             failures.join("\n")
         );
+    }
+
+    #[test]
+    fn frames_at_chosen_moments_and_from_a_part() {
+        let Some(tb) = toolbox() else {
+            return;
+        };
+        let fx = fixture(tb.get(External::Ffmpeg).expect("ffmpeg"));
+        let run = |opts: Options, name: &str| -> Vec<String> {
+            let spec = JobSpec {
+                tool: Tool::ExtractFrames,
+                inputs: vec![fx.video.clone()],
+                url: None,
+                output: fx.root.join(name),
+                options: opts,
+            };
+            std::fs::create_dir_all(&spec.output).expect("dir");
+            let result = execute(&spec, &tb, &AtomicBool::new(false), |_| {});
+            assert!(result.is_ok(), "{result:?}");
+            let mut names: Vec<String> = std::fs::read_dir(&spec.output)
+                .expect("read")
+                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        // The clip is 3 s long: the moment past its end is left out.
+        let times = run(
+            Options {
+                frame_mode: FrameMode::Times,
+                frame_times: vec![0.5, 2.25, 9.0],
+                frame_format: ImageFormat::Png,
+                ..Options::default()
+            },
+            "times",
+        );
+        assert_eq!(times, ["frame_00m00.500s.png", "frame_00m02.250s.png"]);
+        // Every frame from 1 s to 1.4 s of a 25 fps clip: ten frames.
+        let mut part = Options {
+            frame_mode: FrameMode::All,
+            ..Options::default()
+        };
+        part.edit.trim_start = "1".into();
+        part.edit.trim_end = "1.4".into();
+        assert_eq!(run(part, "part").len(), 10);
     }
 
     #[test]

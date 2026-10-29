@@ -1,10 +1,10 @@
-//! The Clip window: scrub through a video, set start/end points, and drag a
-//! crop rectangle directly on the picture.
+//! The Clip window: play or scrub through a video, set start/end points,
+//! mark moments, and drag a crop rectangle directly on the picture.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
 use eframe::egui::{
@@ -15,7 +15,9 @@ use eframe::egui::{
 use crate::dir;
 use crate::i18n::{tr, trf};
 use crate::icons;
-use crate::options::{Edit, Rect, Rotation, display_time, format_timestamp, parse_timestamp};
+use crate::options::{
+    Edit, Rect, Rotation, add_frame_time, display_time, format_timestamp, parse_timestamp,
+};
 use crate::plan::input_url;
 use crate::probe::MediaInfo;
 use crate::process::{KillOnDrop, command};
@@ -37,6 +39,8 @@ const HANDLE_GRAB: f32 = 10.0;
 const MIN_CLIP_S: f64 = 0.1;
 /// Seek steps offered under the timeline, in seconds.
 const NUDGES: [f64; 4] = [-5.0, -1.0, 1.0, 5.0];
+/// Frames per second shown while playing; enough to watch, light to decode.
+const PLAY_FPS: u32 = 25;
 
 /// What the preview lets the user set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +51,8 @@ pub struct Mode {
     pub area: bool,
     /// Show live rotation transformation.
     pub rotate: bool,
+    /// Moments marked on the timeline (frames to extract).
+    pub marks: bool,
 }
 
 impl Mode {
@@ -54,21 +60,31 @@ impl Mode {
         clip: true,
         area: false,
         rotate: false,
+        marks: false,
     };
     pub const AREA: Self = Self {
         clip: false,
         area: true,
         rotate: false,
+        marks: false,
     };
     pub const ROTATION: Self = Self {
         clip: false,
         area: false,
         rotate: true,
+        marks: false,
+    };
+    pub const MARKS: Self = Self {
+        clip: false,
+        area: false,
+        rotate: false,
+        marks: true,
     };
     const BOTH: Self = Self {
         clip: true,
         area: true,
         rotate: true,
+        marks: false,
     };
 }
 
@@ -94,6 +110,78 @@ pub struct Preview {
     error: Option<String>,
     drag_from: Option<Pos2>,
     grab: Option<Grab>,
+    player: Option<Player>,
+}
+
+/// Plays the video from a moment: ffmpeg decodes it at its own pace (`-re`)
+/// into raw frames, read on a thread. Dropping it stops ffmpeg.
+struct Player {
+    _child: KillOnDrop,
+    frames: Receiver<(f64, ColorImage)>,
+    /// The playhead as the player last set it; anything else means a seek.
+    last_time: f64,
+}
+
+impl Player {
+    fn start(
+        ffmpeg: &Path,
+        path: &Path,
+        from: f64,
+        source: (u32, u32),
+        ctx: &egui::Context,
+    ) -> std::io::Result<Self> {
+        let (w, h) = play_size(source);
+        let mut child = command(ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-re", "-ss"])
+            .arg(format!("{from:.3}"))
+            .arg("-i")
+            .arg(input_url(path, None))
+            .args(["-an", "-sn", "-vf"])
+            .arg(format!("fps={PLAY_FPS},scale={w}:{h}"))
+            .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(KillOnDrop)?;
+        let mut out = child
+            .0
+            .stdout
+            .take()
+            .ok_or(std::io::ErrorKind::BrokenPipe)?;
+        // A short queue: frames wait for the window, never pile up.
+        let (tx, rx) = mpsc::sync_channel(2);
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let mut rgba = vec![0u8; w as usize * h as usize * 4];
+            for n in 0u32.. {
+                if out.read_exact(&mut rgba).is_err() {
+                    break;
+                }
+                let image = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                let time = from + f64::from(n) / f64::from(PLAY_FPS);
+                if tx.send((time, image)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+            // The window learns the end from the closed channel.
+            drop(tx);
+            ctx.request_repaint();
+        });
+        Ok(Self {
+            _child: child,
+            frames: rx,
+            last_time: from,
+        })
+    }
+}
+
+/// The size frames are played at: the preview width at most, even sides.
+fn play_size(source: (u32, u32)) -> (u32, u32) {
+    let (sw, sh) = (source.0.max(2), source.1.max(2));
+    let w = sw.min(PREVIEW_WIDTH) & !1;
+    let h = ((u64::from(w) * u64::from(sh) / u64::from(sw)) as u32 & !1).max(2);
+    (w, h)
 }
 
 /// Decodes one frame at `time` as an egui image.
@@ -253,6 +341,58 @@ impl Preview {
             error: None,
             drag_from: None,
             grab: None,
+            player: None,
+        }
+    }
+
+    fn is_playing(&self) -> bool {
+        self.player.is_some()
+    }
+
+    /// Plays from the playhead (from the start once at the end), or pauses.
+    fn toggle_play(&mut self, ctx: &egui::Context) {
+        if self.player.take().is_some() {
+            return;
+        }
+        let Some(source) = self.source_size() else {
+            return;
+        };
+        if self.time >= self.duration() - 0.05 {
+            self.time = 0.0;
+        }
+        match Player::start(&self.ffmpeg, &self.path, self.time, source, ctx) {
+            Ok(player) => self.player = Some(player),
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Shows the newest played frame; restarts playing after a seek.
+    fn poll_player(&mut self, ctx: &egui::Context) {
+        let duration = self.duration();
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        if (self.time - player.last_time).abs() > 1e-6 {
+            // The user moved the playhead: carry on playing from there.
+            self.player = None;
+            self.toggle_play(ctx);
+            return;
+        }
+        let mut newest = None;
+        let ended = loop {
+            match player.frames.try_recv() {
+                Ok(frame) => newest = Some(frame),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+        if let Some((time, image)) = newest {
+            self.texture = Some(ctx.load_texture("clip_preview", image, TextureOptions::LINEAR));
+            self.time = time.min(duration);
+            self.shown_time = Some(self.time);
+            player.last_time = self.time;
+        } else if ended {
+            self.player = None;
         }
     }
 
@@ -295,9 +435,10 @@ impl Preview {
                 Err(e) => self.error = Some(e),
             }
         }
+        self.poll_player(ctx);
         let wanted = self.time;
         let stale = self.shown_time.is_none_or(|t| (t - wanted).abs() > 0.01);
-        if self.info.is_some() && self.frame_rx.is_none() && stale {
+        if self.info.is_some() && self.frame_rx.is_none() && stale && !self.is_playing() {
             let (tx, rx) = mpsc::channel();
             let (ffmpeg, path, ctx) = (self.ffmpeg.clone(), self.path.clone(), ctx.clone());
             thread::spawn(move || {
@@ -338,6 +479,7 @@ impl Preview {
                         ui,
                         edit,
                         rect,
+                        &mut Vec::new(),
                         Mode::BOTH,
                         DISPLAY_MAX_HEIGHT,
                         edit.rotation,
@@ -348,25 +490,30 @@ impl Preview {
     }
 
     /// Draws the preview inside the current layout, for tools whose main job is
-    /// picking a part of the video. The picture is at most `max_height` tall.
+    /// picking a part of the video. The picture is at most `max_height` tall;
+    /// `marks` are the moments [`Mode::marks`] lets the user choose.
+    #[allow(clippy::too_many_arguments)]
     pub fn inline(
         &mut self,
         ui: &mut egui::Ui,
         edit: &mut Edit,
         rect: &mut Option<Rect>,
+        marks: &mut Vec<f64>,
         mode: Mode,
         max_height: f32,
         rotation: Option<Rotation>,
     ) {
         self.poll(ui.ctx());
-        self.contents(ui, edit, rect, mode, max_height, rotation);
+        self.contents(ui, edit, rect, marks, mode, max_height, rotation);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn contents(
         &mut self,
         ui: &mut egui::Ui,
         edit: &mut Edit,
         rect: &mut Option<Rect>,
+        marks: &mut Vec<f64>,
         mode: Mode,
         max_height: f32,
         rotation: Option<Rotation>,
@@ -477,10 +624,18 @@ impl Preview {
 
         ui.add_space(8.0);
         let duration = self.duration();
-        self.timeline(ui, width, edit, mode.clip);
+        self.timeline(ui, width, edit, mode.clip, mode.marks.then_some(&*marks));
         ui.add_space(4.0);
-        // Seeking, the clock and the set/clear buttons share one row to save height.
+        // Playing, seeking, the clock and the set/clear buttons share one row to save height.
         ui.horizontal_wrapped(|ui| {
+            let (icon, label) = if self.is_playing() {
+                (icons::PAUSE, tr("preview.pause"))
+            } else {
+                (icons::PLAY, tr("preview.play"))
+            };
+            if widgets::button(ui, Some(icon), label, Kind::Secondary, Size::Regular).clicked() {
+                self.toggle_play(ui.ctx());
+            }
             for step in NUDGES {
                 let label = if step < 0.0 {
                     format!("\u{2212}{} s", -step)
@@ -504,6 +659,37 @@ impl Preview {
                 .monospace(),
             );
             ui.add_space(10.0);
+            if mode.marks {
+                if widgets::button(
+                    ui,
+                    Some(icons::PLUS),
+                    tr("preview.add_moment"),
+                    Kind::Primary,
+                    Size::Regular,
+                )
+                .on_hover_text(tr("preview.add_moment_hint"))
+                .clicked()
+                {
+                    add_frame_time(marks, self.time);
+                }
+                let here = marks.iter().position(|t| (t - self.time).abs() < 0.05);
+                if ui
+                    .add_enabled_ui(here.is_some(), |ui| {
+                        widgets::button(
+                            ui,
+                            Some(icons::X),
+                            tr("preview.remove_moment"),
+                            Kind::Ghost,
+                            Size::Regular,
+                        )
+                    })
+                    .inner
+                    .clicked()
+                    && let Some(i) = here
+                {
+                    marks.remove(i);
+                }
+            }
             if mode.clip {
                 if widgets::button(
                     ui,
@@ -568,6 +754,13 @@ impl Preview {
                 ],
             ));
         }
+        if mode.marks {
+            lines.push(if marks.is_empty() {
+                tr("preview.marks_hint").to_owned()
+            } else {
+                trf("preview.marks_summary", &[("count", &marks.len())])
+            });
+        }
         if mode.area {
             lines.push(match *rect {
                 Some(r) => trf(
@@ -595,8 +788,16 @@ impl Preview {
     }
 
     /// A scrubbable track. With `clip`, the kept part is highlighted and its two
-    /// ends can be dragged; anywhere else moves the playhead.
-    fn timeline(&mut self, ui: &mut egui::Ui, width: f32, edit: &mut Edit, clip: bool) {
+    /// ends can be dragged; anywhere else moves the playhead. `marks` are
+    /// drawn as ticks.
+    fn timeline(
+        &mut self,
+        ui: &mut egui::Ui,
+        width: f32,
+        edit: &mut Edit,
+        clip: bool,
+        marks: Option<&Vec<f64>>,
+    ) {
         let p = theme::palette(ui);
         let duration = self.duration().max(0.001);
         let (rect, response) =
@@ -692,6 +893,13 @@ impl Preview {
                 }
             }
         }
+        for t in marks.into_iter().flatten() {
+            let tick = ScreenRect::from_center_size(
+                Pos2::new(x_of(*t), track.center().y),
+                Vec2::new(4.0, track.height() - 4.0),
+            );
+            painter.rect_filled(tick, CornerRadius::same(2), p.accent);
+        }
         let x = x_of(self.time);
         painter.line_segment(
             [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
@@ -717,6 +925,13 @@ fn clip_range(edit: &Edit, duration: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn played_frames_keep_the_shape_with_even_sides() {
+        assert_eq!(play_size((1920, 1080)), (960, 540));
+        assert_eq!(play_size((641, 361)), (640, 360));
+        assert_eq!(play_size((1080, 1920)), (960, 1706));
+    }
 
     #[test]
     fn screen_and_source_coordinates_round_trip() {

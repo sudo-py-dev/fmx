@@ -28,8 +28,8 @@ use crate::icons;
 use crate::instance;
 use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
 use crate::options::{
-    self, Channels, Corner, DownloadKind, Edit, HwAccel, JoinLayout, MixLayout, Options, Quality,
-    Rect, Resolution, Rotation,
+    self, Channels, Corner, DownloadKind, Edit, FrameMode, HwAccel, JoinLayout, MixLayout, Options,
+    Quality, Rect, Resolution, Rotation,
 };
 use crate::preview::{Mode as PreviewMode, Preview};
 use crate::process::spawn_detached;
@@ -222,6 +222,10 @@ pub struct FmxApp {
     /// the recorder first opens.
     capture_devices: Option<capture::Devices>,
     capture_rx: Option<mpsc::Receiver<capture::Devices>>,
+    /// Moments typed for Extract Frames, before they are added.
+    frame_times_text: String,
+    /// The typed moment that could not be read, if any.
+    frame_times_error: Option<String>,
     /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
     preview_index: usize,
     /// Size and length of added files, for the file list.
@@ -306,6 +310,8 @@ impl FmxApp {
             link: None,
             capture_devices: None,
             capture_rx: None,
+            frame_times_text: String::new(),
+            frame_times_error: None,
             preview_index: 0,
             details: HashMap::new(),
             probe_tx,
@@ -357,8 +363,8 @@ impl FmxApp {
                 };
                 app.settings_tab = SettingsTab::Updates;
             }
-            if crate::devshot::wants_recorder() {
-                app.select_tool(Tool::Record);
+            if let Some(tool) = crate::devshot::wants_tool() {
+                app.select_tool(tool);
             }
             if let Some(section) = crate::devshot::wants_settings() {
                 app.show_settings = true;
@@ -1387,7 +1393,7 @@ impl FmxApp {
                 self.input_ui(ui, true);
             }),
             Some((settings_title, settings_help)) if size.x >= TWO_COLUMN_MIN_WIDTH => {
-                let preview = inline_preview_mode(self.tool);
+                let preview = self.preview_mode();
                 let share = if preview.is_some() {
                     FILES_SHARE_BESIDE_PREVIEW
                 } else {
@@ -1568,7 +1574,7 @@ impl FmxApp {
     }
 
     fn settings_step(&mut self, ui: &mut egui::Ui, preview_height: f32) {
-        if let Some(mode) = inline_preview_mode(self.tool) {
+        if let Some(mode) = self.preview_mode() {
             self.inline_preview(ui, mode, preview_height);
             ui.add_space(12.0);
         }
@@ -1588,6 +1594,17 @@ impl FmxApp {
             ui.add_space(4.0);
             self.advanced_audio(ui, !format.is_lossless());
             self.edit_panel(ui, false);
+        }
+    }
+
+    /// How the inline preview works for the current tool, if it has one.
+    fn preview_mode(&self) -> Option<PreviewMode> {
+        match self.tool {
+            Tool::ExtractFrames if self.settings.options.frame_mode == FrameMode::Times => {
+                Some(PreviewMode::MARKS)
+            }
+            Tool::ExtractFrames => Some(PreviewMode::CLIP),
+            tool => inline_preview_mode(tool),
         }
     }
 
@@ -1635,7 +1652,15 @@ impl FmxApp {
         let opts = &mut self.settings.options;
         if self.tool == Tool::Delogo {
             let mut area = Some(opts.delogo);
-            preview.inline(ui, &mut opts.edit, &mut area, mode, max_height, None);
+            preview.inline(
+                ui,
+                &mut opts.edit,
+                &mut area,
+                &mut opts.frame_times,
+                mode,
+                max_height,
+                None,
+            );
             if let Some(area) = area {
                 opts.delogo = area;
             }
@@ -1645,6 +1670,7 @@ impl FmxApp {
                 ui,
                 &mut opts.edit,
                 &mut crop,
+                &mut opts.frame_times,
                 mode,
                 max_height,
                 Some(opts.rotation),
@@ -1653,7 +1679,15 @@ impl FmxApp {
         } else {
             let rotation = opts.edit.rotation;
             let mut crop = opts.edit.crop.take();
-            preview.inline(ui, &mut opts.edit, &mut crop, mode, max_height, rotation);
+            preview.inline(
+                ui,
+                &mut opts.edit,
+                &mut crop,
+                &mut opts.frame_times,
+                mode,
+                max_height,
+                rotation,
+            );
             opts.edit.crop = crop;
         }
     }
@@ -2000,7 +2034,7 @@ impl FmxApp {
             .ctx()
             .animate_bool_with_time(Id::unique("drop_glow"), hovering, MOTION);
         let probeable = kind == InputKind::Media && self.toolbox.get(External::Ffmpeg).is_some();
-        let inline = inline_preview_mode(self.tool).is_some();
+        let inline = self.preview_mode().is_some();
         let row = RowContext {
             count: self.files.len(),
             ordered: !matches!(self.tool.arity(), InputArity::EachFile),
@@ -2268,7 +2302,7 @@ impl FmxApp {
     }
 
     fn preview_window(&mut self, ctx: &egui::Context) {
-        if inline_preview_mode(self.tool).is_some() {
+        if self.preview_mode().is_some() {
             return;
         }
         let Some(preview) = &mut self.preview else {
@@ -2475,14 +2509,36 @@ impl FmxApp {
                 resolution_row(ui, &mut opts.resolution);
             }
             Tool::ExtractFrames => {
-                row(ui, tr("option.interval"), |ui| {
-                    ui.add(
-                        DragValue::new(&mut opts.frame_interval_s)
-                            .range(options::MIN_FRAME_INTERVAL_S..=options::MAX_FRAME_INTERVAL_S)
-                            .speed(0.1)
-                            .suffix(" s"),
-                    );
+                let hint = match opts.frame_mode {
+                    FrameMode::Times => tr("frames.mode_times_hint"),
+                    _ => tr("frames.range_hint"),
+                };
+                row_hint(ui, tr("frames.which"), hint, |ui| {
+                    let choices = FrameMode::ALL.map(|m| (m, m.label()));
+                    widgets::segmented(ui, &mut opts.frame_mode, &choices);
                 });
+                match opts.frame_mode {
+                    FrameMode::Interval => {
+                        row(ui, tr("option.interval"), |ui| {
+                            ui.add(
+                                DragValue::new(&mut opts.frame_interval_s)
+                                    .range(
+                                        options::MIN_FRAME_INTERVAL_S
+                                            ..=options::MAX_FRAME_INTERVAL_S,
+                                    )
+                                    .speed(0.1)
+                                    .suffix(" s"),
+                            );
+                        });
+                    }
+                    FrameMode::All => {}
+                    FrameMode::Times => frame_times_rows(
+                        ui,
+                        &mut opts.frame_times,
+                        &mut self.frame_times_text,
+                        &mut self.frame_times_error,
+                    ),
+                }
                 row(ui, tr("option.output_format"), |ui| {
                     combo(
                         ui,
@@ -4392,6 +4448,83 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The screen recorder's options.
+/// The moments Extract Frames saves: removable chips, and a field to type more.
+fn frame_times_rows(
+    ui: &mut egui::Ui,
+    times: &mut Vec<f64>,
+    text: &mut String,
+    error: &mut Option<String>,
+) {
+    let p = theme::palette(ui);
+    row(ui, tr("frames.moments"), |ui| {
+        dir::vertical(ui, |ui| {
+            if times.is_empty() {
+                ui.label(RichText::new(tr("preview.marks_hint")).color(p.text_weak));
+                return;
+            }
+            let mut remove = None;
+            ui.horizontal_wrapped(|ui| {
+                for (i, t) in times.iter().enumerate() {
+                    if widgets::button(
+                        ui,
+                        Some(icons::X),
+                        &options::display_time(*t),
+                        Kind::Secondary,
+                        Size::Small,
+                    )
+                    .on_hover_text(tr("frames.remove"))
+                    .clicked()
+                    {
+                        remove = Some(i);
+                    }
+                }
+                if widgets::button(ui, None, tr("frames.clear"), Kind::Ghost, Size::Small).clicked()
+                {
+                    times.clear();
+                }
+            });
+            if let Some(i) = remove {
+                times.remove(i);
+            }
+        });
+    });
+    row(ui, tr("frames.type"), |ui| {
+        dir::vertical(ui, |ui| {
+            ui.horizontal(|ui| {
+                let field = ui.add(
+                    TextEdit::singleline(text)
+                        .hint_text(tr("frames.type_hint"))
+                        .desired_width(180.0),
+                );
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let add = widgets::button(
+                    ui,
+                    Some(icons::PLUS),
+                    tr("frames.add"),
+                    Kind::Secondary,
+                    Size::Regular,
+                )
+                .clicked();
+                if (entered || add) && !text.trim().is_empty() {
+                    match options::parse_frame_times(text) {
+                        Ok(typed) => {
+                            for t in typed {
+                                options::add_frame_time(times, t);
+                            }
+                            text.clear();
+                            *error = None;
+                        }
+                        Err(bad) => *error = Some(bad),
+                    }
+                }
+            });
+            if let Some(bad) = error {
+                ui.colored_label(p.danger, trf("frames.bad_time", &[("time", bad)]));
+            }
+        });
+    });
+}
+
 /// What part of the screen to capture; `devices` is `None` while still being
 /// found. With `system_dialog`, a custom area is drawn in the system's own
 /// dialog (Wayland) instead of typed in.

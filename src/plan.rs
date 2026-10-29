@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::catalog::{AudioFormat, Device, Tool, VideoEncoder, VideoFormat};
 use crate::i18n::{tr, trf};
 use crate::options::{
-    self, Corner, Edit, HwAccel, MixLayout, Options, Quality, RecordArea, RecordFormat,
+    self, Corner, Edit, FrameMode, HwAccel, MixLayout, Options, Quality, RecordArea, RecordFormat,
     RecordOptions, Rect, ScreenRect, ScreenshotOptions, ShotFormat, parse_timestamp,
 };
 use crate::probe::MediaInfo;
@@ -32,7 +32,10 @@ pub struct Plan {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlanError {
-    WrongInputCount { needed: usize, got: usize },
+    WrongInputCount {
+        needed: usize,
+        got: usize,
+    },
     NoVideoStream,
     NoAudioStream,
     BadTimestamp(String),
@@ -47,6 +50,8 @@ pub enum PlanError {
     UnsupportedTool,
     InvalidWatermark,
     InvalidValue(String),
+    /// Extract Frames at chosen moments, but none are chosen (or inside the video).
+    NoFrameTimes,
 }
 
 impl fmt::Display for PlanError {
@@ -70,6 +75,7 @@ impl fmt::Display for PlanError {
             Self::UnsupportedTool => f.write_str(tr("error.unsupported_tool")),
             Self::InvalidWatermark => f.write_str(tr("error.invalid_watermark")),
             Self::InvalidValue(name) => f.write_str(&trf("error.invalid_value", &[("name", name)])),
+            Self::NoFrameTimes => f.write_str(tr("error.no_frame_times")),
         }
     }
 }
@@ -140,6 +146,16 @@ impl Args {
 
     fn output(mut self, path: &Path) -> PendingPlan {
         self.0.push(input_url(path, None));
+        PendingPlan(self.0)
+    }
+
+    /// One of several outputs; finish with [`Args::output_done`].
+    fn output_more(mut self, path: &Path) -> Self {
+        self.0.push(input_url(path, None));
+        self
+    }
+
+    fn output_done(self) -> PendingPlan {
         PendingPlan(self.0)
     }
 }
@@ -760,14 +776,22 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
                 return Err(PlanError::TargetTooSmall);
             }
         }
-        Tool::ExtractFrames => {
-            if !opts.frame_interval_s.is_finite()
-                || opts.frame_interval_s < options::MIN_FRAME_INTERVAL_S
-                || opts.frame_interval_s > options::MAX_FRAME_INTERVAL_S
+        Tool::ExtractFrames => match opts.frame_mode {
+            FrameMode::Interval
+                if !opts.frame_interval_s.is_finite()
+                    || opts.frame_interval_s < options::MIN_FRAME_INTERVAL_S
+                    || opts.frame_interval_s > options::MAX_FRAME_INTERVAL_S =>
             {
                 return Err(PlanError::InvalidValue(tr("option.interval").to_owned()));
             }
-        }
+            FrameMode::Times
+                if opts.frame_times.is_empty()
+                    || opts.frame_times.len() > options::MAX_FRAME_TIMES =>
+            {
+                return Err(PlanError::NoFrameTimes);
+            }
+            _ => {}
+        },
         Tool::Volume => {
             if !opts.audio.volume_db.is_finite()
                 || opts.audio.volume_db < -options::MAX_VOLUME_DB
@@ -849,6 +873,74 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
         ));
     }
     Ok(())
+}
+
+/// Saves frames as images: one every few seconds or every frame (of the
+/// clip window, if set), or one at each chosen moment.
+fn extract_frames(input: &Input, output: &Path, opts: &Options) -> Result<Plan, PlanError> {
+    let ext = opts.frame_format.ext();
+    let quality = ["-q:v", "2"];
+    if opts.frame_mode == FrameMode::Times {
+        // One input per moment, each seeked straight to it: fast and exact.
+        let duration = input.info.duration_s.unwrap_or(f64::INFINITY);
+        let times: Vec<f64> = opts
+            .frame_times
+            .iter()
+            .copied()
+            .filter(|t| *t < duration)
+            .collect();
+        if times.is_empty() {
+            return Err(PlanError::NoFrameTimes);
+        }
+        let mut args = base();
+        for t in &times {
+            args = args.flag("-ss", format!("{t:.3}")).input(&input.path);
+        }
+        for (i, t) in times.iter().enumerate() {
+            args = args
+                .flag("-map", format!("{i}:v:0"))
+                .flag("-frames:v", "1")
+                .extend(strings(&quality))
+                .output_more(&output.join(format!("frame_{}.{ext}", time_name(*t))));
+        }
+        return Ok(args.output_done().expect(None));
+    }
+    let mut args = base();
+    let mut expected = input.info.duration_s;
+    if opts.edit.has_trim() {
+        let (start, end) = trim_window(&opts.edit, input.info.duration_s)?;
+        args = args.flag("-ss", format!("{start:.3}"));
+        if let Some(end) = end {
+            args = args.flag("-t", format!("{:.3}", end - start));
+        }
+        expected = end.or(expected).map(|e| e - start);
+    }
+    args = args.input(&input.path);
+    args = match opts.frame_mode {
+        FrameMode::All => args.flag("-fps_mode", "passthrough"),
+        _ => {
+            let interval = opts
+                .frame_interval_s
+                .clamp(options::MIN_FRAME_INTERVAL_S, options::MAX_FRAME_INTERVAL_S);
+            args.flag("-vf", format!("fps=1/{interval}"))
+        }
+    };
+    Ok(args
+        .extend(strings(&quality))
+        .output(&output.join(format!("frame_%05d.{ext}")))
+        .expect(expected))
+}
+
+/// A moment as a file-name part that sorts in order: `00m10.500s`, `1h02m05.000s`.
+fn time_name(secs: f64) -> String {
+    let millis = (secs.max(0.0) * 1000.0).round() as u64;
+    let (s, ms) = (millis / 1000, millis % 1000);
+    let minutes = format!("{:02}m{:02}.{ms:03}s", s / 60 % 60, s % 60);
+    if s >= 3600 {
+        format!("{}h{minutes}", s / 3600)
+    } else {
+        minutes
+    }
 }
 
 /// Parses a clip window; `end` is `None` when it runs to the end of the file.
@@ -960,16 +1052,7 @@ pub fn build(
         Tool::Compress => compress(with_video(single(inputs)?)?, output, opts),
         Tool::ExtractFrames => {
             let input = with_video(single(inputs)?)?;
-            let interval = opts
-                .frame_interval_s
-                .clamp(options::MIN_FRAME_INTERVAL_S, options::MAX_FRAME_INTERVAL_S);
-            let pattern = output.join(format!("frame_%05d.{}", opts.frame_format.ext()));
-            Ok(base()
-                .input(&input.path)
-                .flag("-vf", format!("fps=1/{interval}"))
-                .flag("-q:v", "2")
-                .output(&pattern)
-                .expect(input.info.duration_s))
+            extract_frames(input, output, opts)
         }
         Tool::Rotate => {
             let input = with_video(single(inputs)?)?;

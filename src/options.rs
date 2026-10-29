@@ -726,6 +726,61 @@ pub const MIN_SPEED: f32 = 0.25;
 pub const MAX_SPEED: f32 = 4.0;
 pub const MIN_TARGET_MB: u32 = 1;
 pub const MAX_TARGET_MB: u32 = 100_000;
+/// Which frames Extract Frames saves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FrameMode {
+    /// One every `frame_interval_s` seconds.
+    Interval,
+    /// Every frame of the video.
+    All,
+    /// Only at the moments in `frame_times`.
+    Times,
+}
+
+impl FrameMode {
+    pub const ALL: [Self; 3] = [Self::Interval, Self::All, Self::Times];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Interval => tr("frames.mode_interval"),
+            Self::All => tr("frames.mode_all"),
+            Self::Times => tr("frames.mode_times"),
+        }
+    }
+}
+
+/// Most moments one Extract Frames job saves.
+pub const MAX_FRAME_TIMES: usize = 200;
+
+/// Adds `secs` to sorted, distinct moments; a moment within a millisecond
+/// of one already there counts as the same.
+pub fn add_frame_time(times: &mut Vec<f64>, secs: f64) {
+    if !secs.is_finite() || secs < 0.0 || times.len() >= MAX_FRAME_TIMES {
+        return;
+    }
+    let secs = (secs * 1000.0).round() / 1000.0;
+    if times.iter().any(|t| (t - secs).abs() < 0.001) {
+        return;
+    }
+    let at = times.partition_point(|t| *t < secs);
+    times.insert(at, secs);
+}
+
+/// Parses moments typed as `10, 14.5, 1:05` (commas, semicolons or spaces).
+pub fn parse_frame_times(text: &str) -> Result<Vec<f64>, String> {
+    let mut times = Vec::new();
+    for word in text
+        .split([',', ';', ' ', '\n'])
+        .filter(|w| !w.trim().is_empty())
+    {
+        match parse_timestamp(word) {
+            Ok(Some(t)) => add_frame_time(&mut times, t),
+            _ => return Err(word.trim().to_owned()),
+        }
+    }
+    Ok(times)
+}
+
 pub const MIN_FRAME_INTERVAL_S: f32 = 0.1;
 pub const MAX_FRAME_INTERVAL_S: f32 = 3600.0;
 pub const MIN_IMAGE_SIDE: u32 = 16;
@@ -755,6 +810,9 @@ pub struct Options {
     pub target_size_mb: u32,
     pub frame_interval_s: f32,
     pub frame_format: ImageFormat,
+    pub frame_mode: FrameMode,
+    /// Moments, in seconds, for [`FrameMode::Times`].
+    pub frame_times: Vec<f64>,
     pub rotation: Rotation,
     pub speed: f32,
     pub join_audio_format: AudioFormat,
@@ -795,6 +853,8 @@ impl Default for Options {
             target_size_mb: 25,
             frame_interval_s: 1.0,
             frame_format: ImageFormat::Jpeg,
+            frame_mode: FrameMode::Interval,
+            frame_times: Vec::new(),
             rotation: Rotation::Clockwise,
             speed: 1.5,
             join_audio_format: AudioFormat::Mp3,
@@ -890,6 +950,20 @@ pub fn parse_timestamp(text: &str) -> Result<Option<f64>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_times_stay_sorted_and_distinct() {
+        let mut times = Vec::new();
+        for t in [14.0, 10.0, 14.0004, 12.5, -1.0, f64::NAN] {
+            add_frame_time(&mut times, t);
+        }
+        assert_eq!(times, [10.0, 12.5, 14.0]);
+        assert_eq!(
+            parse_frame_times("10, 14.5; 1:05  2"),
+            Ok(vec![2.0, 10.0, 14.5, 65.0])
+        );
+        assert_eq!(parse_frame_times("10, x"), Err("x".to_owned()));
+    }
 
     #[test]
     fn display_time_is_short_and_readable() {
