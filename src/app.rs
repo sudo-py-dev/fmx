@@ -1291,7 +1291,9 @@ impl FmxApp {
         // As many columns as fit, the cards stretched to fill the row exactly.
         let gap = 12.0;
         let available = ui.available_width();
-        let columns = ((available + gap) / (widgets::CARD_SIZE.x + gap)).floor().max(1.0);
+        let columns = ((available + gap) / (widgets::CARD_SIZE.x + gap))
+            .floor()
+            .max(1.0);
         let card_width = ((available - gap * (columns - 1.0)) / columns)
             .min(widgets::CARD_MAX_WIDTH)
             .floor();
@@ -2927,7 +2929,9 @@ impl FmxApp {
         let modal = egui::Modal::new(egui::Id::unique("settings_dialog"))
             .area(egui::Modal::default_area(egui::Id::unique("settings_dialog")).fade_in(false))
             .frame(egui::Frame::NONE)
-            .backdrop_color(egui::Color32::from_black_alpha(if dark { 110 } else { 70 }).gamma_multiply(eased))
+            .backdrop_color(
+                egui::Color32::from_black_alpha(if dark { 110 } else { 70 }).gamma_multiply(eased),
+            )
             .show(ctx, |ui| {
                 let p = theme::palette(ui);
                 ui.multiply_opacity(eased);
@@ -2980,7 +2984,10 @@ impl FmxApp {
             p.text,
         );
         let close = egui::Rect::from_center_size(
-            egui::pos2(dir::mirror_x(rect, rect.max.x - 24.0, 24.0) + 12.0, rect.center().y),
+            egui::pos2(
+                dir::mirror_x(rect, rect.max.x - 24.0, 24.0) + 12.0,
+                rect.center().y,
+            ),
             egui::Vec2::splat(24.0),
         );
         let response = ui

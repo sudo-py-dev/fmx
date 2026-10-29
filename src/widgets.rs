@@ -4,8 +4,8 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, emath, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense,
-    Stroke, StrokeKind, TextStyle, Vec2, WidgetInfo,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense,
+    Stroke, StrokeKind, TextStyle, Vec2, WidgetInfo, emath,
 };
 
 use crate::art::Art;
@@ -358,11 +358,8 @@ pub fn nav_item(
         // Laid out left to right, then mirrored for right-to-left languages.
         let mut x = rect.left() + 12.0;
         if let Some(art) = art {
-            let glyph = painter.layout_no_wrap(
-                art.glyph.to_owned(),
-                crate::icons::fill(17.0),
-                color,
-            );
+            let glyph =
+                painter.layout_no_wrap(art.glyph.to_owned(), crate::icons::fill(17.0), color);
             painter.galley_with_override_text_color(
                 Pos2::new(
                     dir::mirror_x(rect, x + (18.0 - glyph.size().x) / 2.0, glyph.size().x),
@@ -452,7 +449,13 @@ pub fn card_stroke(p: &Palette, dark: bool) -> Stroke {
 pub fn paint_card(painter: &egui::Painter, rect: Rect, p: &Palette, dark: bool) {
     let radius = CornerRadius::same(theme::CARD_RADIUS);
     painter.add(card_shadow(dark).as_shape(rect, radius));
-    painter.rect(rect, radius, p.surface, card_stroke(p, dark), StrokeKind::Inside);
+    painter.rect(
+        rect,
+        radius,
+        p.surface,
+        card_stroke(p, dark),
+        StrokeKind::Inside,
+    );
 }
 
 /// A tool card's smallest size; cards grow to fill the row evenly.
@@ -471,8 +474,7 @@ pub fn tool_card(
     unavailable: bool,
 ) -> Response {
     let p = theme::palette(ui);
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(width, CARD_SIZE.y), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, CARD_SIZE.y), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
     if ui.is_rect_visible(rect) {
         let hover = animate(ui, response.id.with("hover"), response.hovered(), MOTION);
