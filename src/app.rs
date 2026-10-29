@@ -1582,11 +1582,7 @@ impl FmxApp {
         if self.tool == Tool::Trim {
             trim_settings(ui, &mut self.settings.options);
         } else {
-            dir::Grid::new("options", 2)
-                .spacing([16.0, 12.0])
-                .show(ui, |ui| {
-                    self.options_ui(ui);
-                });
+            pref_group(ui, None, |ui| self.options_ui(ui));
         }
         if let Tool::ToVideo(format) = self.tool {
             ui.add_space(4.0);
@@ -2651,54 +2647,48 @@ impl FmxApp {
             tr("section.output_settings"),
             None,
             |ui| {
-                dir::Grid::new("adv_video_grid", 2)
-                    .spacing([16.0, 10.0])
-                    .show(ui, |ui| {
-                        let choices = format.encoder_choices();
-                        if choices.len() > 1 {
-                            row(ui, tr("option.codec"), |ui| {
-                                combo(ui, "codec", &mut opts.video.encoder, choices, |e| {
-                                    e.label().to_owned()
-                                });
+                pref_group(ui, None, |ui| {
+                    let choices = format.encoder_choices();
+                    if choices.len() > 1 {
+                        row(ui, tr("option.codec"), |ui| {
+                            combo(ui, "codec", &mut opts.video.encoder, choices, |e| {
+                                e.label().to_owned()
                             });
-                            row(ui, tr("option.hardware"), |ui| {
-                                let available: Vec<HwAccel> = HwAccel::ALL
-                                    .into_iter()
-                                    .filter(|hw| {
-                                        hw.suffix().is_none_or(|s| {
-                                            toolbox.has_encoder(&format!("h264_{s}"))
-                                        })
-                                    })
-                                    .collect();
-                                combo(ui, "hw", &mut opts.video.hw, &available, |h| {
-                                    h.label().to_owned()
-                                });
-                            });
-                        }
-                        row(ui, tr("option.video_bitrate"), |ui| {
-                            optional_number(
-                                ui,
-                                &mut opts.video.bitrate_kbps,
-                                4000,
-                                100..=options::MAX_VIDEO_KBPS,
-                                " kb/s",
-                                tr("option.auto_quality"),
-                            );
                         });
-                        row(ui, tr("option.hw_decode"), |ui| {
-                            dir::checkbox(ui, &mut opts.video.hw_decode, tr("option.hw_decode_on"));
-                        });
-                        row(ui, tr("option.fps"), |ui| {
-                            let mut choices: Vec<Option<u32>> = vec![None];
-                            choices.extend(options::FRAME_RATES.map(Some));
-                            combo(ui, "fps", &mut opts.video.fps, &choices, |f| {
-                                f.map_or_else(
-                                    || tr("option.original").to_owned(),
-                                    |n| n.to_string(),
-                                )
+                        row(ui, tr("option.hardware"), |ui| {
+                            let available: Vec<HwAccel> = HwAccel::ALL
+                                .into_iter()
+                                .filter(|hw| {
+                                    hw.suffix()
+                                        .is_none_or(|s| toolbox.has_encoder(&format!("h264_{s}")))
+                                })
+                                .collect();
+                            combo(ui, "hw", &mut opts.video.hw, &available, |h| {
+                                h.label().to_owned()
                             });
+                        });
+                    }
+                    row(ui, tr("option.video_bitrate"), |ui| {
+                        optional_number(
+                            ui,
+                            &mut opts.video.bitrate_kbps,
+                            4000,
+                            100..=options::MAX_VIDEO_KBPS,
+                            " kb/s",
+                            tr("option.auto_quality"),
+                        );
+                    });
+                    row(ui, tr("option.hw_decode_on"), |ui| {
+                        widgets::switch(ui, &mut opts.video.hw_decode);
+                    });
+                    row(ui, tr("option.fps"), |ui| {
+                        let mut choices: Vec<Option<u32>> = vec![None];
+                        choices.extend(options::FRAME_RATES.map(Some));
+                        combo(ui, "fps", &mut opts.video.fps, &choices, |f| {
+                            f.map_or_else(|| tr("option.original").to_owned(), |n| n.to_string())
                         });
                     });
+                });
                 if !format.is_animation() {
                     ui.add_space(8.0);
                     audio_grid(ui, &mut opts.audio, true);
@@ -2733,51 +2723,48 @@ impl FmxApp {
                     ui.label(RichText::new(tr("hint.edit_applies")).weak());
                 });
                 ui.add_space(6.0);
-                dir::Grid::new("edit_grid", 2)
-                    .spacing([16.0, 10.0])
-                    .show(ui, |ui| {
-                        trim_rows(ui, edit);
-                        if !video {
-                            return;
+                pref_group(ui, None, |ui| {
+                    trim_rows(ui, edit);
+                    if !video {
+                        return;
+                    }
+                    row(ui, tr("option.crop"), |ui| {
+                        let mut on = edit.crop.is_some();
+                        dir::checkbox(ui, &mut on, "");
+                        let mut rect = edit.crop.unwrap_or_default();
+                        if on {
+                            rect_editor(ui, &mut rect);
                         }
-                        row(ui, tr("option.crop"), |ui| {
-                            let mut on = edit.crop.is_some();
-                            dir::checkbox(ui, &mut on, "");
-                            let mut rect = edit.crop.unwrap_or_default();
-                            if on {
-                                rect_editor(ui, &mut rect);
-                            }
-                            edit.crop = on.then_some(rect);
-                        });
-                        row(ui, tr("option.rotation"), |ui| {
-                            let mut choices: Vec<Option<Rotation>> = vec![None];
-                            choices.extend(Rotation::ALL.map(Some));
-                            combo(ui, "edit_rotation", &mut edit.rotation, &choices, |r| {
-                                r.map_or_else(
-                                    || tr("option.none_short").to_owned(),
-                                    |r| r.label().to_owned(),
-                                )
-                            });
-                        });
-                        row(ui, tr("option.subtitles"), |ui| {
-                            file_slot(ui, &mut edit.subtitle, &["srt", "ass", "ssa", "vtt"]);
-                        });
-                        row(ui, tr("option.watermark"), |ui| {
-                            file_slot(
-                                ui,
-                                &mut edit.watermark,
-                                &["png", "jpg", "jpeg", "webp", "bmp"],
-                            );
-                            if edit.watermark.is_some() {
-                                let mut corner =
-                                    edit.watermark_corner.unwrap_or(Corner::BottomRight);
-                                combo(ui, "wm_corner", &mut corner, &Corner::ALL, |c| {
-                                    c.label().to_owned()
-                                });
-                                edit.watermark_corner = Some(corner);
-                            }
+                        edit.crop = on.then_some(rect);
+                    });
+                    row(ui, tr("option.rotation"), |ui| {
+                        let mut choices: Vec<Option<Rotation>> = vec![None];
+                        choices.extend(Rotation::ALL.map(Some));
+                        combo(ui, "edit_rotation", &mut edit.rotation, &choices, |r| {
+                            r.map_or_else(
+                                || tr("option.none_short").to_owned(),
+                                |r| r.label().to_owned(),
+                            )
                         });
                     });
+                    row(ui, tr("option.subtitles"), |ui| {
+                        file_slot(ui, &mut edit.subtitle, &["srt", "ass", "ssa", "vtt"]);
+                    });
+                    row(ui, tr("option.watermark"), |ui| {
+                        file_slot(
+                            ui,
+                            &mut edit.watermark,
+                            &["png", "jpg", "jpeg", "webp", "bmp"],
+                        );
+                        if edit.watermark.is_some() {
+                            let mut corner = edit.watermark_corner.unwrap_or(Corner::BottomRight);
+                            combo(ui, "wm_corner", &mut corner, &Corner::ALL, |c| {
+                                c.label().to_owned()
+                            });
+                            edit.watermark_corner = Some(corner);
+                        }
+                    });
+                });
             },
         );
     }
@@ -4352,19 +4339,10 @@ fn time_left(elapsed: Duration, progress: f32) -> Option<Duration> {
 }
 
 /// One labelled row of a two-column options grid.
+/// One option of a tool: a GNOME boxed-list row with its controls at the
+/// end. Rows go inside a [`pref_group`].
 fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
-    let color = theme::palette(ui).text_weak;
-    dir::grid_row(
-        ui,
-        vec![
-            Box::new(|ui| {
-                ui.label(RichText::new(label).color(color));
-            }),
-            Box::new(|ui| {
-                ui.horizontal(content);
-            }),
-        ],
-    );
+    widgets::pref_row(ui, label, "", content);
 }
 
 /// The screen recorder's options.
@@ -4377,7 +4355,7 @@ fn frame_times_rows(
     error: &mut Option<String>,
 ) {
     let p = theme::palette(ui);
-    row(ui, tr("frames.moments"), |ui| {
+    widgets::pref_block(ui, tr("frames.moments"), |ui| {
         dir::vertical(ui, |ui| {
             let mut remove = None;
             ui.horizontal_wrapped(|ui| {
@@ -4523,15 +4501,11 @@ fn screenshot_rows(
                 .suffix(tr("shot.seconds_suffix")),
         );
     });
-    row(ui, tr("record.extras"), |ui| {
-        dir::vertical(ui, |ui| {
-            // The portal draws the pointer as the system decides.
-            if !wayland {
-                dir::checkbox(ui, &mut s.cursor, tr("record.cursor"));
-            }
-            dir::checkbox(ui, &mut s.minimize, tr("shot.minimize"));
-        });
-    });
+    // The portal draws the pointer as the system decides.
+    if !wayland {
+        switch_row(ui, tr("record.cursor"), &mut s.cursor);
+    }
+    switch_row(ui, tr("shot.minimize"), &mut s.minimize);
 }
 
 /// The screen recorder's options; `devices` is `None` while still being found.
@@ -4588,13 +4562,9 @@ fn record_rows(
     row(ui, tr("option.fps"), |ui| {
         ui.add(DragValue::new(&mut r.fps).range(1..=options::MAX_RECORD_FPS));
     });
-    row(ui, tr("record.extras"), |ui| {
-        dir::vertical(ui, |ui| {
-            dir::checkbox(ui, &mut r.cursor, tr("record.cursor"));
-            dir::checkbox(ui, &mut r.countdown, tr("record.countdown"));
-            dir::checkbox(ui, &mut r.minimize, tr("record.minimize"));
-        });
-    });
+    switch_row(ui, tr("record.cursor"), &mut r.cursor);
+    switch_row(ui, tr("record.countdown"), &mut r.countdown);
+    switch_row(ui, tr("record.minimize"), &mut r.minimize);
 }
 
 /// The video downloader's options. `best` is the link's tallest picture, if known.
@@ -4655,15 +4625,15 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
     }
     row_hint(
         ui,
-        tr("download.playlist_label"),
+        tr("download.playlist"),
         tr("download.playlist_hint"),
         |ui| {
-            dir::checkbox(ui, &mut d.playlist, tr("download.playlist"));
+            widgets::switch(ui, &mut d.playlist);
         },
     );
     if d.kind == DownloadKind::Video {
-        row(ui, tr("download.subtitles_label"), |ui| {
-            dir::checkbox(ui, &mut d.subtitles, tr("download.subtitles"));
+        row(ui, tr("download.subtitles"), |ui| {
+            widgets::switch(ui, &mut d.subtitles);
             if d.subtitles {
                 ui.add(
                     TextEdit::singleline(&mut d.subtitle_langs)
@@ -4675,17 +4645,13 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
             }
         });
     }
-    row(ui, tr("download.extras_label"), |ui| {
-        dir::vertical(ui, |ui| {
-            let cover = download::supports_cover(d);
-            ui.add_enabled(
-                cover,
-                egui::Checkbox::new(&mut d.embed_thumbnail, tr("download.cover")),
-            )
+    let cover = download::supports_cover(d);
+    row(ui, tr("download.cover"), |ui| {
+        ui.add_enabled_ui(cover, |ui| widgets::switch(ui, &mut d.embed_thumbnail))
+            .response
             .on_disabled_hover_text(tr("download.cover_unsupported"));
-            dir::checkbox(ui, &mut d.embed_metadata, tr("download.metadata"));
-        });
     });
+    switch_row(ui, tr("download.metadata"), &mut d.embed_metadata);
     row_hint(
         ui,
         tr("download.speed_label"),
@@ -4717,23 +4683,16 @@ fn height_label(height: u32) -> String {
 }
 
 /// A grid row with a short explanation under the control.
+/// An on/off option: a [`row`] ending in a switch, as in GNOME.
+fn switch_row(ui: &mut egui::Ui, label: &str, on: &mut bool) {
+    row(ui, label, |ui| {
+        widgets::switch(ui, on);
+    });
+}
+
+/// A [`row`] with a line of explanation under its title.
 fn row_hint(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mut egui::Ui)) {
-    let p = theme::palette(ui);
-    dir::grid_row(
-        ui,
-        vec![
-            Box::new(|ui| {
-                ui.label(RichText::new(label).color(p.text_weak));
-            }),
-            Box::new(|ui| {
-                dir::vertical(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.horizontal(content);
-                    ui.label(RichText::new(hint).small().color(p.text_weak));
-                });
-            }),
-        ],
-    );
+    widgets::pref_row(ui, label, hint, content);
 }
 
 /// Trim's options as a GNOME boxed list; its in and out points are set
@@ -4899,41 +4858,37 @@ fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {
             },
         );
     });
-    row(ui, tr("option.color"), |ui| {
-        dir::checkbox(ui, &mut opts.grayscale, tr("option.grayscale"));
-    });
+    switch_row(ui, tr("option.grayscale"), &mut opts.grayscale);
 }
 
 fn audio_grid(ui: &mut egui::Ui, audio: &mut options::AudioSettings, lossy: bool) {
-    dir::Grid::new("adv_audio_grid", 2)
-        .spacing([16.0, 10.0])
-        .show(ui, |ui| {
-            if lossy {
-                row(ui, tr("option.audio_bitrate"), |ui| {
-                    optional_number(
-                        ui,
-                        &mut audio.bitrate_kbps,
-                        192,
-                        8..=options::MAX_AUDIO_KBPS,
-                        " kb/s",
-                        tr("option.auto_quality"),
-                    );
-                });
-            }
-            row(ui, tr("option.sample_rate"), |ui| {
-                let mut choices: Vec<Option<u32>> = vec![None];
-                choices.extend(options::SAMPLE_RATES.map(Some));
-                combo(ui, "sample_rate", &mut audio.sample_rate, &choices, |r| {
-                    r.map_or_else(|| tr("option.original").to_owned(), |hz| format!("{hz} Hz"))
-                });
+    pref_group(ui, None, |ui| {
+        if lossy {
+            row(ui, tr("option.audio_bitrate"), |ui| {
+                optional_number(
+                    ui,
+                    &mut audio.bitrate_kbps,
+                    192,
+                    8..=options::MAX_AUDIO_KBPS,
+                    " kb/s",
+                    tr("option.auto_quality"),
+                );
             });
-            row(ui, tr("option.channels"), |ui| {
-                combo(ui, "channels", &mut audio.channels, &Channels::ALL, |c| {
-                    c.label().to_owned()
-                });
+        }
+        row(ui, tr("option.sample_rate"), |ui| {
+            let mut choices: Vec<Option<u32>> = vec![None];
+            choices.extend(options::SAMPLE_RATES.map(Some));
+            combo(ui, "sample_rate", &mut audio.sample_rate, &choices, |r| {
+                r.map_or_else(|| tr("option.original").to_owned(), |hz| format!("{hz} Hz"))
             });
-            volume_row(ui, &mut audio.volume_db);
         });
+        row(ui, tr("option.channels"), |ui| {
+            combo(ui, "channels", &mut audio.channels, &Channels::ALL, |c| {
+                c.label().to_owned()
+            });
+        });
+        volume_row(ui, &mut audio.volume_db);
+    });
 }
 
 /// A checkbox that enables a numeric field; unchecked means `None`.

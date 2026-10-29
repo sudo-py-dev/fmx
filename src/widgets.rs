@@ -998,8 +998,12 @@ pub fn pref_row(
     let id = ui.next_auto_id().with("pref_row");
     let first = ui.min_rect().height() < 1.0;
     let width = ui.available_width();
-    // The controls' width from the last frame, to know how much the text gets.
-    let controls_width: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(160.0);
+    // The controls' size from the last frame, to know how much room the text
+    // gets and how tall the row must be for controls that stack.
+    let controls_size: Vec2 = ui
+        .data(|d| d.get_temp(id))
+        .unwrap_or(Vec2::new(160.0, BUTTON_HEIGHT));
+    let controls_width = controls_size.x;
     let text_width = (width - ROW_PAD * 2.0 - ROW_GAP - controls_width).max(120.0);
     let body = TextStyle::Body.resolve(ui.style());
     let small = TextStyle::Small.resolve(ui.style());
@@ -1010,7 +1014,9 @@ pub fn pref_row(
     let title_g = wrapped(title, body, p.text);
     let sub_g = (!subtitle.is_empty()).then(|| wrapped(subtitle, small, p.text_weak));
     let text_height = title_g.size().y + sub_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y);
-    let height = (text_height + 24.0).max(ROW_MIN_HEIGHT);
+    let height = (text_height + 24.0)
+        .max(controls_size.y + 16.0)
+        .max(ROW_MIN_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     if !first {
         ui.painter().hline(
@@ -1030,22 +1036,49 @@ pub fn pref_row(
         ui.painter()
             .galley(Pos2::new(x(g.size().x), y), g, p.text_weak);
     }
-    // Laid out from the start edge of a space as wide as the controls were.
+    // Laid out from the start edge of a space as big as the controls were,
+    // centred in the row by hand: egui centres a nested block by its
+    // starting height, so a stack of controls would run off the row.
     let area = rect.shrink2(Vec2::new(ROW_PAD, 0.0));
     let x = dir::mirror_x(area, area.right() - controls_width, controls_width);
-    let slot = Rect::from_x_y_ranges(x..=x + controls_width, area.y_range());
-    let mut end = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(slot)
-            .layout(dir::leading(egui::Align::Center)),
+    let half = controls_size.y.min(area.height()) / 2.0;
+    let slot = Rect::from_x_y_ranges(
+        x..=x + controls_width,
+        area.center().y - half..=area.center().y + half,
     );
-    controls(&mut end);
-    let used = end.min_rect().width();
-    if (used - controls_width).abs() > 0.5 {
+    let mut end = ui.new_child(egui::UiBuilder::new().max_rect(slot).layout(dir::column()));
+    let used = end.horizontal(controls).response.rect.size();
+    if (used - controls_size).abs().max_elem() > 0.5 {
         ui.data_mut(|d| d.insert_temp(id, used));
         ui.ctx().request_repaint();
     }
     response
+}
+
+/// A boxed-list row whose controls need the whole width, such as a list of
+/// chips: the title on top and the controls under it.
+pub fn pref_block(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
+    let p = theme::palette(ui);
+    let first = ui.min_rect().height() < 1.0;
+    let pad = ROW_PAD as i8;
+    let frame = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(pad, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            dir::vertical(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.label(egui::RichText::new(title).color(p.text));
+                content(ui);
+            });
+        });
+    if !first {
+        let rect = frame.response.rect;
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top(),
+            Stroke::new(1.0, ink(ui).gamma_multiply(0.08)),
+        );
+    }
 }
 
 /// A numbered step marker: the number in a circle, or a check once the step is complete.
