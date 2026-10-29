@@ -73,7 +73,15 @@ pub fn vertical<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> Inne
 /// The contents of a drop-down menu: full-width items with text on the
 /// start edge. egui's own menus always align their text to the left.
 pub fn menu<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.with_layout(Layout::top_down_justified(start()), add_contents)
+    // While egui measures a new menu, right-aligned items would sit at the far
+    // end of all the room it could take, making the menu that wide; measured
+    // from the left, it fits its items.
+    let align = if ui.is_sizing_pass() {
+        Align::Min
+    } else {
+        start()
+    };
+    ui.with_layout(Layout::top_down_justified(align), add_contents)
         .inner
 }
 
