@@ -308,7 +308,7 @@
   "tool.ebook_pdf": "eBook → PDF",
   "tool.ebook_txt": "eBook → TXT",
   "notice.all_done": "Toutes les tâches sont terminées.",
-  "status.eta": "{percent} · reste {left}",
+  "queue.time_left": "Encore {left}",
   "settings.theme": "Apparence",
   "settings.reduce_motion": "Réduire les animations",
   "theme.system": "Système",

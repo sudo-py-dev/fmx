@@ -33,7 +33,7 @@ use crate::options::{
 };
 use crate::preview::{Mode as PreviewMode, Preview};
 use crate::process::spawn_detached;
-use crate::queue::{Job, JobState, Notifier, Queue};
+use crate::queue::{Job, JobId, JobState, Notifier, Queue};
 use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::shell;
 use crate::sound;
@@ -2814,105 +2814,11 @@ impl FmxApp {
         let mut cancel = None;
         let mut remove = None;
         theme::page_scroll().auto_shrink([false; 2]).show(ui, |ui| {
-            dir::Grid::new("queue", 4)
-                .striped(true)
-                .spacing([18.0, 8.0])
-                .min_row_height(30.0)
-                .show(ui, |ui| {
-                    for job in self.queue.jobs() {
-                        let (cancel, remove) = (&mut cancel, &mut remove);
-                        let actions: dir::Cell<'_> = Box::new(move |ui| {
-                            ui.horizontal(|ui| match job.state {
-                                JobState::Queued | JobState::Running { .. } => {
-                                    let label = if job.spec.tool == Tool::Record
-                                        && job.state != JobState::Queued
-                                    {
-                                        tr("action.stop_recording")
-                                    } else {
-                                        tr("action.cancel")
-                                    };
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::X),
-                                        label,
-                                        Kind::Ghost,
-                                        Size::Small,
-                                    )
-                                    .clicked()
-                                    {
-                                        *cancel = Some(job.id);
-                                    }
-                                }
-                                JobState::Done { .. } => {
-                                    if job.spec.output.is_file()
-                                        && widgets::button(
-                                            ui,
-                                            Some(icons::ARROW_SQUARE_OUT),
-                                            tr("action.open"),
-                                            Kind::Ghost,
-                                            Size::Small,
-                                        )
-                                        .clicked()
-                                    {
-                                        open_path(&job.spec.output);
-                                    }
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::FOLDER),
-                                        tr("action.open_folder"),
-                                        Kind::Ghost,
-                                        Size::Small,
-                                    )
-                                    .clicked()
-                                    {
-                                        reveal(&job.spec.output);
-                                    }
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::X),
-                                        "",
-                                        Kind::Ghost,
-                                        Size::Small,
-                                    )
-                                    .on_hover_text(tr("action.remove"))
-                                    .clicked()
-                                    {
-                                        *remove = Some(job.id);
-                                    }
-                                }
-                                _ => {
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::X),
-                                        tr("action.remove"),
-                                        Kind::Ghost,
-                                        Size::Small,
-                                    )
-                                    .clicked()
-                                    {
-                                        *remove = Some(job.id);
-                                    }
-                                }
-                            });
-                        });
-                        dir::grid_row(
-                            ui,
-                            vec![
-                                Box::new(|ui| {
-                                    ui.label(RichText::new(job.spec.tool.label()).strong());
-                                }),
-                                Box::new(|ui| {
-                                    ui.label(
-                                        job.title.clone().unwrap_or_else(|| job_source(&job.spec)),
-                                    )
-                                    .on_hover_text(job.spec.output.display().to_string());
-                                }),
-                                Box::new(|ui| status_cell(ui, job)),
-                                actions,
-                            ],
-                        );
-                    }
-                });
+            pref_group(ui, None, |ui| {
+                for job in self.queue.jobs() {
+                    job_row(ui, job, &mut cancel, &mut remove);
+                }
+            });
         });
         if let Some(id) = cancel {
             self.queue.cancel(id);
@@ -4991,70 +4897,137 @@ fn combo<T: PartialEq + Clone>(
         });
 }
 
-fn status_cell(ui: &mut egui::Ui, job: &Job) {
+/// One job of the queue as a list row: its tool's tile, what it works on,
+/// the tool and how it is going, then its progress and actions.
+fn job_row(ui: &mut egui::Ui, job: &Job, cancel: &mut Option<JobId>, remove: &mut Option<JobId>) {
     let p = theme::palette(ui);
-    let bar_id = Id::unique(("job_progress", job.id));
+    let title = job.title.clone().unwrap_or_else(|| job_source(&job.spec));
+    let (status, color) = job_status(job, &p);
+    let subtitle = format!("{} · {status}", job.spec.tool.label());
+    let row = widgets::list_row(
+        ui,
+        art::tool(job.spec.tool),
+        &title,
+        &subtitle,
+        color,
+        |ui| {
+            job_controls(ui, job, cancel, remove);
+        },
+    );
+    let details = match &job.state {
+        JobState::Failed(message) => format!("{}\n\n{message}", job.spec.output.display()),
+        _ => job.spec.output.display().to_string(),
+    };
+    row.on_hover_text(details);
+    if matches!(job.state, JobState::Running { .. }) {
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
+    }
+}
+
+/// The subtitle's status for a job, and its color.
+fn job_status(job: &Job, p: &theme::Palette) -> (String, egui::Color32) {
     match &job.state {
-        JobState::Queued => {
-            widgets::chip(ui, icons::LIST_PLUS, tr("status.queued"), p.text_weak);
-        }
-        JobState::Running { .. } if job.spec.tool == Tool::Record => {
-            // The recorder's own detail: the countdown, then time and size.
-            let text = job.detail.clone().unwrap_or_else(|| {
+        JobState::Queued => (tr("status.queued").to_owned(), p.text_weak),
+        // The recorder's own detail: the countdown, then time and size.
+        JobState::Running { .. } if job.spec.tool == Tool::Record => (
+            job.detail.clone().unwrap_or_else(|| {
                 format!(
                     "{} {}",
                     tr("status.recording"),
                     clock(job.elapsed().unwrap_or_default())
                 )
-            });
-            widgets::chip(ui, icons::RECORD, &text, p.danger);
-            ui.ctx().request_repaint_after(Duration::from_millis(500));
+            }),
+            p.danger,
+        ),
+        // A tool's own detail (download size, speed, time left) beats our estimate.
+        JobState::Running { .. } if job.detail.is_some() => {
+            (job.detail.clone().unwrap_or_default(), p.text_weak)
         }
         JobState::Running {
             progress: Some(fraction),
         } => {
-            let percent = format!("{:.0}%", fraction * 100.0);
-            // A tool's own detail (download size, speed, time left) beats our estimate.
-            if let Some(detail) = &job.detail {
-                dir::vertical(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    widgets::progress(ui, bar_id, *fraction, percent, PROGRESS_WIDTH);
-                    // One line as wide as the bar, so it never spills into the next column.
-                    ui.set_max_width(PROGRESS_WIDTH);
-                    ui.add(
-                        egui::Label::new(RichText::new(detail).small().color(p.text_weak))
-                            .truncate(),
-                    )
-                    .on_hover_text(detail);
-                });
-                return;
-            }
-            let text = match job.elapsed().and_then(|e| time_left(e, *fraction)) {
-                Some(left) => trf(
-                    "status.eta",
-                    &[("percent", &percent), ("left", &clock(left))],
-                ),
-                None => percent,
-            };
-            widgets::progress(ui, bar_id, *fraction, text, PROGRESS_WIDTH);
+            let left = job.elapsed().and_then(|e| time_left(e, *fraction));
+            let text = left.map_or_else(
+                || tr("status.running").to_owned(),
+                |left| trf("queue.time_left", &[("left", &clock(left))]),
+            );
+            (text, p.text_weak)
         }
-        JobState::Running { progress: None } => {
-            let text = job.detail.as_deref().unwrap_or(tr("status.running"));
-            widgets::busy(ui, text, PROGRESS_WIDTH);
-        }
-        JobState::Done { elapsed } => {
-            let text = trf(
+        JobState::Running { progress: None } => (tr("status.running").to_owned(), p.text_weak),
+        JobState::Done { elapsed } => (
+            trf(
                 "status.done",
                 &[("secs", &format!("{:.1}", elapsed.as_secs_f32()))],
-            );
-            widgets::chip(ui, icons::CHECK_CIRCLE, &text, p.success);
+            ),
+            p.success,
+        ),
+        JobState::Failed(message) => (
+            message.lines().next().unwrap_or_default().to_owned(),
+            p.danger,
+        ),
+        JobState::Cancelled => (tr("status.cancelled").to_owned(), p.text_weak),
+    }
+}
+
+/// A job's progress and its actions, as small icon buttons.
+fn job_controls(
+    ui: &mut egui::Ui,
+    job: &Job,
+    cancel: &mut Option<JobId>,
+    remove: &mut Option<JobId>,
+) {
+    let icon = |ui: &mut egui::Ui, icon: &str, hint: &str| {
+        widgets::button(ui, Some(icon), "", Kind::Ghost, Size::Small)
+            .on_hover_text(hint)
+            .clicked()
+    };
+    match &job.state {
+        JobState::Running {
+            progress: Some(fraction),
+        } if job.spec.tool != Tool::Record => {
+            let bar_id = Id::unique(("job_progress", job.id));
+            let percent = format!("{:.0}%", fraction * 100.0);
+            widgets::progress(ui, bar_id, *fraction, percent, PROGRESS_WIDTH);
         }
-        JobState::Failed(message) => {
-            let first_line = message.lines().next().unwrap_or_default();
-            widgets::chip(ui, icons::X_CIRCLE, first_line, p.danger).on_hover_text(message);
+        JobState::Running { progress: None } if job.spec.tool != Tool::Record => {
+            widgets::busy(ui, "", PROGRESS_WIDTH);
         }
-        JobState::Cancelled => {
-            widgets::chip(ui, icons::X, tr("status.cancelled"), p.text_weak);
+        _ => {}
+    }
+    match &job.state {
+        JobState::Running { .. } if job.spec.tool == Tool::Record => {
+            if widgets::button(
+                ui,
+                Some(icons::STOP),
+                tr("action.stop_recording"),
+                Kind::Danger,
+                Size::Small,
+            )
+            .clicked()
+            {
+                *cancel = Some(job.id);
+            }
+        }
+        JobState::Queued | JobState::Running { .. } => {
+            if icon(ui, icons::X, tr("action.cancel")) {
+                *cancel = Some(job.id);
+            }
+        }
+        JobState::Done { .. } => {
+            if job.spec.output.is_file() && icon(ui, icons::ARROW_SQUARE_OUT, tr("action.open")) {
+                open_path(&job.spec.output);
+            }
+            if icon(ui, icons::FOLDER, tr("action.open_folder")) {
+                reveal(&job.spec.output);
+            }
+            if icon(ui, icons::X, tr("action.remove")) {
+                *remove = Some(job.id);
+            }
+        }
+        JobState::Failed(_) | JobState::Cancelled => {
+            if icon(ui, icons::X, tr("action.remove")) {
+                *remove = Some(job.id);
+            }
         }
     }
 }

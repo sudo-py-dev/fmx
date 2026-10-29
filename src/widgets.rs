@@ -1055,6 +1055,94 @@ pub fn pref_row(
     response
 }
 
+/// A compact boxed-list row for a list of items, such as the queue: an
+/// icon tile, a title and a subtitle each kept to one line (cut short with
+/// "…"), and controls at the end. The response covers the text, for hover
+/// details.
+pub fn list_row(
+    ui: &mut egui::Ui,
+    art: Art,
+    title: &str,
+    subtitle: &str,
+    subtitle_color: Color32,
+    controls: impl FnOnce(&mut egui::Ui),
+) -> Response {
+    const TILE: f32 = 30.0;
+    const HEIGHT: f32 = 50.0;
+    let p = theme::palette(ui);
+    let id = ui.next_auto_id().with("list_row");
+    let first = ui.min_rect().height() < 1.0;
+    let width = ui.available_width();
+    let controls_width: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(120.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), Sense::hover());
+    if !first {
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top(),
+            Stroke::new(1.0, ink(ui).gamma_multiply(0.08)),
+        );
+    }
+    let inner = rect.shrink2(Vec2::new(ROW_PAD, 0.0));
+    // The tile at the start edge.
+    let tile_x = dir::mirror_x(inner, inner.left(), TILE);
+    let tile = Rect::from_min_size(
+        Pos2::new(tile_x, inner.center().y - TILE / 2.0),
+        Vec2::splat(TILE),
+    );
+    paint_tile(ui.painter(), tile, art, false, ui.visuals().dark_mode);
+    // The text between the tile and the controls, one line each.
+    let text_left = inner.left() + TILE + ROW_GAP / 1.5;
+    let text_width = (inner.right() - controls_width - ROW_GAP - text_left).max(40.0);
+    let one_line = |text: &str, font: FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+        ui.painter().layout_job(job)
+    };
+    let title_g = one_line(title, TextStyle::Body.resolve(ui.style()), p.text);
+    let sub_g = one_line(
+        subtitle,
+        TextStyle::Small.resolve(ui.style()),
+        subtitle_color,
+    );
+    let text_h = title_g.size().y + 2.0 + sub_g.size().y;
+    let text_rect = Rect::from_x_y_ranges(
+        text_left..=text_left + text_width,
+        inner.center().y - text_h / 2.0..=inner.center().y + text_h / 2.0,
+    );
+    let x = |w: f32| dir::mirror_x(inner, text_left, w);
+    let title_h = title_g.size().y;
+    ui.painter().galley(
+        Pos2::new(x(title_g.size().x), text_rect.top()),
+        title_g,
+        p.text,
+    );
+    ui.painter().galley(
+        Pos2::new(x(sub_g.size().x), text_rect.top() + title_h + 2.0),
+        sub_g,
+        subtitle_color,
+    );
+    let hover_rect = Rect::from_x_y_ranges(
+        dir::mirror_x(inner, text_left, text_width)
+            ..=dir::mirror_x(inner, text_left, text_width) + text_width,
+        rect.y_range(),
+    );
+    let response = ui.interact(hover_rect, id.with("text"), Sense::hover());
+    // The controls at the end edge, as wide as they were last frame.
+    let cx = dir::mirror_x(inner, inner.right() - controls_width, controls_width);
+    let slot = Rect::from_x_y_ranges(cx..=cx + controls_width, inner.y_range());
+    let mut end = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(slot)
+            .layout(dir::leading(egui::Align::Center)),
+    );
+    let used = end.horizontal(controls).response.rect.width();
+    if (used - controls_width).abs() > 0.5 {
+        ui.data_mut(|d| d.insert_temp(id, used));
+        ui.ctx().request_repaint();
+    }
+    response
+}
+
 /// A boxed-list row whose controls need the whole width, such as a list of
 /// chips: the title on top and the controls under it.
 pub fn pref_block(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {

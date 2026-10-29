@@ -308,7 +308,7 @@
   "tool.ebook_pdf": "ספר אלקטרוני → PDF",
   "tool.ebook_txt": "ספר אלקטרוני → TXT",
   "notice.all_done": "כל המשימות הסתיימו.",
-  "status.eta": "{percent} · נותרו {left}",
+  "queue.time_left": "נותרו {left}",
   "settings.theme": "מראה",
   "settings.reduce_motion": "הפחתת תנועה",
   "theme.system": "מערכת",

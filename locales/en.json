@@ -309,7 +309,7 @@
   "tool.ebook_pdf": "eBook → PDF",
   "tool.ebook_txt": "eBook → TXT",
   "notice.all_done": "All jobs are finished.",
-  "status.eta": "{percent} · {left} left",
+  "queue.time_left": "{left} left",
   "settings.theme": "Appearance",
   "settings.reduce_motion": "Reduce motion",
   "theme.system": "System",
