@@ -3110,7 +3110,7 @@ impl FmxApp {
         match self.settings_tab {
             SettingsTab::General => {
                 let mut theme_changed = false;
-                pref_group(ui, None, |ui| {
+                pref_group(ui, Some((tr("settings.group_appearance"), "")), |ui| {
                     widgets::pref_row(ui, tr("settings.language"), "", |ui| {
                         self.language_picker(ui);
                     });
@@ -3122,6 +3122,9 @@ impl FmxApp {
                         theme_changed |=
                             widgets::switch(ui, &mut self.settings.reduce_motion).changed();
                     });
+                });
+                ui.add_space(GROUP_GAP);
+                pref_group(ui, Some((tr("settings.group_files"), "")), |ui| {
                     widgets::pref_row(
                         ui,
                         tr("settings.name_tag"),
@@ -3136,8 +3139,8 @@ impl FmxApp {
                         },
                     );
                 });
-                ui.add_space(18.0);
-                pref_group(ui, None, |ui| {
+                ui.add_space(GROUP_GAP);
+                pref_group(ui, Some((tr("settings.group_advanced"), "")), |ui| {
                     if shell::supported() {
                         widgets::pref_row(
                             ui,
@@ -3186,7 +3189,7 @@ impl FmxApp {
                 }
             }
             SettingsTab::Queue => {
-                pref_group(ui, None, |ui| {
+                pref_group(ui, Some((tr("settings.group_running"), "")), |ui| {
                     widgets::pref_row(
                         ui,
                         tr("settings.parallel"),
@@ -3201,6 +3204,9 @@ impl FmxApp {
                     widgets::pref_row(ui, tr("settings.auto_start"), "", |ui| {
                         widgets::switch(ui, &mut self.settings.start_on_add);
                     });
+                });
+                ui.add_space(GROUP_GAP);
+                pref_group(ui, Some((tr("settings.group_finished"), "")), |ui| {
                     widgets::pref_row(ui, tr("settings.notify"), "", |ui| {
                         widgets::switch(ui, &mut self.settings.notify_when_done);
                     });
@@ -3352,7 +3358,7 @@ impl FmxApp {
         };
         let ffmpeg = path_of(External::Ffmpeg);
         let ytdlp = path_of(External::YtDlp);
-        pref_group(ui, None, |ui| {
+        pref_group(ui, Some((tr("settings.group_core"), "")), |ui| {
             let sub = ffmpeg.clone().unwrap_or_default();
             widgets::pref_row(ui, tr("settings.ffmpeg"), &sub, |ui| {
                 status(ui, ffmpeg.is_some());
@@ -3378,7 +3384,7 @@ impl FmxApp {
             widgets::pref_row(ui, "yt-dlp", &sub, |ui| status(ui, ytdlp.is_some()))
                 .on_hover_text(tr("settings.ytdlp_hint"));
         });
-        ui.add_space(18.0);
+        ui.add_space(GROUP_GAP);
         let mut rescan = false;
         pref_group(
             ui,
@@ -3933,13 +3939,13 @@ fn about_page(ui: &mut egui::Ui) {
         ui.add_space(10.0);
         ui.add(Label::new(RichText::new(tr("about.description")).color(p.text_weak)).wrap());
     });
-    ui.add_space(18.0);
+    ui.add_space(GROUP_GAP);
     pref_group(ui, None, |ui| {
         link_row(ui, tr("about.website"), "github.com/sudo-py-dev/fmx", repo);
         link_row(ui, tr("about.report"), "", &format!("{repo}/issues"));
         link_row(ui, tr("about.releases"), "", &format!("{repo}/releases"));
     });
-    ui.add_space(18.0);
+    ui.add_space(GROUP_GAP);
     pref_group(
         ui,
         Some((tr("about.license_title"), tr("about.license"))),
@@ -3997,21 +4003,53 @@ fn link_row(ui: &mut egui::Ui, title: &str, subtitle: &str, url: &str) {
     }
 }
 
+/// A group title in bold. The bundled fonts have no bold weight, so the
+/// text is drawn twice, a fraction of a point apart.
+fn group_title(ui: &mut egui::Ui, title: &str) {
+    const EMBOLDEN: f32 = 0.6;
+    let color = theme::palette(ui).text;
+    let galley =
+        ui.painter()
+            .layout_no_wrap(title.to_owned(), egui::FontId::proportional(15.0), color);
+    let size = galley.size() + egui::vec2(EMBOLDEN, 0.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title));
+    ui.painter().galley(rect.min, galley.clone(), color);
+    ui.painter()
+        .galley(rect.min + egui::vec2(EMBOLDEN, 0.0), galley, color);
+}
+
+/// Space between preferences groups, as on libadwaita's preferences pages.
+const GROUP_GAP: f32 = 12.0;
+
 /// A libadwaita preferences group: an optional title and description,
 /// then one card of [`widgets::pref_row`]s split by hairlines.
 fn pref_group(ui: &mut egui::Ui, heading: Option<(&str, &str)>, rows: impl FnOnce(&mut egui::Ui)) {
-    if let Some((title, description)) = heading {
-        let p = theme::palette(ui);
-        ui.label(RichText::new(title).strong());
-        if !description.is_empty() {
-            ui.add(Label::new(RichText::new(description).small().color(p.text_weak)).wrap());
+    // The title sits close to its card; the page's spacing keeps groups apart.
+    dir::vertical(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        if let Some((title, description)) = heading {
+            let p = theme::palette(ui);
+            // libadwaita's group title: bold, a little inset from the card's edge.
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                group_title(ui, title);
+            });
+            if !description.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.add(
+                        Label::new(RichText::new(description).small().color(p.text_weak)).wrap(),
+                    );
+                });
+            }
+            ui.add_space(6.0);
         }
-        ui.add_space(6.0);
-    }
-    card_frame(ui).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 0.0;
-        rows(ui);
+        card_frame(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            rows(ui);
+        });
     });
 }
 
