@@ -106,11 +106,14 @@ Turn auto-check off, or hit **Check now**, in **Settings → Updates**.
 ## 🚀 Making a release
 
 1. Bump `version` in `Cargo.toml` (the only place — installers and the updater read it from there).
-2. Tag and push, with the tag matching that version:
+2. Rewrite the **What's new** section at the top of `packaging/release-notes.md` for this
+   release. It becomes the release's notes on GitHub, and FMX shows it in
+   **Settings → Updates** before people update.
+3. Tag and push, with the tag matching that version:
    ```bash
    git tag v1.2.3 && git push origin master v1.2.3
    ```
-3. The [release workflow](.github/workflows/release.yml) builds on Linux, Windows and macOS.
+4. The [release workflow](.github/workflows/release.yml) builds on Linux, Windows and macOS.
    On Windows it also starts the real `fmx.exe` (`--self-test`, on a machine without a GPU) and
    adds and removes the right-click menu; if either fails, nothing is published. It then signs
    every file with `FMX_SIGNING_KEY`, verifies it against `packaging/update-key.pub`, and

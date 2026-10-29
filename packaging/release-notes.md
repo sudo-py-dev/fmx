@@ -1,3 +1,22 @@
+## What's new
+
+### A cleaner look, like GNOME
+- Settings and tool search now sit at the top of the sidebar, so the tools get the whole window.
+- An open tool keeps the sidebar and has a simple back arrow and title instead of a top bar.
+- Tool cards show just the format's name, without repeating the file extension.
+
+### Smoother motion
+- Opening a tool slides its page in, and going back slides it away.
+- The sidebar highlight glides to the category you pick, and the new page fades in.
+
+### Also new
+- See what changed in a new version right in Settings → Updates, before you update.
+
+### Fixed
+- Menus in Hebrew are no longer stretched across the window.
+- Hebrew labels no longer run under the scroll bar.
+- The Windows shortcut is now named "fmx".
+
 ## Download
 
 | System | File |
