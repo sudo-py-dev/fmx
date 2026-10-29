@@ -1231,21 +1231,27 @@ impl FmxApp {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
-                for category in Category::ALL {
-                    let selected = self.category == category && self.search.is_empty();
-                    if widgets::nav_item(
-                        ui,
-                        Some(art::category(category)),
-                        category.label(),
-                        selected,
-                        false,
-                        None,
-                    )
-                    .clicked()
-                    {
-                        self.open_category(category);
+                widgets::nav_list(ui, "categories", |ui| {
+                    let mut chosen = None;
+                    for (i, category) in Category::ALL.into_iter().enumerate() {
+                        let selected = self.category == category && self.search.is_empty();
+                        let item = widgets::nav_item(
+                            ui,
+                            Some(art::category(category)),
+                            category.label(),
+                            selected,
+                            false,
+                            None,
+                        );
+                        if selected {
+                            chosen = Some((i, item.rect));
+                        }
+                        if item.clicked() {
+                            self.open_category(category);
+                        }
                     }
-                }
+                    chosen
+                });
             });
     }
 
@@ -3047,21 +3053,28 @@ impl FmxApp {
             dir::vertical(ui, |ui| {
                 ui.set_width(SETTINGS_NAV_WIDTH);
                 ui.spacing_mut().item_spacing.y = 3.0;
-                for tab in SettingsTab::ALL {
-                    let news = tab == SettingsTab::Updates && self.update_news();
-                    if widgets::nav_item(
-                        ui,
-                        Some(tab.art()),
-                        tab.label(),
-                        self.settings_tab == tab,
-                        false,
-                        news.then_some(1),
-                    )
-                    .clicked()
-                    {
-                        self.settings_tab = tab;
+                widgets::nav_list(ui, "settings_sections", |ui| {
+                    let mut chosen = None;
+                    for (i, tab) in SettingsTab::ALL.into_iter().enumerate() {
+                        let news = tab == SettingsTab::Updates && self.update_news();
+                        let selected = self.settings_tab == tab;
+                        let item = widgets::nav_item(
+                            ui,
+                            Some(tab.art()),
+                            tab.label(),
+                            selected,
+                            false,
+                            news.then_some(1),
+                        );
+                        if selected {
+                            chosen = Some((i, item.rect));
+                        }
+                        if item.clicked() {
+                            self.settings_tab = tab;
+                        }
                     }
-                }
+                    chosen
+                });
             });
             ui.add_space(12.0);
             let right_width = ui.available_width();
@@ -3070,9 +3083,9 @@ impl FmxApp {
                 ui.set_max_width(right_width);
                 ui.label(RichText::new(self.settings_tab.label()).heading().strong());
                 ui.add_space(8.0);
-                // Each section fades in, its rows grouped on one card.
+                // Each section fades and rises in, its rows grouped on one card.
                 let tab = self.settings_tab as u8;
-                widgets::navigation(ui, "settings", 0, tab, |ui, _| {
+                widgets::navigation(ui, "settings", 0, tab.into(), tab, |ui, _| {
                     ScrollArea::vertical()
                         .id_salt(("settings_page", tab))
                         .auto_shrink([false; 2])
@@ -4109,11 +4122,24 @@ fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The second line on a tool card: the file extension or a device's screen box.
+/// Empty when it would only repeat the name, as ".mp4" under "MP4" or
+/// "MP4 (H.265)" does; ".jxl" under "JPEG XL" stays.
 fn card_detail(tool: Tool) -> String {
+    let ext = match tool {
+        Tool::ToVideo(f) => f.ext(),
+        Tool::ToAudio(f) => f.ext(),
+        Tool::ToImage(f) => f.ext(),
+        _ => "",
+    };
+    if !ext.is_empty() {
+        let first_word = tool.label().split_whitespace().next().unwrap_or_default();
+        return if first_word.eq_ignore_ascii_case(ext) {
+            String::new()
+        } else {
+            format!(".{ext}")
+        };
+    }
     match tool {
-        Tool::ToVideo(f) => format!(".{}", f.ext()),
-        Tool::ToAudio(f) => format!(".{}", f.ext()),
-        Tool::ToImage(f) => format!(".{}", f.ext()),
         Tool::ToDevice(d) => {
             let p = d.profile();
             format!("{}×{} · H.264", p.max_width, p.max_height)
@@ -4825,10 +4851,15 @@ impl eframe::App for FmxApp {
                     });
                 });
             // Opening a tool slides its page in over the tools, like a GNOME
-            // subpage; another category fades in.
+            // subpage; another category fades in, rising or sinking the way
+            // the sidebar's highlight moves.
             let depth = u8::from(self.in_editor);
+            let order = Category::ALL
+                .iter()
+                .position(|c| *c == self.category)
+                .unwrap_or_default();
             let key = (self.tool, self.category, self.search.is_empty());
-            widgets::navigation(ui, "main", depth, key, |ui, depth| {
+            widgets::navigation(ui, "main", depth, order, key, |ui, depth| {
                 egui::Frame::new()
                     // The same top margin as the sidebar, so a page's header row
                     // lines up with the sidebar's.
@@ -4878,6 +4909,14 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(12_400_000), "12.4 MB");
         assert_eq!(human_size(3_000_000_000), "3.0 GB");
+    }
+
+    #[test]
+    fn card_detail_only_adds_what_the_name_lacks() {
+        assert_eq!(card_detail(Tool::ToVideo(VideoFormat::Mp4)), "");
+        assert_eq!(card_detail(Tool::ToVideo(VideoFormat::Mp4Hevc)), "");
+        assert_eq!(card_detail(Tool::ToImage(ImageFormat::Jxl)), ".jxl");
+        assert_eq!(card_detail(Tool::JoinImages), "");
     }
 
     #[test]

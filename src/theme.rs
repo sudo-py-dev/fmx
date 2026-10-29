@@ -13,8 +13,10 @@ use crate::i18n::tr;
 pub const MOTION: f32 = 0.2;
 /// Seconds for value changes such as progress bars.
 pub const VALUE_MOTION: f32 = 0.35;
-/// Seconds for a page sliding in or out, like libadwaita's navigation.
+/// Seconds for a page fading in, such as another sidebar category.
 pub const PAGE_MOTION: f32 = 0.3;
+/// Seconds for a tool's page sliding in or out: short, so it feels snappy.
+pub const SLIDE_MOTION: f32 = 0.2;
 /// Buttons, entries and sidebar rows.
 pub const RADIUS: u8 = 6;
 /// Cards and boxed lists.
@@ -149,6 +151,9 @@ fn style_for(base: &egui::Style, p: &Palette, dark: bool, reduce_motion: bool) -
     s.menu_margin = Margin::same(8);
     s.indent = 18.0;
     s.combo_width = 140.0;
+    // Overlay scroll bars like GNOME's, but in a lane of their own: egui puts
+    // them on the right even in right-to-left layouts, where text starts there.
+    s.scroll.floating_allocated_width = 10.0;
 
     style.animation_time = if reduce_motion { 0.0 } else { MOTION };
     style.scroll_animation = if reduce_motion {

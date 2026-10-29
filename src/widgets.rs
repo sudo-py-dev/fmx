@@ -309,7 +309,8 @@ pub fn icon_tile(ui: &mut egui::Ui, art: Art, size: f32, solid: bool) -> Respons
 }
 
 /// A full-width sidebar row like GNOME Settings': a symbolic icon and its
-/// label, on a soft neutral highlight when hovered or selected.
+/// label, on a soft neutral highlight when hovered. The selected row's
+/// highlight comes from the [`nav_list`] around it, so it can glide.
 pub fn nav_item(
     ui: &mut egui::Ui,
     art: Option<Art>,
@@ -337,16 +338,14 @@ pub fn nav_item(
             response.is_pointer_button_down_on(),
             MOTION * 0.5,
         );
-        let active = animate(ui, id.with("selected"), selected, MOTION);
-        // Adwaita's sidebar: 6 % ink on hover, 10 % when selected, more while pressed.
-        let ink = if ui.visuals().dark_mode {
-            Color32::WHITE
-        } else {
-            Color32::from_rgb(0, 0, 6)
-        };
-        let alpha = (0.06 * hover).max(0.1 * active) + 0.08 * press;
+        // Adwaita's sidebar: 6 % ink on hover, more while pressed.
+        let alpha = if selected { 0.0 } else { 0.06 * hover } + 0.08 * press;
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(RADIUS), ink.gamma_multiply(alpha));
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(RADIUS),
+            ink(ui).gamma_multiply(alpha),
+        );
         if response.has_focus() {
             painter.rect_stroke(
                 rect,
@@ -401,6 +400,81 @@ pub fn nav_item(
         }
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// The color Adwaita tints rows with: near-black, or white in dark mode.
+fn ink(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::WHITE
+    } else {
+        Color32::from_rgb(0, 0, 6)
+    }
+}
+
+/// A list of [`nav_item`]s whose selection highlight glides from the old
+/// row to the new one. `content` adds the rows and returns the selected
+/// row's index and rect, if a row is selected.
+pub fn nav_list(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    content: impl FnOnce(&mut egui::Ui) -> Option<(usize, Rect)>,
+) {
+    let id = Id::unique(("nav_list", id_salt));
+    // Kept relative to the list, so scrolling it moves the highlight along.
+    let origin = ui.cursor().min.to_vec2();
+    let highlight = ui.painter().add(egui::Shape::Noop);
+    let selected = content(ui);
+    let now = ui.input(|i| i.time);
+    let shown = animate(ui, id.with("shown"), selected.is_some(), MOTION);
+    // The row it glides to, where it started from, and when.
+    let state: Option<(usize, Rect, Rect, f64)> = ui.data(|d| d.get_temp(id));
+    let (to, from, start) = match (state, selected) {
+        (Some((index, _, from, start)), Some((i, rect))) if index == i => {
+            (rect.translate(-origin), from, start)
+        }
+        (Some((_, to, from, start)), Some((i, rect))) => {
+            // Glide on from wherever the highlight is now.
+            let t = glide(ui, now, start);
+            let here = lerp_rect(from, to, t);
+            let to = rect.translate(-origin);
+            ui.data_mut(|d| d.insert_temp(id, (i, to, here, now)));
+            (to, here, now)
+        }
+        (None, Some((i, rect))) => {
+            let to = rect.translate(-origin);
+            ui.data_mut(|d| d.insert_temp(id, (i, to, to, now)));
+            (to, to, now)
+        }
+        // Nothing selected: the highlight fades where it was.
+        (Some((_, to, from, start)), None) => (to, from, start),
+        (None, None) => return,
+    };
+    let t = glide(ui, now, start);
+    if t < 1.0 {
+        ui.ctx().request_repaint();
+    }
+    let rect = lerp_rect(from, to, t).translate(origin);
+    ui.painter().set(
+        highlight,
+        egui::epaint::RectShape::filled(
+            rect,
+            CornerRadius::same(RADIUS),
+            ink(ui).gamma_multiply(0.1 * shown),
+        ),
+    );
+}
+
+/// How far a [`nav_list`] highlight has glided, eased, from 0 to 1.
+fn glide(ui: &egui::Ui, now: f64, start: f64) -> f32 {
+    if ui.style().animation_time == 0.0 {
+        return 1.0;
+    }
+    let t = ((now - start) as f32 / (MOTION * 1.25)).clamp(0.0, 1.0);
+    emath::easing::cubic_out(t)
+}
+
+fn lerp_rect(from: Rect, to: Rect, t: f32) -> Rect {
+    Rect::from_min_max(from.min.lerp(to.min, t), from.max.lerp(to.max, t))
 }
 
 /// Lays out one line of text, ending in "…" if it doesn't fit.
@@ -522,7 +596,13 @@ pub fn tool_card(
             card.width() - 28.0,
         );
         let title_x = dir::mirror_x(card, text_x, title_g.size().x);
-        painter.galley(Pos2::new(title_x, tile.max.y + 9.0), title_g, p.text);
+        // Alone, the name sits centered below the icon.
+        let title_y = if subtitle.is_empty() {
+            (tile.max.y + card.max.y - title_g.size().y) / 2.0
+        } else {
+            tile.max.y + 9.0
+        };
+        painter.galley(Pos2::new(title_x, title_y), title_g, p.text);
         if !subtitle.is_empty() {
             let sub = elided(
                 ui,
@@ -751,38 +831,48 @@ pub fn segmented<T: PartialEq + Copy>(
 const PAGE_PARALLAX: f32 = 0.25;
 /// How dark the page underneath gets once fully covered.
 const PAGE_DIM: f32 = 0.12;
+/// How far a page at the same depth rises or sinks into place, in points.
+const PAGE_RISE: f32 = 28.0;
 
 /// Shows the page at `depth`, animated like libadwaita's navigation view:
 /// going deeper slides the new page in from the end edge over the old one,
 /// which drifts back and dims under its shadow; going back slides the top page
-/// away again. A new `key` at the same depth fades in instead. `page` draws
-/// the page at the depth it is given, so both can show during a slide.
+/// away again. A new `key` at the same depth fades in while it rises into
+/// place from below, or sinks from above when its `order` (its place in the
+/// sidebar) comes before the old page's, following the sidebar's highlight.
+/// `page` draws the page at the depth it is given, so both can show during
+/// a slide.
 pub fn navigation(
     ui: &mut egui::Ui,
     id_salt: &str,
     depth: u8,
+    order: usize,
     key: impl std::hash::Hash + std::fmt::Debug,
     mut page: impl FnMut(&mut egui::Ui, u8),
 ) {
     let id = Id::unique(("navigation", id_salt));
     let key = Id::unique(key);
     let now = ui.input(|i| i.time);
-    // The shown page, its depth, when it arrived and the depth it came from.
-    let state: Option<(Id, u8, f64, u8)> = ui.data(|d| d.get_temp(id));
-    let (start, from) = match state {
-        Some((k, d, start, from)) if k == key && d == depth => (start, from),
-        Some((_, old_depth, ..)) => {
-            ui.data_mut(|d| d.insert_temp(id, (key, depth, now, old_depth)));
-            (now, old_depth)
+    // The shown page and its depth and order, when it arrived, the depth it
+    // came from, and which way it rises (1 up, -1 down).
+    let state: Option<(Id, u8, usize, f64, u8, f32)> = ui.data(|d| d.get_temp(id));
+    let (start, from, rise) = match state {
+        Some((k, d, _, start, from, rise)) if k == key && d == depth => (start, from, rise),
+        Some((_, old_depth, old_order, ..)) => {
+            let rise = f32::from(order.cmp(&old_order) as i8);
+            ui.data_mut(|d| d.insert_temp(id, (key, depth, order, now, old_depth, rise)));
+            (now, old_depth, rise)
         }
         // The first page shows as it is.
         None => {
-            ui.data_mut(|d| d.insert_temp(id, (key, depth, f64::MIN, depth)));
-            (f64::MIN, depth)
+            let first = (key, depth, order, f64::MIN, depth, 0.0_f32);
+            ui.data_mut(|d| d.insert_temp(id, first));
+            (f64::MIN, depth, 0.0)
         }
     };
-    let duration = if from == depth {
-        MOTION
+    let sliding = from != depth;
+    let duration = if sliding {
+        theme::SLIDE_MOTION
     } else {
         theme::PAGE_MOTION
     };
@@ -791,11 +881,11 @@ pub fn navigation(
     let clip = ui.clip_rect().intersect(rect);
     let layout = *ui.layout();
     // Each depth keeps its own ids, so scroll positions survive a slide.
-    let mut show = |ui: &mut egui::Ui, depth: u8, dx: f32, opacity: f32| {
+    let mut show = |ui: &mut egui::Ui, depth: u8, offset: Vec2, opacity: f32| {
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt(("page", depth))
-                .max_rect(rect.translate(Vec2::new(dx, 0.0)))
+                .max_rect(rect.translate(offset))
                 .layout(layout),
         );
         child.set_clip_rect(clip);
@@ -803,12 +893,18 @@ pub fn navigation(
         page(&mut child, depth);
     };
     if elapsed >= 1.0 || ui.style().animation_time == 0.0 {
-        show(ui, depth, 0.0, 1.0);
+        show(ui, depth, Vec2::ZERO, 1.0);
     } else {
         ui.ctx().request_repaint();
-        let eased = emath::easing::cubic_out(elapsed);
-        if from == depth {
-            show(ui, depth, 0.0, 0.2 + 0.8 * eased);
+        // A slide starts fast and settles gently, the way a spring does.
+        let eased = if sliding {
+            emath::easing::exponential_out(elapsed)
+        } else {
+            emath::easing::cubic_out(elapsed)
+        };
+        if !sliding {
+            let dy = rise * PAGE_RISE * (1.0 - eased);
+            show(ui, depth, Vec2::new(0.0, dy), eased);
         } else {
             // How far the deeper page covers the other: 0 to 1 going in, 1 to 0 going back.
             let covered = if depth > from { eased } else { 1.0 - eased };
@@ -817,7 +913,7 @@ pub fn navigation(
             show(
                 ui,
                 depth.min(from),
-                -toward_end * PAGE_PARALLAX * width * covered,
+                Vec2::new(-toward_end * PAGE_PARALLAX * width * covered, 0.0),
                 1.0,
             );
             let painter = ui.painter().with_clip_rect(clip);
@@ -836,7 +932,7 @@ pub fn navigation(
             };
             painter.add(shadow.as_shape(top, CornerRadius::ZERO));
             painter.rect_filled(top, CornerRadius::ZERO, ui.visuals().panel_fill);
-            show(ui, depth.max(from), dx, 1.0);
+            show(ui, depth.max(from), Vec2::new(dx, 0.0), 1.0);
             // Nothing takes clicks until the page has settled.
             ui.interact(clip, id.with("settling"), Sense::click_and_drag());
         }
