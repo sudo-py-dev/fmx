@@ -989,14 +989,15 @@ impl FmxApp {
 
     /// Just the app's name and Settings: queue controls live on the queue,
     /// and the output folder sits beside the button that adds jobs.
+    /// Shown only while a tool is open; otherwise the sidebar's header holds
+    /// the app's name and Settings, so the content gets the whole height.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.set_min_height(HEADER_HEIGHT);
-            // With the sidebar shown, the app's name heads the sidebar instead.
-            if self.in_editor {
-                app_title(ui);
-            }
-            ui.with_layout(dir::trailing(Align::Center), |ui| self.settings_button(ui));
+            app_title(ui);
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
+                self.settings_button(ui, true);
+            });
         });
     }
 
@@ -1141,13 +1142,15 @@ impl FmxApp {
     }
 
     /// The Settings button, with a dot when an update is waiting there.
-    fn settings_button(&mut self, ui: &mut egui::Ui) {
+    /// The Settings button; without its label in the sidebar's header,
+    /// like the menu button in GNOME Settings.
+    fn settings_button(&mut self, ui: &mut egui::Ui, labelled: bool) {
         let news = self.update_news();
         let settings = widgets::button_tinted(
             ui,
             Some(icons::GEAR),
-            Some(art::hue::SLATE),
-            tr("action.settings"),
+            labelled.then_some(art::hue::SLATE),
+            if labelled { tr("action.settings") } else { "" },
             Kind::Ghost,
             Size::Regular,
         );
@@ -1211,6 +1214,9 @@ impl FmxApp {
         ui.horizontal(|ui| {
             ui.set_min_height(HEADER_HEIGHT);
             app_title(ui);
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
+                self.settings_button(ui, false);
+            });
         });
         ui.add_space(10.0);
         ScrollArea::vertical()
@@ -4755,7 +4761,7 @@ impl eframe::App for FmxApp {
                 .inner_margin(Margin::symmetric(14, 10))
         };
         // Like GNOME Settings, the sidebar runs the window's full height with
-        // the app's name on top, beside a flat header bar over the content.
+        // the app's name and Settings on top, and the content has no header bar.
         // Like a tool dialog, an open tool gets the whole window;
         // the sidebar and queue come back once its jobs are added.
         if !self.in_editor {
@@ -4765,10 +4771,11 @@ impl eframe::App for FmxApp {
                 .frame(bar(p.sidebar))
                 .show(ui, |ui| dir::vertical(ui, |ui| self.sidebar(ui)));
         }
-        egui::Panel::top("toolbar")
-            .frame(bar(p.panel))
-            .show(ui, |ui| dir::vertical(ui, |ui| self.toolbar(ui)));
-        if !self.in_editor {
+        if self.in_editor {
+            egui::Panel::top("toolbar")
+                .frame(bar(p.panel))
+                .show(ui, |ui| dir::vertical(ui, |ui| self.toolbar(ui)));
+        } else {
             // An empty queue is a single line.
             if self.queue.jobs().is_empty() {
                 egui::Panel::bottom("queue_empty")
