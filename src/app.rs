@@ -64,11 +64,12 @@ const COMPACT_BUTTONS_WIDTH: f32 = 460.0;
 /// Sizes used when the panels are stacked on narrow windows.
 const STACKED_DROP_HEIGHT: f32 = 170.0;
 const STACKED_LIST_HEIGHT: f32 = 260.0;
-const STACKED_PREVIEW_HEIGHT: f32 = 260.0;
-/// Room left under the inline video for its controls and the options below it.
-const PREVIEW_RESERVE_CLIP: f32 = 250.0;
-const PREVIEW_RESERVE_AREA: f32 = 230.0;
-const MIN_PREVIEW_HEIGHT: f32 = 140.0;
+const STACKED_PREVIEW_HEIGHT: f32 = 320.0;
+/// Room left under the inline video for its timeline and controls; the
+/// options below it scroll into view.
+const PREVIEW_RESERVE_CLIP: f32 = 190.0;
+const PREVIEW_RESERVE_AREA: f32 = 160.0;
+const MIN_PREVIEW_HEIGHT: f32 = 200.0;
 /// How long typing must pause before a pasted link is looked up.
 const LINK_LOOKUP_DELAY: Duration = Duration::from_millis(700);
 const THUMBNAIL_WIDTH: f32 = 200.0;

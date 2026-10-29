@@ -25,10 +25,12 @@ use crate::theme;
 use crate::widgets::{self, Kind, Size};
 
 /// Preview frames are scaled down to at most this width.
-const PREVIEW_WIDTH: u32 = 960;
+const PREVIEW_WIDTH: u32 = 1280;
 /// Cap on the PNG bytes read for one frame.
 const MAX_FRAME_BYTES: u64 = 64 << 20;
-const DISPLAY_MAX_WIDTH: f32 = 760.0;
+const DISPLAY_MAX_WIDTH: f32 = 1100.0;
+/// The Clip window's picture width; the window opens just wide enough.
+const WINDOW_DISPLAY_WIDTH: f32 = 760.0;
 /// Tall (portrait) videos are shown at most this high in the window.
 const DISPLAY_MAX_HEIGHT: f32 = 430.0;
 const MIN_RECT_SIDE: u32 = 8;
@@ -471,7 +473,7 @@ impl Preview {
         egui::Window::new(title)
             .id(egui::Id::unique("clip_window"))
             .open(&mut open)
-            .default_width(DISPLAY_MAX_WIDTH + 32.0)
+            .default_width(WINDOW_DISPLAY_WIDTH + 32.0)
             .resizable(false)
             .show(ctx, |ui| {
                 dir::vertical(ui, |ui| {
@@ -504,7 +506,10 @@ impl Preview {
         rotation: Option<Rotation>,
     ) {
         self.poll(ui.ctx());
-        self.contents(ui, edit, rect, marks, mode, max_height, rotation);
+        // Centred in the panel, like a video in GNOME's players.
+        ui.vertical_centered(|ui| {
+            self.contents(ui, edit, rect, marks, mode, max_height, rotation);
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -967,9 +972,9 @@ mod tests {
 
     #[test]
     fn played_frames_keep_the_shape_with_even_sides() {
-        assert_eq!(play_size((1920, 1080)), (960, 540));
+        assert_eq!(play_size((1920, 1080)), (1280, 720));
         assert_eq!(play_size((641, 361)), (640, 360));
-        assert_eq!(play_size((1080, 1920)), (960, 1706));
+        assert_eq!(play_size((1080, 1920)), (1080, 1920));
     }
 
     #[test]
