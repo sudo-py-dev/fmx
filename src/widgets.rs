@@ -1432,7 +1432,6 @@ pub fn collapsible_section<R>(
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Option<R> {
     let p = theme::palette(ui);
-    let dark = ui.visuals().dark_mode;
     let id = ui.make_persistent_id(id_salt);
     let mut state =
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, {
@@ -1445,14 +1444,10 @@ pub fn collapsible_section<R>(
     let is_open = state.is_open();
     let openness = state.openness(ui.ctx());
 
-    // Like libadwaita's expander row: one card, its header row on top and,
-    // when open, the content's rows under a hairline in the same card.
-    let card = egui::Frame::new()
-        .fill(p.surface)
-        .stroke(card_stroke(&p, dark))
-        .shadow(card_shadow(dark))
-        .corner_radius(CornerRadius::same(theme::CARD_RADIUS));
-    let result = card
+    // Like libadwaita's expander row, without a card: a header row under a
+    // hairline and, when open, the content's rows, split by hairlines too.
+    let line = Stroke::new(1.0, ink(ui).gamma_multiply(0.08));
+    let result = egui::Frame::new()
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -1461,6 +1456,8 @@ pub fn collapsible_section<R>(
                 Vec2::new(ui.available_width(), header_height),
                 Sense::click(),
             );
+            ui.painter()
+                .hline(header_rect.x_range(), header_rect.top(), line);
             response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, title));
             if response.clicked() {
                 state.set_open(!is_open);
@@ -1468,20 +1465,9 @@ pub fn collapsible_section<R>(
             if ui.is_rect_visible(header_rect) {
                 let hover = animate(ui, id.with("hover"), response.hovered(), MOTION);
                 let painter = ui.painter();
-                let r = theme::CARD_RADIUS;
-                let corners = if openness > 0.05 {
-                    CornerRadius {
-                        nw: r,
-                        ne: r,
-                        sw: 0,
-                        se: 0,
-                    }
-                } else {
-                    CornerRadius::same(r)
-                };
                 painter.rect_filled(
-                    header_rect,
-                    corners,
+                    header_rect.shrink2(Vec2::new(0.0, 1.0)),
+                    CornerRadius::same(RADIUS),
                     p.control_hover.gamma_multiply(hover * 0.6),
                 );
                 paint_section_header(
@@ -1499,9 +1485,8 @@ pub fn collapsible_section<R>(
             let _ = response;
             state.show_body_unindented(ui, |ui| {
                 let top = ui.cursor().top();
-                let line = ui.available_rect_before_wrap().x_range();
-                ui.painter()
-                    .hline(line, top, Stroke::new(1.0, ink(ui).gamma_multiply(0.08)));
+                let width = ui.available_rect_before_wrap().x_range();
+                ui.painter().hline(width, top, line);
                 dir::vertical(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     content(ui)
@@ -1511,7 +1496,6 @@ pub fn collapsible_section<R>(
         })
         .inner;
     state.store(ui.ctx());
-    ui.add_space(12.0);
     result.map(|res| res.inner)
 }
 

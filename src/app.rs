@@ -1655,7 +1655,7 @@ impl FmxApp {
         if self.tool == Tool::Trim {
             trim_settings(ui, &mut self.settings.options);
         } else {
-            pref_group(ui, None, |ui| self.options_ui(ui));
+            line_rows(ui, |ui| self.options_ui(ui));
         }
         if let Tool::ToVideo(format) = self.tool {
             ui.add_space(4.0);
@@ -3996,6 +3996,15 @@ fn group_title(ui: &mut egui::Ui, title: &str) {
         .galley(rect.min + egui::vec2(EMBOLDEN, 0.0), galley, color);
 }
 
+/// A tool's option rows, split by hairlines without a card around them.
+fn line_rows(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
+    dir::vertical(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 0.0;
+        rows(ui);
+    });
+}
+
 /// Space between preferences groups, as on libadwaita's preferences pages.
 const GROUP_GAP: f32 = 12.0;
 
@@ -4682,7 +4691,7 @@ fn row_hint(ui: &mut egui::Ui, label: &str, hint: &str, content: impl FnOnce(&mu
 /// Trim's options as a GNOME boxed list; its in and out points are set
 /// under the video.
 fn trim_settings(ui: &mut egui::Ui, opts: &mut Options) {
-    pref_group(ui, None, |ui| {
+    line_rows(ui, |ui| {
         widgets::pref_row(ui, tr("option.stream_copy"), tr("hint.stream_copy"), |ui| {
             widgets::switch(ui, &mut opts.stream_copy);
         });
