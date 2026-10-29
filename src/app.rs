@@ -4353,8 +4353,19 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
             |h| trf("download.quality_hint_best", &[("height", &h)]),
         );
         row_hint(ui, tr("option.quality"), &hint, |ui| {
+            // Only heights the link offers, once it is known.
+            if let (Some(h), Some(best)) = (d.max_height, best)
+                && h > best
+            {
+                d.max_height = None;
+            }
             let mut choices: Vec<Option<u32>> = vec![None];
-            choices.extend(options::DOWNLOAD_HEIGHTS.map(Some));
+            choices.extend(
+                options::DOWNLOAD_HEIGHTS
+                    .into_iter()
+                    .filter(|&h| best.is_none_or(|best| h <= best))
+                    .map(Some),
+            );
             combo(
                 ui,
                 "download_height",
