@@ -83,8 +83,8 @@ pub enum JobError {
     Io(std::io::Error),
     BadUrl,
     NoOutput,
-    /// The system would not share the screen (Wayland's portal).
-    ScreenShare(String),
+    /// The screen recorder could not start; the message says why.
+    Recorder(String),
 }
 
 impl JobError {
@@ -112,7 +112,7 @@ impl fmt::Display for JobError {
             Self::Io(e) => f.write_str(&trf("error.io", &[("error", e)])),
             Self::BadUrl => f.write_str(tr("error.bad_url")),
             Self::NoOutput => f.write_str(tr("error.no_output")),
-            Self::ScreenShare(e) => f.write_str(&trf("error.screen_share", &[("error", e)])),
+            Self::Recorder(e) => f.write_str(e),
         }
     }
 }

@@ -4,6 +4,7 @@
 
 mod app;
 mod art;
+mod capture;
 mod catalog;
 mod cso;
 #[cfg(debug_assertions)]

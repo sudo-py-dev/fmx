@@ -1497,15 +1497,24 @@ pub enum Capture {
     },
     /// The Windows desktop, or a rectangle of it.
     Desktop { area: Option<ScreenRect> },
-    /// The main macOS screen, cut to a rectangle if given.
-    MacScreen { area: Option<ScreenRect> },
+    /// A macOS screen by its AVFoundation device index, cut to a rectangle
+    /// if given.
+    MacScreen {
+        device: String,
+        area: Option<ScreenRect>,
+    },
     /// YUV4MPEG frames on stdin, from the Wayland screen-cast pipeline.
     Stdin,
 }
 
-/// Screen capture until stopped. `mic` names the microphone where the
-/// system needs a device name (Windows); elsewhere the default one is used.
-pub fn record(output: &Path, rec: &RecordOptions, capture: &Capture, mic: Option<&str>) -> Plan {
+/// Screen capture until stopped. `sounds` are ffmpeg's input format and
+/// device for each sound recorded with the picture (see `capture.rs`).
+pub fn record(
+    output: &Path,
+    rec: &RecordOptions,
+    capture: &Capture,
+    sounds: &[(&str, String)],
+) -> Plan {
     let fps = rec.fps.clamp(1, options::MAX_RECORD_FPS).to_string();
     let cursor = if rec.cursor { "1" } else { "0" };
     let mut args = base();
@@ -1542,38 +1551,18 @@ pub fn record(output: &Path, rec: &RecordOptions, capture: &Capture, mic: Option
             }
             args.flag("-i", "desktop")
         }
-        Capture::MacScreen { area } => {
+        Capture::MacScreen { device, area } => {
             crop = *area;
-            let device = if rec.audio.microphone() {
-                "1:0"
-            } else {
-                "1:none"
-            };
             args.flag("-f", "avfoundation")
                 .flag("-framerate", fps.as_str())
                 .flag("-capture_cursor", cursor)
-                .flag("-i", device)
+                .flag("-i", format!("{device}:none"))
         }
         Capture::Stdin => args.flag("-f", "yuv4mpegpipe").flag("-i", "pipe:0"),
     };
 
     // Sound inputs after the picture, numbered from 1.
-    let mut sounds = Vec::new();
-    if !matches!(capture, Capture::MacScreen { .. }) {
-        if cfg!(windows) {
-            if let Some(name) = mic.filter(|_| rec.audio.microphone()) {
-                sounds.push(("dshow", format!("audio={name}")));
-            }
-        } else {
-            if rec.audio.microphone() {
-                sounds.push(("pulse", "default".to_owned()));
-            }
-            if rec.audio.system() {
-                sounds.push(("pulse", "@DEFAULT_MONITOR@".to_owned()));
-            }
-        }
-    }
-    for (format, device) in &sounds {
+    for (format, device) in sounds {
         args = args
             .flag("-thread_queue_size", "1024")
             .flag("-f", *format)
@@ -1587,9 +1576,6 @@ pub fn record(output: &Path, rec: &RecordOptions, capture: &Capture, mic: Option
     };
     graph.push_str("crop=trunc(iw/2)*2:trunc(ih/2)*2[v]");
     let audio_map = match sounds.len() {
-        0 if matches!(capture, Capture::MacScreen { .. }) && rec.audio.microphone() => {
-            Some("0:a".to_owned())
-        }
         0 => None,
         1 => Some("1:a".to_owned()),
         n => {
@@ -1632,7 +1618,7 @@ pub fn record(output: &Path, rec: &RecordOptions, capture: &Capture, mic: Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::{RecordAudio, Resolution};
+    use crate::options::Resolution;
 
     fn media(video: bool, audio: bool, secs: f64) -> MediaInfo {
         MediaInfo {
@@ -2124,15 +2110,20 @@ mod tests {
             Path::new("/o/rec.mkv"),
             &RecordOptions::default(),
             &x11,
-            None,
+            &[],
         );
         assert_eq!(p.stop, StopMode::Quit);
         assert_eq!(p.expected_secs, None);
         assert!(p.args.iter().all(|a| a != "-nostdin"));
     }
 
-    fn record_cmd(rec: &RecordOptions, capture: &Capture) -> String {
-        let p = record(Path::new("/o/rec.mkv"), rec, capture, None);
+    fn record_cmd(capture: &Capture, sounds: &[(&str, String)]) -> String {
+        let p = record(
+            Path::new("/o/rec.mkv"),
+            &RecordOptions::default(),
+            capture,
+            sounds,
+        );
         p.args
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -2140,47 +2131,55 @@ mod tests {
             .join(" ")
     }
 
-    #[cfg(target_os = "linux")]
+    fn pulse(device: &str) -> (&'static str, String) {
+        ("pulse", device.to_owned())
+    }
+
     #[test]
     fn recording_grabs_a_region_and_mixes_both_sounds() {
-        let rec = RecordOptions {
-            audio: RecordAudio::Both,
-            cursor: false,
-            ..RecordOptions::default()
-        };
         let area = Some(ScreenRect {
             x: 10,
             y: 20,
             width: 641,
             height: 480,
         });
-        let cmd = record_cmd(
-            &rec,
-            &Capture::X11 {
-                display: ":1".to_owned(),
-                area,
-            },
-        );
+        let rec = RecordOptions {
+            cursor: false,
+            ..RecordOptions::default()
+        };
+        let x11 = Capture::X11 {
+            display: ":1".to_owned(),
+            area,
+        };
+        let sounds = [pulse("default"), pulse("@DEFAULT_MONITOR@")];
+        let p = record(Path::new("/o/rec.mkv"), &rec, &x11, &sounds);
+        let cmd = p
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             cmd.contains("-draw_mouse 0 -video_size 641x480 -i :1+10,20"),
             "{cmd}"
         );
-        assert!(cmd.contains("-i default"), "{cmd}");
-        assert!(cmd.contains("-i @DEFAULT_MONITOR@"), "{cmd}");
+        assert!(cmd.contains("-f pulse -i default"), "{cmd}");
+        assert!(cmd.contains("-f pulse -i @DEFAULT_MONITOR@"), "{cmd}");
         assert!(cmd.contains("[1:a][2:a]amix=inputs=2"), "{cmd}");
         assert!(cmd.contains("-map [a]"), "{cmd}");
         assert!(!cmd.contains("-shortest"), "{cmd}");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn piped_recording_ends_with_its_picture() {
-        let rec = RecordOptions {
-            audio: RecordAudio::System,
-            ..RecordOptions::default()
-        };
-        let p = record(Path::new("/o/rec.mkv"), &rec, &Capture::Stdin, None);
-        let cmd = record_cmd(&rec, &Capture::Stdin);
+        let sounds = [pulse("@DEFAULT_MONITOR@")];
+        let p = record(
+            Path::new("/o/rec.mkv"),
+            &RecordOptions::default(),
+            &Capture::Stdin,
+            &sounds,
+        );
+        let cmd = record_cmd(&Capture::Stdin, &sounds);
         assert_eq!(p.stop, StopMode::Kill);
         assert!(cmd.contains("-nostdin"), "{cmd}");
         assert!(cmd.contains("-f yuv4mpegpipe -i pipe:0"), "{cmd}");
@@ -2189,13 +2188,45 @@ mod tests {
     }
 
     #[test]
-    fn silent_recording_has_no_sound_inputs() {
-        let rec = RecordOptions {
-            audio: RecordAudio::None,
-            ..RecordOptions::default()
+    fn windows_records_the_desktop_with_a_named_microphone() {
+        let area = Some(ScreenRect {
+            x: 100,
+            y: 50,
+            width: 800,
+            height: 600,
+        });
+        let mic = [("dshow", "audio=Microphone (USB)".to_owned())];
+        let cmd = record_cmd(&Capture::Desktop { area }, &mic);
+        assert!(
+            cmd.contains("-f gdigrab -framerate 30 -draw_mouse 1 -offset_x 100 -offset_y 50 -video_size 800x600 -i desktop"),
+            "{cmd}"
+        );
+        assert!(cmd.contains("-f dshow -i audio=Microphone (USB)"), "{cmd}");
+        assert!(cmd.contains("-map 1:a"), "{cmd}");
+    }
+
+    #[test]
+    fn mac_records_the_chosen_screen_and_crops_a_region() {
+        let area = Some(ScreenRect {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+        });
+        let capture = Capture::MacScreen {
+            device: "2".to_owned(),
+            area,
         };
-        let cmd = record_cmd(&rec, &Capture::Desktop { area: None });
-        assert!(!cmd.contains("pulse") && !cmd.contains("-c:a"), "{cmd}");
+        let cmd = record_cmd(&capture, &[("avfoundation", ":1".to_owned())]);
+        assert!(cmd.contains("-capture_cursor 1 -i 2:none"), "{cmd}");
+        assert!(cmd.contains("-f avfoundation -i :1"), "{cmd}");
+        assert!(cmd.contains("[0:v]crop=1280:720:0:0,"), "{cmd}");
+    }
+
+    #[test]
+    fn silent_recording_has_no_sound_inputs() {
+        let cmd = record_cmd(&Capture::Desktop { area: None }, &[]);
+        assert!(!cmd.contains("-c:a"), "{cmd}");
     }
 
     #[test]

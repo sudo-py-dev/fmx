@@ -12,6 +12,7 @@ use eframe::egui::{
 };
 
 use crate::art;
+use crate::capture;
 use crate::catalog::{
     self, AudioFormat, Category, ImageFormat, InputArity, InputKind, Tool, VideoFormat,
 };
@@ -19,7 +20,6 @@ use crate::diagnostics;
 use crate::dir;
 use crate::docs;
 use crate::download;
-use crate::exec;
 use crate::externals::{External, Toolbox};
 use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
@@ -217,8 +217,10 @@ pub struct FmxApp {
     /// When the web address last changed, to wait for typing to pause.
     url_edited: Option<Instant>,
     link: Option<LinkPreview>,
-    /// Monitors the screen recorder can pick from, read when first needed.
-    monitors: Option<Vec<exec::Monitor>>,
+    /// What the screen recorder can capture, found in the background when
+    /// the recorder first opens.
+    capture_devices: Option<capture::Devices>,
+    capture_rx: Option<mpsc::Receiver<capture::Devices>>,
     /// Which added file the inline preview (Trim, Crop, Remove logo) shows.
     preview_index: usize,
     /// Size and length of added files, for the file list.
@@ -301,7 +303,8 @@ impl FmxApp {
             focus_url: false,
             url_edited: None,
             link: None,
-            monitors: None,
+            capture_devices: None,
+            capture_rx: None,
             preview_index: 0,
             details: HashMap::new(),
             probe_tx,
@@ -1496,9 +1499,16 @@ impl FmxApp {
             }
             InputKind::Capture => {
                 ui.label(tr("input.capture"));
-                if exec::system_picks_area() {
+                let note = if capture::system_picks_area() {
+                    Some(tr("record.system_picks"))
+                } else if cfg!(target_os = "macos") {
+                    Some(tr("record.mac_permission"))
+                } else {
+                    None
+                };
+                if let Some(note) = note {
                     ui.add_space(4.0);
-                    ui.colored_label(p.text_weak, tr("record.system_picks"));
+                    ui.colored_label(p.text_weak, note);
                 }
             }
             _ => self.file_list(ui, fill),
@@ -2277,10 +2287,32 @@ impl FmxApp {
         self.media_info = Some((file_name(path), text));
     }
 
+    /// Starts finding the recorder's devices, or picks up what was found.
+    fn poll_capture_devices(&mut self, ctx: &egui::Context) {
+        if self.capture_devices.is_some() {
+            return;
+        }
+        if let Some(rx) = &self.capture_rx {
+            if let Ok(devices) = rx.try_recv() {
+                self.capture_devices = Some(devices);
+                self.capture_rx = None;
+            }
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ffmpeg = self.toolbox.get(External::Ffmpeg).map(Path::to_path_buf);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(capture::detect(ffmpeg.as_deref()));
+            ctx.request_repaint();
+        });
+        self.capture_rx = Some(rx);
+    }
+
     fn options_ui(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        if tool == Tool::Record && self.monitors.is_none() {
-            self.monitors = Some(exec::monitors());
+        if tool == Tool::Record {
+            self.poll_capture_devices(ui.ctx());
         }
         let opts = &mut self.settings.options;
         match tool {
@@ -2535,11 +2567,7 @@ impl FmxApp {
                 download_rows(ui, &mut opts.download, best);
             }
             Tool::Record => {
-                record_rows(
-                    ui,
-                    &mut opts.record,
-                    self.monitors.as_deref().unwrap_or_default(),
-                );
+                record_rows(ui, &mut opts.record, self.capture_devices.as_ref());
             }
             // The tools `has_options` lists have nothing to set.
             _ => {}
@@ -4348,21 +4376,31 @@ fn row(ui: &mut egui::Ui, label: &str, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// The screen recorder's options.
-fn record_rows(ui: &mut egui::Ui, r: &mut options::RecordOptions, monitors: &[exec::Monitor]) {
+/// The screen recorder's options; `devices` is `None` while still being found.
+fn record_rows(
+    ui: &mut egui::Ui,
+    r: &mut options::RecordOptions,
+    devices: Option<&capture::Devices>,
+) {
     use options::{RecordArea, RecordAudio, RecordQuality};
-    if !exec::system_picks_area() {
+    if !capture::system_picks_area() {
+        let monitors = devices.map_or(&[][..], |d| &d.monitors);
         let mut areas = vec![RecordArea::Screen];
         areas.extend((0..monitors.len() as u32).map(RecordArea::Monitor));
         areas.push(RecordArea::Region);
-        if !areas.contains(&r.area) {
+        if devices.is_some() && !areas.contains(&r.area) {
             r.area = RecordArea::Screen;
         }
         row(ui, tr("record.area"), |ui| {
             combo(ui, "record_area", &mut r.area, &areas, |a| match a {
                 RecordArea::Screen => tr("record.area_screen").to_owned(),
-                RecordArea::Monitor(i) => monitors.get(i as usize).map_or_else(String::new, |m| {
-                    format!("{} ({}×{})", m.name, m.rect.width, m.rect.height)
-                }),
+                RecordArea::Monitor(i) => monitors.get(i as usize).map_or_else(
+                    || format!("{} {}", tr("record.screen"), i + 1),
+                    |m| match m.rect {
+                        Some(r) => format!("{} ({}×{})", m.name, r.width, r.height),
+                        None => m.name.clone(),
+                    },
+                ),
                 RecordArea::Region => tr("record.area_region").to_owned(),
             });
         });
@@ -4392,15 +4430,32 @@ fn record_rows(ui: &mut egui::Ui, r: &mut options::RecordOptions, monitors: &[ex
             });
         }
     }
-    row(ui, tr("option.audio"), |ui| {
-        combo(
-            ui,
-            "record_audio",
-            &mut r.audio,
-            RecordAudio::available(),
-            |a| a.label().to_owned(),
-        );
-    });
+    let audio_choices = match devices {
+        Some(d) => {
+            let choices = d.audio_choices();
+            if !choices.contains(&r.audio) {
+                r.audio = *choices.get(1).unwrap_or(&RecordAudio::None);
+            }
+            choices
+        }
+        None => vec![r.audio],
+    };
+    // Windows and macOS need a loopback device to record what they play.
+    let loopback_hint = match devices {
+        Some(d) if d.loopback.is_none() && cfg!(windows) => tr("record.loopback_windows"),
+        Some(d) if d.loopback.is_none() && cfg!(target_os = "macos") => tr("record.loopback_mac"),
+        _ => "",
+    };
+    let audio_row = |ui: &mut egui::Ui| {
+        combo(ui, "record_audio", &mut r.audio, &audio_choices, |a| {
+            a.label().to_owned()
+        });
+    };
+    if loopback_hint.is_empty() {
+        row(ui, tr("option.audio"), audio_row);
+    } else {
+        row_hint(ui, tr("option.audio"), loopback_hint, audio_row);
+    }
     row(ui, tr("option.quality"), |ui| {
         let choices = RecordQuality::ALL.map(|q| (q, q.label()));
         widgets::segmented(ui, &mut r.quality, &choices);

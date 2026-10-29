@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::capture;
 use crate::catalog::{AudioFormat, EbookFormat, Tool};
 use crate::cso;
 use crate::disc;
@@ -17,7 +18,7 @@ use crate::i18n::{tr, trf};
 use crate::imaging;
 use crate::jobs::{JobError, JobSpec};
 use crate::office;
-use crate::options::{RecordArea, RecordOptions, ScreenRect};
+use crate::options::{RecordArea, RecordOptions};
 use crate::pdfgen;
 use crate::plan::{self, BLURAY_PROTOCOL, CD_DEMUXER, Capture, DVD_DEMUXER, Input, PlanError};
 use crate::process::{self, RunError, StopMode, Watch};
@@ -69,68 +70,6 @@ fn first_input(spec: &JobSpec) -> Result<&Path, JobError> {
         }))
 }
 
-/// A monitor's name and place on the desktop.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Monitor {
-    pub name: String,
-    pub rect: ScreenRect,
-}
-
-/// The monitors FMX can record one of (X11 only; elsewhere the whole screen,
-/// or the system's own picker on Wayland).
-pub fn monitors() -> Vec<Monitor> {
-    if !cfg!(target_os = "linux") || is_wayland() {
-        return Vec::new();
-    }
-    let Ok(out) = process::command(Path::new("xrandr"))
-        .arg("--listmonitors")
-        .output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(parse_monitor)
-        .collect()
-}
-
-/// One line of `xrandr --listmonitors`: ` 0: +*eDP-1 3072/310x1728/170+0+0  eDP-1`.
-fn parse_monitor(line: &str) -> Option<Monitor> {
-    let mut words = line.split_whitespace();
-    words.next()?.strip_suffix(':')?;
-    words.next()?;
-    let geometry = words.next()?;
-    let name = words.next()?.to_owned();
-    let (width, rest) = geometry.split_once('x')?;
-    let mut rest = rest.split('+');
-    let height = rest.next()?;
-    let number = |text: &str| text.split('/').next()?.parse::<u32>().ok();
-    Some(Monitor {
-        name,
-        rect: ScreenRect {
-            x: rest.next()?.parse().ok()?,
-            y: rest.next()?.parse().ok()?,
-            width: number(width)?,
-            height: number(height)?,
-        },
-    })
-}
-
-/// Whether the system shows its own dialog to choose what is recorded.
-pub fn system_picks_area() -> bool {
-    is_wayland()
-}
-
-#[cfg(target_os = "linux")]
-fn is_wayland() -> bool {
-    crate::screencast::is_wayland()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn is_wayland() -> bool {
-    false
-}
-
 /// Records the screen until cancelled, which ends the recording normally.
 fn record_screen(
     out: &Path,
@@ -139,17 +78,22 @@ fn record_screen(
     cancel: &AtomicBool,
     on_detail: &mut dyn FnMut(String),
 ) -> Result<(), JobError> {
+    let devices = capture::detect(Some(ffmpeg));
+    let sounds = devices.sound_inputs(rec.audio);
     #[cfg(target_os = "linux")]
-    if is_wayland() {
+    if capture::is_wayland() {
         use crate::screencast::{self, Cast};
+        const GST_LAUNCH: &str = "gst-launch-1.0";
+        if !in_path(GST_LAUNCH) {
+            return Err(JobError::Recorder(tr("record.needs_gstreamer").to_owned()));
+        }
         on_detail(tr("record.choose_screen").to_owned());
         let cast = share_screen(rec.cursor, cancel)?;
         countdown(rec, cancel, on_detail)?;
-        let gst = Path::new("gst-launch-1.0");
         let frames = cast
-            .spawn_frames(gst, rec.fps)
-            .map_err(|e| JobError::Run(RunError::Spawn("gst-launch-1.0".to_owned(), e)))?;
-        let plan = plan::record(out, rec, &Capture::Stdin, None);
+            .spawn_frames(Path::new(GST_LAUNCH), rec.fps)
+            .map_err(|e| JobError::Run(RunError::Spawn(GST_LAUNCH.to_owned(), e)))?;
+        let plan = plan::record(out, rec, &Capture::Stdin, &sounds);
         let result = process::run_fed(
             frames,
             screencast::interrupt,
@@ -161,28 +105,32 @@ fn record_screen(
         drop::<Cast>(cast);
         return result.map_err(JobError::Run);
     }
+    let monitor = match rec.area {
+        RecordArea::Monitor(i) => devices.monitors.get(i as usize),
+        _ => None,
+    };
     let area = match rec.area {
         RecordArea::Screen => None,
-        RecordArea::Monitor(i) => monitors().get(i as usize).map(|m| m.rect),
+        RecordArea::Monitor(_) => monitor.and_then(|m| m.rect),
         RecordArea::Region => Some(rec.region),
     };
     let capture = if cfg!(windows) {
         Capture::Desktop { area }
     } else if cfg!(target_os = "macos") {
-        Capture::MacScreen { area }
+        // AVFoundation records one screen at a time: the chosen or the first.
+        let device = monitor
+            .or(devices.monitors.first())
+            .and_then(|m| m.device.clone())
+            .ok_or_else(|| JobError::Recorder(tr("record.no_screen").to_owned()))?;
+        Capture::MacScreen { device, area }
     } else {
         Capture::X11 {
             display: std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_owned()),
             area,
         }
     };
-    let mic = if cfg!(windows) && rec.audio.microphone() {
-        windows_microphone(ffmpeg)
-    } else {
-        None
-    };
     countdown(rec, cancel, on_detail)?;
-    let plan = plan::record(out, rec, &capture, mic.as_deref());
+    let plan = plan::record(out, rec, &capture, &sounds);
     process::run(
         ffmpeg,
         &plan.args,
@@ -191,6 +139,13 @@ fn record_screen(
         recording_lines(on_detail),
     )
     .map_err(JobError::Run)
+}
+
+/// Whether a program can be found on `PATH`.
+#[cfg(target_os = "linux")]
+fn in_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
 /// Feeds ffmpeg's progress lines to `on_detail` as "Recording 1:05 · 12.4 MB".
@@ -219,10 +174,18 @@ fn share_screen(cursor: bool, cancel: &AtomicBool) -> Result<crate::screencast::
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(cast)) => return Ok(cast),
             Ok(Err(CastError::Cancelled)) => return Err(JobError::Run(RunError::Cancelled)),
-            Ok(Err(CastError::Failed(e))) => return Err(JobError::ScreenShare(e)),
+            Ok(Err(CastError::Failed(e))) => {
+                return Err(JobError::Recorder(trf(
+                    "error.screen_share",
+                    &[("error", &e)],
+                )));
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(JobError::ScreenShare(String::new()));
+                return Err(JobError::Recorder(trf(
+                    "error.screen_share",
+                    &[("error", &"")],
+                )));
             }
         }
     }
@@ -247,33 +210,6 @@ fn countdown(
         }
     }
     Ok(())
-}
-
-/// The first microphone DirectShow lists, as ffmpeg names it.
-fn windows_microphone(ffmpeg: &Path) -> Option<String> {
-    let out = process::command(ffmpeg)
-        .args([
-            "-hide_banner",
-            "-list_devices",
-            "true",
-            "-f",
-            "dshow",
-            "-i",
-            "dummy",
-        ])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stderr)
-        .lines()
-        .find_map(dshow_audio_device)
-}
-
-/// `[dshow @ 0x1] "Microphone (Realtek Audio)" (audio)` → the quoted name.
-fn dshow_audio_device(line: &str) -> Option<String> {
-    let rest = line.trim_end().strip_suffix("(audio)")?;
-    let (_, quoted) = rest.split_once('"')?;
-    let (name, _) = quoted.split_once('"')?;
-    Some(name.to_owned())
 }
 
 #[derive(Default)]
@@ -1079,32 +1015,6 @@ mod e2e {
     }
 
     #[test]
-    fn xrandr_monitors_parse() {
-        let m = parse_monitor(" 1: +HDMI-1 1920/530x1080/300+3072+0  HDMI-1").expect("monitor");
-        assert_eq!(m.name, "HDMI-1");
-        assert_eq!(
-            m.rect,
-            ScreenRect {
-                x: 3072,
-                y: 0,
-                width: 1920,
-                height: 1080
-            }
-        );
-        assert_eq!(parse_monitor("Monitors: 2"), None);
-    }
-
-    #[test]
-    fn dshow_lists_microphones_by_name() {
-        let line = r#"[dshow @ 000001] "Microphone (Realtek Audio)" (audio)"#;
-        assert_eq!(
-            dshow_audio_device(line).as_deref(),
-            Some("Microphone (Realtek Audio)")
-        );
-        assert_eq!(dshow_audio_device(r#"[dshow @ 01] "Webcam" (video)"#), None);
-    }
-
-    #[test]
     fn recording_detail_shows_time_and_size() {
         let mut p = RecordingProgress::default();
         assert_eq!(p.update("out_time_us=65000000"), None);
@@ -1168,7 +1078,7 @@ mod e2e {
         let Some(tb) = toolbox() else {
             return;
         };
-        if std::env::var_os("DISPLAY").is_none() || is_wayland() {
+        if std::env::var_os("DISPLAY").is_none() || capture::is_wayland() {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");

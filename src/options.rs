@@ -376,16 +376,6 @@ pub enum RecordAudio {
 }
 
 impl RecordAudio {
-    /// The choices this system can record: Windows and macOS have no way to
-    /// capture the sound they play without extra drivers.
-    pub fn available() -> &'static [Self] {
-        if cfg!(target_os = "linux") {
-            &[Self::None, Self::Microphone, Self::System, Self::Both]
-        } else {
-            &[Self::None, Self::Microphone]
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::None => tr("record.audio_none"),
