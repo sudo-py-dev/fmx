@@ -972,7 +972,6 @@ impl FmxApp {
                         tr("action.cancel"),
                         Kind::Primary,
                         Size::Regular,
-                        true,
                     )
                     .clicked();
                 });
@@ -1009,7 +1008,6 @@ impl FmxApp {
                 tr("action.pause"),
                 Kind::Secondary,
                 Size::Small,
-                true,
             )
             .on_hover_text(tr("hint.pause"))
             .clicked()
@@ -1023,7 +1021,6 @@ impl FmxApp {
                 tr("action.start"),
                 Kind::Primary,
                 Size::Small,
-                true,
             )
             .on_hover_text(tr("hint.start"))
             .clicked()
@@ -1037,7 +1034,6 @@ impl FmxApp {
                 tr("action.stop_all"),
                 Kind::Danger,
                 Size::Small,
-                true,
             )
             .on_hover_text(tr("hint.stop_all"))
             .clicked()
@@ -1052,7 +1048,6 @@ impl FmxApp {
                 tr("action.retry"),
                 Kind::Ghost,
                 Size::Small,
-                true,
             )
             .clicked()
         {
@@ -1065,7 +1060,6 @@ impl FmxApp {
                 tr("action.clear_finished"),
                 Kind::Ghost,
                 Size::Small,
-                true,
             )
             .clicked()
         {
@@ -1119,7 +1113,6 @@ impl FmxApp {
             tr("action.more"),
             Kind::Ghost,
             Size::Regular,
-            true,
         );
         let mut save = false;
         let mut load = false;
@@ -1152,7 +1145,6 @@ impl FmxApp {
             tr("action.settings"),
             Kind::Ghost,
             Size::Regular,
-            true,
         );
         if news {
             // A dot on the button's top end corner: an update is waiting in Settings.
@@ -1186,7 +1178,6 @@ impl FmxApp {
             tr("action.change"),
             Kind::Ghost,
             Size::Small,
-            true,
         )
         .on_hover_text(tr("hint.output_change"))
         .clicked()
@@ -1201,7 +1192,6 @@ impl FmxApp {
                 tr("action.reset"),
                 Kind::Ghost,
                 Size::Small,
-                true,
             )
             .on_hover_text(tr("hint.output_reset"))
             .clicked()
@@ -1409,7 +1399,7 @@ impl FmxApp {
             } else {
                 icons::ARROW_LEFT
             };
-            if widgets::button(ui, Some(back), "", Kind::Ghost, Size::Regular, true)
+            if widgets::button(ui, Some(back), "", Kind::Ghost, Size::Regular)
                 .on_hover_text(trf(
                     "hint.back_to",
                     &[("category", &self.tool.category().label())],
@@ -1597,16 +1587,13 @@ impl FmxApp {
             ui.set_min_height(44.0);
             ui.with_layout(dir::trailing(Align::Center), |ui| {
                 let (icon, label) = self.primary_action();
-                if widgets::button(
-                    ui,
-                    Some(icon),
-                    label,
-                    Kind::Primary,
-                    Size::Large,
-                    blocker.is_none(),
-                )
-                .on_hover_text(ui.ctx().format_shortcut(&ENQUEUE))
-                .clicked()
+                if ui
+                    .add_enabled_ui(blocker.is_none(), |ui| {
+                        widgets::button(ui, Some(icon), label, Kind::Primary, Size::Large)
+                    })
+                    .inner
+                    .on_hover_text(ui.ctx().format_shortcut(&ENQUEUE))
+                    .clicked()
                 {
                     self.enqueue();
                 }
@@ -1653,7 +1640,6 @@ impl FmxApp {
                     tr("action.paste"),
                     Kind::Secondary,
                     Size::Regular,
-                    true,
                 )
                 .on_hover_text(tr("hint.paste_url"))
                 .clicked();
@@ -1987,16 +1973,9 @@ impl FmxApp {
                     (false, false) => tr("action.add_files"),
                     (false, true) => tr("action.add_more"),
                 };
-                if widgets::button(
-                    ui,
-                    Some(icons::PLUS),
-                    label,
-                    Kind::Secondary,
-                    Size::Regular,
-                    true,
-                )
-                .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
-                .clicked()
+                if widgets::button(ui, Some(icons::PLUS), label, Kind::Secondary, Size::Regular)
+                    .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
+                    .clicked()
                 {
                     self.pick_files();
                 }
@@ -2008,7 +1987,6 @@ impl FmxApp {
                     tr("action.add_iso"),
                     Kind::Secondary,
                     Size::Regular,
-                    true,
                 )
                 .clicked()
                 && let Some(paths) = rfd::FileDialog::new()
@@ -2024,7 +2002,6 @@ impl FmxApp {
                     text(tr("action.add_folder_scan")),
                     Kind::Ghost,
                     Size::Regular,
-                    true,
                 )
                 .on_hover_text(format!(
                     "{}\n{}",
@@ -2042,7 +2019,6 @@ impl FmxApp {
                     text(tr("action.clear")),
                     Kind::Ghost,
                     Size::Regular,
-                    true,
                 )
                 .on_hover_text(tr("action.clear"))
                 .clicked()
@@ -2113,16 +2089,14 @@ impl FmxApp {
                     );
                     ui.with_layout(dir::trailing(Align::Center), |ui| {
                         let mut small = |icon, hint: &str, enabled, then: FileAction| {
-                            if widgets::button(
-                                ui,
-                                Some(icon),
-                                "",
-                                Kind::Ghost,
-                                Size::Small,
-                                enabled,
-                            )
-                            .on_hover_text(hint)
-                            .clicked()
+                            if ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    widgets::button(ui, Some(icon), "", Kind::Ghost, Size::Small)
+                                })
+                                .inner
+                                .on_hover_text(hint)
+                                .on_disabled_hover_text(hint)
+                                .clicked()
                             {
                                 action = Some(then);
                             }
@@ -2410,21 +2384,6 @@ impl FmxApp {
                 });
             }
             Tool::Volume => volume_row(ui, &mut opts.audio.volume_db),
-            Tool::Mux
-            | Tool::RemoveAudio
-            | Tool::Normalize
-            | Tool::Repair
-            | Tool::PdfToText
-            | Tool::PdfToHtml
-            | Tool::PdfToWord
-            | Tool::OfficeToPdf
-            | Tool::PdfMerge
-            | Tool::PdfSplit
-            | Tool::CsoToIso
-            | Tool::PdfToExcel
-            | Tool::DiscToIso
-            | Tool::ExtractSubtitles
-            | Tool::ToEbook(_) => {}
             Tool::PdfToImages => {
                 row(ui, tr("option.dpi"), |ui| {
                     ui.add(
@@ -2513,6 +2472,8 @@ impl FmxApp {
                     dir::checkbox(ui, &mut opts.record_audio, tr("option.record_audio"));
                 });
             }
+            // The tools `has_options` lists have nothing to set.
+            _ => {}
         }
         if tool == Tool::Rotate {
             row(ui, tr("option.rotation"), |ui| {
@@ -2524,7 +2485,6 @@ impl FmxApp {
                             tr("rotation.rotate_ccw"),
                             Kind::Secondary,
                             Size::Regular,
-                            true,
                         )
                         .on_hover_text(tr("rotation.ccw"))
                         .clicked()
@@ -2537,7 +2497,6 @@ impl FmxApp {
                             tr("rotation.rotate_cw"),
                             Kind::Secondary,
                             Size::Regular,
-                            true,
                         )
                         .on_hover_text(tr("rotation.cw"))
                         .clicked()
@@ -2554,7 +2513,6 @@ impl FmxApp {
                                 Kind::Secondary
                             },
                             Size::Regular,
-                            true,
                         )
                         .on_hover_text(tr("rotation.flip_h"))
                         .clicked()
@@ -2571,7 +2529,6 @@ impl FmxApp {
                                 Kind::Secondary
                             },
                             Size::Regular,
-                            true,
                         )
                         .on_hover_text(tr("rotation.flip_v"))
                         .clicked()
@@ -2844,7 +2801,6 @@ impl FmxApp {
                                             label,
                                             Kind::Ghost,
                                             Size::Small,
-                                            true,
                                         )
                                         .clicked()
                                         {
@@ -2859,7 +2815,6 @@ impl FmxApp {
                                                 tr("action.open"),
                                                 Kind::Ghost,
                                                 Size::Small,
-                                                true,
                                             )
                                             .clicked()
                                         {
@@ -2871,7 +2826,6 @@ impl FmxApp {
                                             tr("action.open_folder"),
                                             Kind::Ghost,
                                             Size::Small,
-                                            true,
                                         )
                                         .clicked()
                                         {
@@ -2883,7 +2837,6 @@ impl FmxApp {
                                             "",
                                             Kind::Ghost,
                                             Size::Small,
-                                            true,
                                         )
                                         .on_hover_text(tr("action.remove"))
                                         .clicked()
@@ -2898,7 +2851,6 @@ impl FmxApp {
                                             tr("action.remove"),
                                             Kind::Ghost,
                                             Size::Small,
-                                            true,
                                         )
                                         .clicked()
                                         {
@@ -3078,7 +3030,6 @@ impl FmxApp {
                                 tr("settings.open_logs"),
                                 Kind::Secondary,
                                 Size::Small,
-                                true,
                             )
                             .clicked()
                                 && let Some(dir) = diagnostics::logs_dir()
@@ -3173,7 +3124,6 @@ impl FmxApp {
                                 tr("settings.sound_test"),
                                 Kind::Secondary,
                                 Size::Small,
-                                true,
                             )
                             .clicked()
                         {
@@ -3190,7 +3140,6 @@ impl FmxApp {
                                 tr("action.change"),
                                 Kind::Ghost,
                                 Size::Small,
-                                true,
                             )
                             .clicked()
                                 && let Some(file) = pick_sound_file()
@@ -3288,7 +3237,6 @@ impl FmxApp {
             tr("action.rescan"),
             Kind::Secondary,
             Size::Small,
-            true,
         )
         .clicked()
         {
@@ -3475,7 +3423,7 @@ impl FmxApp {
     /// The update card's buttons, or its progress bar while downloading.
     fn update_card_actions(&self, ui: &mut egui::Ui) -> Option<UpdateAction> {
         let button = |ui: &mut egui::Ui, icon: Option<&str>, text: &str, kind| {
-            widgets::button(ui, icon, text, kind, Size::Regular, true).clicked()
+            widgets::button(ui, icon, text, kind, Size::Regular).clicked()
         };
         let mut action = None;
         ui.horizontal(|ui| match &self.update {
@@ -3559,15 +3507,21 @@ impl FmxApp {
             row(ui, "", |ui| {
                 dir::vertical(ui, |ui| {
                     let checking = matches!(self.update, UpdateState::Checking { .. });
-                    check_now = widgets::button(
-                        ui,
-                        Some(icons::ARROW_CLOCKWISE),
-                        tr("update.check_now"),
-                        Kind::Secondary,
-                        Size::Small,
-                        !checking && !matches!(self.update, UpdateState::Downloading { .. }),
-                    )
-                    .clicked();
+                    check_now = ui
+                        .add_enabled_ui(
+                            !checking && !matches!(self.update, UpdateState::Downloading { .. }),
+                            |ui| {
+                                widgets::button(
+                                    ui,
+                                    Some(icons::ARROW_CLOCKWISE),
+                                    tr("update.check_now"),
+                                    Kind::Secondary,
+                                    Size::Small,
+                                )
+                            },
+                        )
+                        .inner
+                        .clicked();
                     let (text, color) = match &self.update {
                         UpdateState::Checking { .. } => {
                             (tr("update.checking").to_owned(), p.text_weak)
@@ -3660,7 +3614,6 @@ impl FmxApp {
                 tr("action.browse"),
                 Kind::Secondary,
                 Size::Small,
-                true,
             )
             .clicked()
                 && let Some(path) = rfd::FileDialog::new().pick_file()
@@ -3669,15 +3622,8 @@ impl FmxApp {
                 self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
             }
             if self.settings.ffmpeg_path.is_some()
-                && widgets::button(
-                    ui,
-                    None,
-                    tr("action.auto_detect"),
-                    Kind::Ghost,
-                    Size::Small,
-                    true,
-                )
-                .clicked()
+                && widgets::button(ui, None, tr("action.auto_detect"), Kind::Ghost, Size::Small)
+                    .clicked()
             {
                 self.settings.ffmpeg_path = None;
                 self.toolbox = Toolbox::detect(None);
@@ -3899,7 +3845,6 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
                         tr("action.choose"),
                         Kind::Secondary,
                         Size::Small,
-                        true,
                     )
                     .clicked();
                 });
@@ -4463,7 +4408,6 @@ fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
         tr("action.choose"),
         Kind::Secondary,
         Size::Small,
-        true,
     )
     .clicked()
         && let Some(path) = rfd::FileDialog::new()
@@ -4475,7 +4419,7 @@ fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
     if let Some(path) = slot.as_ref() {
         ui.label(file_name(path))
             .on_hover_text(path.display().to_string());
-        if widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Small, true)
+        if widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Small)
             .on_hover_text(tr("action.remove"))
             .clicked()
         {

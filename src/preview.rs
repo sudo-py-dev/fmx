@@ -487,7 +487,7 @@ impl Preview {
                 } else {
                     format!("+{step} s")
                 };
-                if widgets::button(ui, None, &label, Kind::Ghost, Size::Small, true)
+                if widgets::button(ui, None, &label, Kind::Ghost, Size::Small)
                     .on_hover_text(tr("preview.nudge"))
                     .clicked()
                 {
@@ -511,7 +511,6 @@ impl Preview {
                     tr("preview.set_start"),
                     Kind::Secondary,
                     Size::Regular,
-                    true,
                 )
                 .on_hover_text(tr("preview.set_start_hint"))
                 .clicked()
@@ -524,7 +523,6 @@ impl Preview {
                     tr("preview.set_end"),
                     Kind::Secondary,
                     Size::Regular,
-                    true,
                 )
                 .on_hover_text(tr("preview.set_end_hint"))
                 .clicked()
@@ -534,15 +532,18 @@ impl Preview {
             }
             if mode.clip || mode.area {
                 let has_edit = (mode.clip && edit.has_trim()) || (mode.area && rect.is_some());
-                if widgets::button(
-                    ui,
-                    Some(icons::X),
-                    tr("preview.clear"),
-                    Kind::Ghost,
-                    Size::Regular,
-                    has_edit,
-                )
-                .clicked()
+                if ui
+                    .add_enabled_ui(has_edit, |ui| {
+                        widgets::button(
+                            ui,
+                            Some(icons::X),
+                            tr("preview.clear"),
+                            Kind::Ghost,
+                            Size::Regular,
+                        )
+                    })
+                    .inner
+                    .clicked()
                 {
                     if mode.clip {
                         edit.trim_start.clear();

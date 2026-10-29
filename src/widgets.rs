@@ -94,9 +94,8 @@ pub fn button(
     text: &str,
     kind: Kind,
     size: Size,
-    enabled: bool,
 ) -> Response {
-    button_tinted(ui, icon, None, text, kind, size, enabled)
+    button_tinted(ui, icon, None, text, kind, size)
 }
 
 /// A button's laid-out icon and text, and its size.
@@ -167,8 +166,9 @@ pub fn button_tinted(
     text: &str,
     kind: Kind,
     size: Size,
-    enabled: bool,
 ) -> Response {
+    // Disabled through `ui.add_enabled_ui`, like egui's own widgets.
+    let enabled = ui.is_enabled();
     let p = theme::palette(ui);
     let (fills, text_color, border) = colors(kind, &p);
     let ButtonContent {
