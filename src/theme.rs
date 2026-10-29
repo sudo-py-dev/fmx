@@ -6,6 +6,7 @@ use eframe::egui::{
     ThemePreference, Vec2, style::ScrollAnimation,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::i18n::tr;
 
@@ -34,6 +35,70 @@ pub fn page_scroll() -> egui::ScrollArea {
     })
 }
 
+/// The desktop's light/dark preference as last read from the XDG settings
+/// portal: 0 unknown, 1 light, 2 dark. winit reads it only once on Linux.
+static DESKTOP_THEME: AtomicU8 = AtomicU8::new(0);
+
+fn desktop_theme() -> Option<Theme> {
+    match DESKTOP_THEME.load(Ordering::Relaxed) {
+        1 => Some(Theme::Light),
+        2 => Some(Theme::Dark),
+        _ => None,
+    }
+}
+
+/// Follows the desktop's light/dark preference while the app runs, so the
+/// "System" choice changes along with it without a restart.
+#[cfg(target_os = "linux")]
+pub fn watch_desktop_theme(ctx: &egui::Context) {
+    let ctx = ctx.clone();
+    let _ = std::thread::Builder::new()
+        .name("theme-watch".into())
+        .spawn(move || {
+            if let Err(err) = watch_portal(&ctx) {
+                tracing::debug!("desktop theme is not watched: {err}");
+            }
+        });
+}
+
+#[cfg(target_os = "linux")]
+fn watch_portal(ctx: &egui::Context) -> zbus::Result<()> {
+    use zbus::zvariant::OwnedValue;
+    const NAMESPACE: &str = "org.freedesktop.appearance";
+    const KEY: &str = "color-scheme";
+
+    // color-scheme: 0 no preference (light), 1 dark, 2 light.
+    let store = |value: &OwnedValue| {
+        let scheme = match u32::try_from(value) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let theme = if scheme == 1 { 2 } else { 1 };
+        if DESKTOP_THEME.swap(theme, Ordering::Relaxed) != theme {
+            ctx.request_repaint();
+        }
+    };
+    let conn = zbus::blocking::Connection::session()?;
+    let proxy = zbus::blocking::Proxy::new(
+        &conn,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Settings",
+    )?;
+    let changes = proxy.receive_signal("SettingChanged")?;
+    if let Ok(value) = proxy.call::<_, _, OwnedValue>("ReadOne", &(NAMESPACE, KEY)) {
+        store(&value);
+    }
+    for message in changes {
+        let (namespace, key, value): (String, String, OwnedValue) =
+            message.body().deserialize()?;
+        if namespace == NAMESPACE && key == KEY {
+            store(&value);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeChoice {
     #[default]
@@ -53,9 +118,13 @@ impl ThemeChoice {
         }
     }
 
-    fn preference(self) -> ThemePreference {
+    pub fn preference(self) -> ThemePreference {
         match self {
-            Self::System => ThemePreference::System,
+            Self::System => match desktop_theme() {
+                Some(Theme::Dark) => ThemePreference::Dark,
+                Some(Theme::Light) => ThemePreference::Light,
+                None => ThemePreference::System,
+            },
             Self::Light => ThemePreference::Light,
             Self::Dark => ThemePreference::Dark,
         }

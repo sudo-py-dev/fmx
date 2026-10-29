@@ -267,6 +267,8 @@ impl FmxApp {
             .unwrap_or_default();
         settings.sanitize();
         theme::apply(&cc.egui_ctx, settings.theme, settings.reduce_motion);
+        #[cfg(target_os = "linux")]
+        theme::watch_desktop_theme(&cc.egui_ctx);
         // Clip/crop/subtitle edits belong to one batch, not to the next session.
         settings.options.edit = Edit::default();
         // FMX_LANG (applied in main) wins unless a language was chosen in Settings.
@@ -838,6 +840,11 @@ impl FmxApp {
     /// Tells the window frame (the title bar and its buttons, where the
     /// system draws them) which theme the app is showing, so they match.
     fn sync_window_theme(&mut self, ctx: &egui::Context) {
+        // "System" follows the desktop as it changes (see theme.rs).
+        let preference = self.settings.theme.preference();
+        if ctx.options(|o| o.theme_preference) != preference {
+            ctx.set_theme(preference);
+        }
         let theme = ctx.theme();
         if self.window_theme != Some(theme) {
             self.window_theme = Some(theme);
