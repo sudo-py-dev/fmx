@@ -103,7 +103,7 @@ enum LinkState {
     Failed(String),
 }
 
-/// Where Fmx is with its own updates.
+/// Where FMX is with its own updates.
 enum UpdateState {
     Idle,
     Checking {

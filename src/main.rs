@@ -1,4 +1,4 @@
-//! Fmx — a lightweight, fast media converter.
+//! FMX — a lightweight, fast media converter.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -113,7 +113,7 @@ fn main() {
         self_test || shell_only,
         primary && !shell_only,
     );
-    if let Ok(lang) = std::env::var("FMX_LANG").or_else(|_| std::env::var("Fmx_LANG")) {
+    if let Ok(lang) = std::env::var("FMX_LANG") {
         i18n::set_language(Some(&lang));
     }
     if shell_only {

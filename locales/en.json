@@ -243,7 +243,7 @@
   "error.tool_failed": "{program} failed (exit {code}): {log}",
   "error.missing_program": "{program} is not installed. Install it, then press “Scan again” in Settings.",
   "error.bad_url": "Enter a web address starting with http:// or https://.",
-  "error.bad_list": "That file is not a FMX task list.",
+  "error.bad_list": "That file is not an FMX task list.",
   "error.list_too_big": "The task list file is too large.",
   "error.no_output": "The program finished without producing a file.",
   "error.no_tracks": "No audio tracks were found on the disc.",

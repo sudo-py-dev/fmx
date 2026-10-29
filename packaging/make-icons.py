@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Draws Fmx's app icon (the blue clapperboard tile from the app) in every
+"""Draws FMX's app icon (the blue clapperboard tile from the app) in every
 size the installers need. Run from the repository root:
 
     python3 packaging/make-icons.py
 
-Needs Pillow. Writes packaging/icons/: Fmx.png (512 px), Fmx-<n>.png,
-Fmx.ico (Windows) and Fmx.icns (macOS).
+Needs Pillow. Writes packaging/icons/: fmx.png (512 px), fmx-<n>.png,
+fmx.ico (Windows) and fmx.icns (macOS).
 """
 
 from pathlib import Path
@@ -46,10 +46,10 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     base = draw(BASE)
     for n in PNG_SIZES:
-        draw(n).save(OUT / f"Fmx-{n}.png")
-    draw(512).save(OUT / "Fmx.png")
-    base.save(OUT / "Fmx.ico", sizes=[(n, n) for n in [16, 24, 32, 48, 64, 128, 256]])
-    base.save(OUT / "Fmx.icns")
+        draw(n).save(OUT / f"fmx-{n}.png")
+    draw(512).save(OUT / "fmx.png")
+    base.save(OUT / "fmx.ico", sizes=[(n, n) for n in [16, 24, 32, 48, 64, 128, 256]])
+    base.save(OUT / "fmx.icns")
     print(f"icons written to {OUT}")
 
 

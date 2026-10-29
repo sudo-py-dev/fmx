@@ -2,7 +2,7 @@
 #   git tag v0.0.1 && git push origin v0.0.1
 # The tag must match the version in Cargo.toml.
 #
-# Every file is signed with the release key (secret FMX_SIGNING_KEY or Fmx_SIGNING_KEY) and
+# Every file is signed with the release key (secret FMX_SIGNING_KEY) and
 # checked against packaging/update-key.pub, the public key built into FMX,
 # before anything is published. FMX's updater refuses unsigned files.
 name: Release

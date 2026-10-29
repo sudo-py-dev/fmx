@@ -423,8 +423,8 @@ fn remove_partial(output: &Path) {
     }
 }
 
-/// End-to-end runs against real programs. Skipped unless `Fmx_FFMPEG` points
-/// at ffmpeg: `Fmx_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture`.
+/// End-to-end runs against real programs. Skipped unless `FMX_FFMPEG` points
+/// at ffmpeg: `FMX_FFMPEG=/usr/bin/ffmpeg cargo test e2e -- --nocapture`.
 /// Document/ISO tools run when their programs are on `PATH`.
 #[cfg(test)]
 mod e2e {

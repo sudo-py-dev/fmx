@@ -50,7 +50,7 @@ pub(crate) fn corrupt(e: impl fmt::Display) -> OfficeError {
     OfficeError::Corrupt(e.to_string())
 }
 
-/// Formats Fmx reads without any external program.
+/// Formats FMX reads without any external program.
 pub const NATIVE_EXTENSIONS: &[&str] = &[
     "docx", "odt", "pptx", "odp", "xlsx", "xlsm", "xls", "ods", "csv", "tsv", "txt", "md", "html",
     "htm", "rtf",

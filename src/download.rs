@@ -273,7 +273,7 @@ struct RawFormat {
     vcodec: Option<String>,
 }
 
-/// Turns yt-dlp's `-J` answer into the details Fmx shows.
+/// Turns yt-dlp's `-J` answer into the details FMX shows.
 pub fn parse_info(json: &str) -> Option<LinkInfo> {
     let raw: RawInfo = serde_json::from_str(json).ok()?;
     let playlist = raw.kind.as_deref() == Some("playlist");

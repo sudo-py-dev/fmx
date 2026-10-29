@@ -3,7 +3,7 @@ base: core24
 adopt-info: fmx # version comes from Cargo.toml
 summary: All-in-one media, document and disc converter
 description: |
-  fmx converts video, audio, images, documents and discs from one simple
+  FMX converts video, audio, images, documents and discs from one simple
   window with a clean, responsive GUI.
 
 grade: stable

@@ -1,11 +1,11 @@
-//! Checking GitHub for a newer Fmx and installing it safely.
+//! Checking GitHub for a newer FMX and installing it safely.
 //!
 //! What keeps this safe:
 //! - Requests go only over HTTPS, to this repository's GitHub releases.
 //! - Only a version newer than the running one is offered, never a downgrade,
 //!   draft or pre-release.
 //! - Every downloaded file needs a minisign (Ed25519) signature made with the
-//!   release key, whose public half is compiled into Fmx. The signed "trusted
+//!   release key, whose public half is compiled into FMX. The signed "trusted
 //!   comment" must name exactly this file and version, so an older or different
 //!   signed file cannot be swapped in.
 //! - Downloads are size-limited, verified while streaming, and only moved into
@@ -36,7 +36,7 @@ const MAX_SIGNATURE_BYTES: u64 = 4 << 10;
 const MAX_PACKAGE_BYTES: u64 = 800 << 20;
 const MAX_BINARY_BYTES: u64 = 400 << 20;
 const CHUNK: usize = 64 * 1024;
-/// How often Fmx looks for updates on its own, in seconds.
+/// How often FMX looks for updates on its own, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// A plain `major.minor.patch` version.
@@ -74,7 +74,7 @@ impl fmt::Display for Version {
     }
 }
 
-/// How Fmx was installed, which decides what an update downloads.
+/// How FMX was installed, which decides what an update downloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallKind {
     /// The Debian package (`/usr/bin/fmx`).
@@ -258,7 +258,7 @@ fn newer_release(
     }))
 }
 
-/// Asks GitHub for the latest release; `None` means Fmx is up to date.
+/// Asks GitHub for the latest release; `None` means FMX is up to date.
 pub fn check() -> Result<Option<Release>, UpdateError> {
     let kind = InstallKind::detect().ok_or(UpdateError::Unsupported)?;
     let response = agent()
@@ -377,7 +377,7 @@ pub fn download(
 /// What the user still has to do after [`install`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Installed {
-    /// The installer is running; Fmx should close so it can replace files.
+    /// The installer is running; FMX should close so it can replace files.
     QuitForInstaller,
     /// The system's package installer or disk image is open.
     FinishInInstaller,
@@ -389,7 +389,7 @@ pub enum Installed {
 pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError> {
     match release.kind {
         InstallKind::WindowsSetup => {
-            // The setup closes Fmx, upgrades it, and starts it again (its [Run] section).
+            // The setup closes FMX, upgrades it, and starts it again (its [Run] section).
             spawn_detached(
                 &file.to_string_lossy(),
                 [
@@ -451,7 +451,7 @@ fn portable_dest(path: &Path, exe: &Path) -> Option<PathBuf> {
         all => all,
     };
     match tail {
-        ["fmx" | "Fmx"] => Some(exe.to_path_buf()),
+        ["fmx"] => Some(exe.to_path_buf()),
         [tools, sub @ ("bin" | "lib"), name] if *tools == TOOLS_DIR => {
             Some(exe.parent()?.join(TOOLS_DIR).join(sub).join(name))
         }
@@ -662,12 +662,12 @@ mod tests {
     #[test]
     fn portable_update_replaces_the_program() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let exe = dir.path().join("Fmx");
+        let exe = dir.path().join("fmx");
         std::fs::write(&exe, b"old program").expect("old");
         let archive = dir.path().join("update.tar.gz");
         let data = archive_with(&[
             ("fmx-1.0.0/README.md", b"readme"),
-            ("fmx-1.0.0/Fmx", b"new program"),
+            ("fmx-1.0.0/fmx", b"new program"),
             ("fmx-1.0.0/tools/bin/ffmpeg", b"new ffmpeg"),
             ("fmx-1.0.0/tools/lib/libavcodec.so.62", b"new lib"),
             ("fmx-1.0.0/tools/share/other", b"ignored"),

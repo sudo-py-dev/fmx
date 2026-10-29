@@ -7,7 +7,7 @@ use std::time::Duration;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// An HTTP client with Fmx's download timeouts.
+/// An HTTP client with FMX's download timeouts.
 pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT_TIMEOUT))
