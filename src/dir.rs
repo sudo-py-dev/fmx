@@ -50,7 +50,15 @@ pub fn trailing(valign: Align) -> Layout {
 /// fits there, and otherwise just next in the row, so in a wrapping row it
 /// moves to the next line instead of overlapping what came before.
 pub fn at_end<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    if ui.available_width() >= width + ui.spacing().item_spacing.x {
+    // `available_width` counts the whole row in a right-to-left wrapping
+    // layout, so measure from the cursor to the row's far edge instead.
+    let (cursor, row) = (ui.cursor(), ui.max_rect());
+    let room = if ui.layout().main_dir() == egui::Direction::RightToLeft {
+        cursor.max.x - row.min.x
+    } else {
+        row.max.x - cursor.min.x
+    };
+    if room >= width + ui.spacing().item_spacing.x {
         ui.with_layout(trailing(Align::Center), add).inner
     } else {
         add(ui)

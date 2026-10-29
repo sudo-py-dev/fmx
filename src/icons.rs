@@ -33,6 +33,7 @@ pub const CARET_LEFT: &str = "\u{E138}";
 pub const CARET_RIGHT: &str = "\u{E13A}";
 pub const CARET_UP: &str = "\u{E13C}";
 pub const CHECK: &str = "\u{E182}";
+pub const DOTS_THREE_VERTICAL: &str = "\u{E208}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
 pub const CLIPBOARD: &str = "\u{E196}";
 pub const DISC: &str = "\u{E564}";

@@ -211,6 +211,9 @@ fn style_for(base: &egui::Style, p: &Palette, dark: bool, reduce_motion: bool) -
 /// Applies the theme preference and both light and dark styles.
 pub fn apply(ctx: &egui::Context, choice: ThemeChoice, reduce_motion: bool) {
     ctx.set_theme(choice.preference());
+    // A desktop with no dark-mode preference (GNOME's "Default") is light,
+    // and so is the frame the system draws around the window.
+    ctx.options_mut(|o| o.fallback_theme = Theme::Light);
     for (theme, palette, dark) in [(Theme::Dark, &DARK, true), (Theme::Light, &LIGHT, false)] {
         let base = egui::Style {
             visuals: theme.default_visuals(),

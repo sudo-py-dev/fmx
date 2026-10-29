@@ -212,6 +212,8 @@ pub struct FmxApp {
     probe_tx: mpsc::Sender<(PathBuf, Option<f64>)>,
     probe_rx: mpsc::Receiver<(PathBuf, Option<f64>)>,
     after_done: AfterDone,
+    /// The theme last given to the window frame.
+    window_theme: Option<egui::Theme>,
     was_busy: bool,
     /// Jobs done before the queue last started, so only this run's count.
     done_before_run: usize,
@@ -288,6 +290,7 @@ impl FmxApp {
             probe_tx,
             probe_rx,
             after_done: AfterDone::Nothing,
+            window_theme: None,
             was_busy: false,
             done_before_run: 0,
             run_stopped: false,
@@ -790,6 +793,17 @@ impl FmxApp {
         if ctx.input_mut(|i| i.consume_shortcut(&ENQUEUE)) && self.can_enqueue() {
             self.enqueue();
         }
+        // Escape leaves a tool, unless it is closing something else first.
+        if self.in_editor
+            && !self.show_settings
+            && self.preview.is_none()
+            && self.media_info.is_none()
+            && !egui::Popup::is_any_open(ctx)
+            && ctx.memory(|m| m.focused().is_none())
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.in_editor = false;
+        }
         // In the downloader, Ctrl+V works even when the address box isn't selected.
         if self.in_editor
             && self.tool.input_kind() == InputKind::Url
@@ -807,6 +821,19 @@ impl FmxApp {
 
     fn apply_theme(&self, ctx: &egui::Context) {
         theme::apply(ctx, self.settings.theme, self.settings.reduce_motion);
+    }
+
+    /// Tells the window frame (the title bar and its buttons, where the
+    /// system draws them) which theme the app is showing, so they match.
+    fn sync_window_theme(&mut self, ctx: &egui::Context) {
+        let theme = ctx.theme();
+        if self.window_theme != Some(theme) {
+            self.window_theme = Some(theme);
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(match theme {
+                egui::Theme::Dark => egui::SystemTheme::Dark,
+                egui::Theme::Light => egui::SystemTheme::Light,
+            }));
+        }
     }
 
     // ── Task lists ──────────────────────────────────────────────────────
@@ -959,141 +986,160 @@ impl FmxApp {
 
     // ── Toolbar ─────────────────────────────────────────────────────────
 
+    /// Just the app's name and Settings: queue controls live on the queue,
+    /// and the output folder sits beside the button that adds jobs.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        use art::hue;
-        let counts = self.queue.counts();
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             widgets::icon_tile(ui, art::LOGO, 30.0, true);
             ui.label(RichText::new(tr("app.name")).heading().strong());
-            ui.add_space(10.0);
-            let (icon, tint, label, hint, kind) = if self.queue.is_running {
-                (
-                    icons::PAUSE,
-                    hue::AMBER,
-                    tr("action.pause"),
-                    tr("hint.pause"),
-                    Kind::Secondary,
-                )
-            } else {
-                (
-                    icons::PLAY,
-                    hue::GREEN,
-                    tr("action.start"),
-                    tr("hint.start"),
-                    Kind::Primary,
-                )
-            };
-            // Start needs something waiting; Pause is always available while running.
-            let enabled = self.queue.is_running || counts.queued > 0;
-            let hint = if enabled {
-                hint
-            } else {
-                tr("hint.start_empty")
-            };
+            ui.with_layout(dir::trailing(Align::Center), |ui| self.settings_button(ui));
+        });
+    }
+
+    /// Start or Pause, then the buttons for what is in the queue right now:
+    /// a button only shows when it has something to act on.
+    fn queue_controls(&mut self, ui: &mut egui::Ui) {
+        use art::hue;
+        let counts = self.queue.counts();
+        if self.queue.is_running {
             if widgets::button_tinted(
                 ui,
-                Some(icon),
-                Some(tint),
-                label,
-                kind,
-                Size::Regular,
-                enabled,
+                Some(icons::PAUSE),
+                Some(hue::AMBER),
+                tr("action.pause"),
+                Kind::Secondary,
+                Size::Small,
+                true,
             )
-            .on_hover_text(hint)
+            .on_hover_text(tr("hint.pause"))
             .clicked()
             {
-                self.queue.is_running = !self.queue.is_running;
+                self.queue.is_running = false;
             }
-            let busy = counts.running + counts.queued > 0;
-            if widgets::button(
+        } else if counts.queued > 0
+            && widgets::button(
+                ui,
+                Some(icons::PLAY),
+                tr("action.start"),
+                Kind::Primary,
+                Size::Small,
+                true,
+            )
+            .on_hover_text(tr("hint.start"))
+            .clicked()
+        {
+            self.queue.is_running = true;
+        }
+        if counts.running + counts.queued > 0
+            && widgets::button(
                 ui,
                 Some(icons::STOP),
                 tr("action.stop_all"),
                 Kind::Danger,
-                Size::Regular,
-                busy,
+                Size::Small,
+                true,
             )
             .on_hover_text(tr("hint.stop_all"))
             .clicked()
-            {
-                self.queue.cancel_all();
-                self.run_stopped = true;
-            }
-            let tool = |ui: &mut egui::Ui, icon, tint, text, enabled| {
-                widgets::button_tinted(
-                    ui,
-                    Some(icon),
-                    Some(tint),
-                    text,
-                    Kind::Ghost,
-                    Size::Regular,
-                    enabled,
-                )
-                .clicked()
-            };
-            if tool(
+        {
+            self.queue.cancel_all();
+            self.run_stopped = true;
+        }
+        if counts.failed > 0
+            && widgets::button(
                 ui,
-                icons::ARROW_CLOCKWISE,
-                hue::AMBER,
+                Some(icons::ARROW_CLOCKWISE),
                 tr("action.retry"),
-                counts.failed > 0,
-            ) {
-                self.queue.retry_failed();
-            }
-            if tool(
+                Kind::Ghost,
+                Size::Small,
+                true,
+            )
+            .clicked()
+        {
+            self.queue.retry_failed();
+        }
+        if counts.done + counts.failed > 0
+            && widgets::button(
                 ui,
-                icons::BROOM,
-                hue::VIOLET,
+                Some(icons::BROOM),
                 tr("action.clear_finished"),
-                counts.done + counts.failed > 0,
-            ) {
-                self.queue.clear_finished();
-            }
-            ui.separator();
-            if tool(
-                ui,
-                icons::FLOPPY_DISK,
-                hue::BLUE,
-                tr("action.save_list"),
+                Kind::Ghost,
+                Size::Small,
                 true,
-            ) {
-                self.save_task_list();
+            )
+            .clicked()
+        {
+            self.queue.clear_finished();
+        }
+    }
+
+    /// The queue header's end: what to do when it finishes, and a menu for
+    /// saving and loading the list.
+    fn queue_menu(&mut self, ui: &mut egui::Ui) {
+        // Pinned to the end, the row runs backwards: add the items in reverse.
+        // Otherwise they go together on the next line.
+        let pinned = ui.layout().main_dir() == dir::trailing(Align::Center).main_dir();
+        if !pinned {
+            ui.end_row();
+        }
+        self.queue_menu_items(ui, pinned);
+    }
+
+    fn queue_menu_items(&mut self, ui: &mut egui::Ui, pinned: bool) {
+        let has_jobs = !self.queue.jobs().is_empty();
+        if pinned {
+            self.more_menu(ui, has_jobs);
+        }
+        if has_jobs {
+            if !pinned {
+                ui.label(RichText::new(tr("after.label")).weak());
             }
-            if tool(
+            combo(
                 ui,
-                icons::FOLDER_OPEN,
-                hue::SKY,
-                tr("action.load_list"),
-                true,
-            ) {
-                self.load_task_list();
+                "after_done",
+                &mut self.after_done,
+                &AfterDone::ALL,
+                |a| a.label().to_owned(),
+            );
+            if pinned {
+                ui.label(RichText::new(tr("after.label")).weak());
             }
-            let width =
-                widgets::button_width(ui, Some(icons::GEAR), tr("action.settings"), Size::Regular);
-            dir::at_end(ui, width, |ui| self.settings_button(ui));
-        });
-        ui.add_space(2.0);
-        ui.horizontal_wrapped(|ui| {
-            self.output_dir_picker(ui);
-            let width = labelled_combo_width(ui, tr("after.label"), self.after_done.label());
-            dir::at_end(ui, width, |ui| {
-                // Pinned to the end, the row runs backwards: the menu comes first.
-                let pinned = ui.layout().main_dir() == dir::trailing(Align::Center).main_dir();
-                if !pinned {
-                    ui.label(RichText::new(tr("after.label")).weak());
-                }
-                combo(
-                    ui,
-                    "after_done",
-                    &mut self.after_done,
-                    &AfterDone::ALL,
-                    |a| a.label().to_owned(),
-                );
-                if pinned {
-                    ui.label(RichText::new(tr("after.label")).weak());
-                }
+        }
+        if !pinned {
+            self.more_menu(ui, has_jobs);
+        }
+    }
+
+    /// The ⋮ button with Save list (when there is one) and Load list.
+    fn more_menu(&mut self, ui: &mut egui::Ui, can_save: bool) {
+        let more = widgets::button_tinted(
+            ui,
+            Some(icons::DOTS_THREE_VERTICAL),
+            Some(art::hue::SLATE),
+            tr("action.more"),
+            Kind::Ghost,
+            Size::Regular,
+            true,
+        );
+        let mut save = false;
+        let mut load = false;
+        egui::Popup::menu(&more).show(|ui| {
+            dir::menu(ui, |ui| {
+                save = can_save
+                    && ui
+                        .button(icons::label(icons::FLOPPY_DISK, tr("action.save_list")))
+                        .clicked();
+                load = ui
+                    .button(icons::label(icons::FOLDER_OPEN, tr("action.load_list")))
+                    .clicked();
             });
         });
+        if save {
+            self.save_task_list();
+        }
+        if load {
+            self.load_task_list();
+        }
     }
 
     /// The Settings button, with a dot when an update is waiting there.
@@ -1131,13 +1177,9 @@ impl FmxApp {
         }
     }
 
+    /// "Change…" (and "Reset" once changed) beside the sentence that says
+    /// where the files will be saved.
     fn output_dir_picker(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new(tr("output.label")).weak());
-        let current = self.settings.output_dir.as_ref().map_or_else(
-            || tr("output.beside_source").to_owned(),
-            |d| d.display().to_string(),
-        );
-        ui.label(RichText::new(current).monospace());
         if widgets::button(
             ui,
             Some(icons::FOLDER),
@@ -1146,6 +1188,7 @@ impl FmxApp {
             Size::Small,
             true,
         )
+        .on_hover_text(tr("hint.output_change"))
         .clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
@@ -1184,14 +1227,13 @@ impl FmxApp {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 for category in Category::ALL {
                     let selected = self.category == category && self.search.is_empty();
-                    let count = category.tools().len();
                     if widgets::nav_item(
                         ui,
                         Some(art::category(category)),
                         category.label(),
                         selected,
                         false,
-                        Some(count),
+                        None,
                     )
                     .clicked()
                     {
@@ -1361,30 +1403,24 @@ impl FmxApp {
     fn editor_header(&mut self, ui: &mut egui::Ui) {
         let p = theme::palette(ui);
         ui.horizontal(|ui| {
-            // "Back" points toward the start edge.
+            // A plain back arrow at the start edge, pointing that way.
             let back = if dir::is_rtl() {
-                icons::CARET_RIGHT
+                icons::ARROW_RIGHT
             } else {
-                icons::CARET_LEFT
+                icons::ARROW_LEFT
             };
-            if widgets::button(
-                ui,
-                Some(back),
-                self.tool.category().label(),
-                Kind::Ghost,
-                Size::Small,
-                true,
-            )
-            .on_hover_text(tr("hint.back_to_tools"))
-            .clicked()
+            if widgets::button(ui, Some(back), "", Kind::Ghost, Size::Regular, true)
+                .on_hover_text(trf(
+                    "hint.back_to",
+                    &[("category", &self.tool.category().label())],
+                ))
+                .clicked()
             {
                 self.in_editor = false;
             }
             ui.add_space(4.0);
-            widgets::icon_tile(ui, art::tool(self.tool), 40.0, true);
-            ui.add_space(4.0);
             dir::vertical(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.spacing_mut().item_spacing.y = 2.0;
                 ui.label(RichText::new(self.tool_title()).size(19.0).strong());
                 ui.label(RichText::new(self.tool.description()).color(p.text_weak));
             });
@@ -1582,6 +1618,9 @@ impl FmxApp {
                     };
                     ui.label(RichText::new(glyph).size(20.0).color(color));
                     ui.add(Label::new(RichText::new(text).color(text_color)).wrap());
+                    if blocker.is_none() {
+                        self.output_dir_picker(ui);
+                    }
                 });
             });
         });
@@ -2741,7 +2780,7 @@ impl FmxApp {
         let counts = self.queue.counts();
         let p = theme::palette(ui);
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("queue.title")).strong().size(16.0));
             let total = self.queue.jobs().len();
             ui.label(
@@ -2751,16 +2790,27 @@ impl FmxApp {
                 ))
                 .weak(),
             );
-            if !self.queue.is_running && counts.queued > 0 {
-                widgets::chip(ui, icons::PAUSE, tr("queue.paused"), p.warning);
-            }
             if total == 0 {
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new(icons::label(icons::LIST_PLUS, tr("queue.empty")))
                         .color(p.text_weak),
                 );
+            } else {
+                ui.add_space(8.0);
+                self.queue_controls(ui);
             }
+            let mut width = widgets::button_width(
+                ui,
+                Some(icons::DOTS_THREE_VERTICAL),
+                tr("action.more"),
+                Size::Regular,
+            );
+            if total > 0 {
+                width += ui.spacing().item_spacing.x
+                    + labelled_combo_width(ui, tr("after.label"), self.after_done.label());
+            }
+            dir::at_end(ui, width, |ui| self.queue_menu(ui));
         });
         if self.queue.jobs().is_empty() {
             return;
@@ -3857,7 +3907,6 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
         });
     clicked
 }
-
 /// About how wide `label` and then a drop-down showing `selected` are, as
 /// [`combo`] draws them.
 fn labelled_combo_width(ui: &egui::Ui, label: &str, selected: &str) -> f32 {
@@ -4630,6 +4679,7 @@ impl eframe::App for FmxApp {
             self.handle_request(&ctx, request);
         }
         self.handle_input(&ctx);
+        self.sync_window_theme(&ctx);
         self.queue
             .pump(self.settings.parallel_jobs, &self.toolbox, &self.notifier);
         self.check_after_done(&ctx);
