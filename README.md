@@ -1,9 +1,9 @@
 <div align="center">
   <img src="packaging/icons/fmx-128.png" alt="FMX icon" width="96" />
 
-  # FMX — Free Media Xpress
+  # FMX - Free Media Xpress
 
-  **Convert video, music, pictures, documents and discs — free, simple, and all in one app.**
+  **Convert video, music, pictures, documents and discs - free, simple, and all in one app.**
 
   [![Release](https://img.shields.io/github/v/release/sudo-py-dev/fmx?style=flat-square&color=3584e4)](https://github.com/sudo-py-dev/fmx/releases/latest)
   [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
@@ -20,22 +20,22 @@
 
 ## ✨ Why FMX?
 
-- **Everything in one place** — video, music, pictures, PDFs, eBooks and DVDs. No need for five different apps.
-- **Nothing extra to install** — everything FMX needs comes inside the download. Install it and start converting.
-- **Clean and calm** — a simple, modern window inspired by GNOME and Ubuntu, with smooth animations and no clutter.
-- **Light and dark mode** — follows your system, or pick one yourself.
-- **Right-click to convert** — choose files in your file manager, right-click, and pick **Convert with FMX**.
-- **Many files at once** — add a whole folder; FMX works on several files side by side and shows the progress of each.
-- **Speaks your language** — English, Español, Français, Deutsch and עברית.
-- **Free, no ads, no account** — open source and free forever.
+- **Everything in one place** - video, music, pictures, PDFs, eBooks and DVDs. No need for five different apps.
+- **Nothing extra to install** - everything FMX needs comes inside the download. Install it and start converting.
+- **Clean and calm** - a simple, modern window inspired by GNOME and Ubuntu, with smooth animations and no clutter.
+- **Light and dark mode** - follows your system, or pick one yourself.
+- **Right-click to convert** - choose files in your file manager, right-click, and pick **Convert with FMX**.
+- **Many files at once** - add a whole folder; FMX works on several files side by side and shows the progress of each.
+- **Speaks your language** - English, Español, Français, Deutsch and עברית.
+- **Free, no ads, no account** - open source and free forever.
 
 ---
 
 ## 🚀 How it works
 
-1. **Pick what you want to make** — choose a category on the left (Video, Audio, Image…) and click a format, like **MP4** or **MP3**.
-2. **Add your files** — drag them into the window, or click **Add files**.
-3. **Click "Add to queue"** — that's it. Your new files are saved next to the originals (or in a folder you choose).
+1. **Pick what you want to make** - choose a category on the left (Video, Audio, Image…) and click a format, like **MP4** or **MP3**.
+2. **Add your files** - drag them into the window, or click **Add files**.
+3. **Click "Add to queue"** - that's it. Your new files are saved next to the originals (or in a folder you choose).
 
 The default settings work well for most people. If you want more control, open **Output settings** or **Edit** to trim, crop, rotate or add subtitles.
 
@@ -45,7 +45,7 @@ The default settings work well for most people. If you want more control, open *
 
 </div>
 
-When everything is done, FMX can play a sound, show a notification, open the folder — or even shut down your computer.
+When everything is done, FMX can play a sound, show a notification, open the folder - or even shut down your computer.
 
 ---
 
@@ -87,7 +87,7 @@ Get the file for your computer from the [**latest release**](https://github.com/
 | **Windows 10 / 11** | `…-windows-x64-setup.exe` | Double-click it and follow the steps. |
 | **Mac** (Intel or Apple) | `…-macos-universal.dmg` | Open it and drag FMX to Applications. |
 | **Ubuntu / Debian** | `…_amd64.deb` | Double-click it to install, or run `sudo apt install ./fmx_*_amd64.deb` |
-| **Other Linux** | `…-linux-x86_64.tar.gz` | Unpack it and run `fmx` — no install needed. |
+| **Other Linux** | `…-linux-x86_64.tar.gz` | Unpack it and run `fmx` - no install needed. |
 
 > **Windows says "Windows protected your PC"?** Click **More info → Run anyway**. This appears for new apps that aren't from a big company.
 >
@@ -116,7 +116,7 @@ FMX starts right away and saves the new files next to the originals. Choose **Op
 
 ---
 
-## 🌙 Light or dark — your choice
+## 🌙 Light or dark - your choice
 
 <div align="center">
 
@@ -130,7 +130,7 @@ Open **Settings → General → Appearance** and pick **System**, **Light** or *
 
 ## 🔄 Staying up to date
 
-FMX checks for a new version once a day. When one is ready, a small blue dot appears on **Settings** — open **Settings → Updates** and click **Update now**. Nothing pops up while you work.
+FMX checks for a new version once a day. When one is ready, a small blue dot appears on **Settings** - open **Settings → Updates** and click **Update now**. Nothing pops up while you work.
 
 Every update is digitally signed, so FMX only installs genuine releases from this page.
 

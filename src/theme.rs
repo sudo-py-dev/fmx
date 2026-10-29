@@ -90,8 +90,7 @@ fn watch_portal(ctx: &egui::Context) -> zbus::Result<()> {
         store(&value);
     }
     for message in changes {
-        let (namespace, key, value): (String, String, OwnedValue) =
-            message.body().deserialize()?;
+        let (namespace, key, value): (String, String, OwnedValue) = message.body().deserialize()?;
         if namespace == NAMESPACE && key == KEY {
             store(&value);
         }
