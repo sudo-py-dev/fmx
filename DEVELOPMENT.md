@@ -72,7 +72,7 @@ mirrors.
 
 | Program | Source |
 |---|---|
-| **ffmpeg** + **ffprobe** | Pinned FFmpeg 8.1 shared build (Windows, Linux) or FFmpeg 6.1 static build (macOS, ffmpeg only), SHA-256 verified at build time |
+| **ffmpeg** + **ffprobe** | Pinned FFmpeg 9.0.2 shared build (Windows, Linux) or static build (macOS, ffmpeg only), SHA-256 verified at build time |
 | **yt-dlp** | Official standalone release (no Python needed), SHA-256 verified at build time |
 
 They live in a `tools/` folder beside `fmx` (`/usr/lib/fmx` for the `.deb`), and FMX
@@ -80,6 +80,13 @@ always prefers them over anything on `PATH`. The shared ffmpeg build lets ffmpeg
 ffprobe reuse one set of libraries, so the bundle is about half the size of two static
 programs. Licenses are listed in
 [`packaging/THIRD-PARTY-NOTICES.md`](packaging/THIRD-PARTY-NOTICES.md).
+
+The reduced archives are immutable assets on the FMX repository's `tools-*`
+releases, keeping large binaries out of Git history. Normal releases download
+only those FMX-owned assets. To update them, change the pinned versions, URLs
+and SHA-256 hashes in `packaging/vendor-tools.py`, change `BUNDLE_TAG` in
+`.github/workflows/vendor-tools.yml`, run **Build owned tool bundle** manually,
+then copy the new asset hashes into `packaging/fetch-bundled.py`.
 
 Optional system programs that unlock extra tools when found next to the app or on `PATH`
 (they are large desktop suites, so FMX uses your installed copy instead of bundling them):

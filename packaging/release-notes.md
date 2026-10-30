@@ -1,5 +1,11 @@
 ## What's new
 
+### Current, FMX-owned media tools
+- Upgrade every platform to FFmpeg 9.0.2 and yt-dlp 2026.10.26.
+- Store reduced Linux, Windows and universal macOS tool bundles as immutable assets in the FMX repository.
+- Verify every upstream input and every FMX-owned bundle with pinned SHA-256 checksums.
+- Normal releases now download media tools only from the FMX repository.
+
 ### Interface and preview
 - Improve translated labels and accessible names for icon buttons.
 - Show media details without blocking the interface.

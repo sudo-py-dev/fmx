@@ -10,10 +10,10 @@ entries below are compiled into the FMX executable itself.
 ## FFmpeg (`ffmpeg`, `ffprobe`)
 
 - Linux and Windows: shared GPL builds (programs plus the `libav*` /
-  `av*.dll` libraries in `tools/`) from
-  [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (FFmpeg 8.1).
+  `av*.dll` libraries in `tools/`) based on
+  [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (FFmpeg 9.0.2).
 - macOS: static `ffmpeg` from
-  [eugeneware/ffmpeg-static](https://github.com/eugeneware/ffmpeg-static) (FFmpeg 6.1).
+  [Martin Riedl's FFmpeg Build Server](https://ffmpeg.martin-riedl.de/) (FFmpeg 9.0.2).
 - License: GNU General Public License v3 or later, as configured by the
   build. Source code: <https://ffmpeg.org/download.html>, with build scripts
   and the exact source revisions published on the projects above.
@@ -40,5 +40,7 @@ FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
   (`vendor/epaint` in the FMX source repository).
 - License: MIT OR Apache-2.0.
 
-Exact download URLs and SHA-256 checksums are pinned in
-`packaging/fetch-bundled.py` in the FMX source repository.
+FMX keeps reduced, immutable copies of these programs in its own GitHub
+release assets. Exact upstream URLs and SHA-256 checksums are pinned in
+`packaging/vendor-tools.py`; release packages download only the FMX-owned,
+checksum-pinned bundle recorded in `packaging/fetch-bundled.py`.

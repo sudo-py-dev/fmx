@@ -211,6 +211,30 @@ def fetch_ytdlp(tools: str, platform_id: str) -> None:
         os.remove(binary)
 
 
+def validate_bundle(tools: str, platform_id: str) -> None:
+    """Run the owned programs before publishing an immutable bundle."""
+    suffix = ".exe" if platform_id == "win64" else ""
+    ffmpeg = os.path.join(tools, "bin", f"ffmpeg{suffix}")
+    ytdlp = os.path.join(tools, "bin", f"yt-dlp{suffix}")
+    ffmpeg_version = subprocess.check_output(
+        [ffmpeg, "-version"], text=True, stderr=subprocess.STDOUT
+    ).splitlines()[0]
+    ytdlp_version = subprocess.check_output(
+        [ytdlp, "--version"], text=True, stderr=subprocess.STDOUT
+    ).strip()
+    if "9.0.2" not in ffmpeg_version:
+        raise SystemExit(f"unexpected FFmpeg version: {ffmpeg_version}")
+    if ytdlp_version != "2026.10.26":
+        raise SystemExit(f"unexpected yt-dlp version: {ytdlp_version}")
+    if platform_id != "macos-universal":
+        ffprobe = os.path.join(tools, "bin", f"ffprobe{suffix}")
+        subprocess.check_call(
+            [ffprobe, "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
+        )
+    print(f"Verified {ffmpeg_version}")
+    print(f"Verified yt-dlp {ytdlp_version}")
+
+
 def main(argv: list[str]) -> None:
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         raise SystemExit(__doc__.strip())
@@ -223,6 +247,7 @@ def main(argv: list[str]) -> None:
         shutil.rmtree(os.path.join(tools, sub), ignore_errors=True)
     fetch_ffmpeg(tools, platform_id)
     fetch_ytdlp(tools, platform_id)
+    validate_bundle(tools, platform_id)
     for dirpath, _, files in sorted(os.walk(tools)):
         for name in sorted(files):
             path = os.path.join(dirpath, name)
