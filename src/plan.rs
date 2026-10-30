@@ -724,7 +724,9 @@ pub fn validate_edit(edit: &Edit, duration: Option<f64>) -> Result<(), PlanError
     Ok(())
 }
 
-/// Validates [`Options`] for the given [`Tool`].
+/// Validates [`Options`] for the given [`Tool`], including the shared edit settings.
+/// Returns a [`PlanError`] for invalid values. Audio recording requires a sound
+/// source selection and an MP3, WAV, FLAC, OGG, Opus, or M4A output format.
 pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
     opts.edit.validate(None)?;
     match tool {
@@ -812,6 +814,24 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
         Tool::IsoToCso => {
             if opts.cso_level == 0 || opts.cso_level > options::MAX_CSO_LEVEL {
                 return Err(PlanError::InvalidValue(tr("option.compression").to_owned()));
+            }
+        }
+        Tool::RecordAudio => {
+            if !matches!(
+                opts.sound_format,
+                AudioFormat::Mp3
+                    | AudioFormat::Wav
+                    | AudioFormat::Flac
+                    | AudioFormat::Ogg
+                    | AudioFormat::Opus
+                    | AudioFormat::M4a
+            ) {
+                return Err(PlanError::InvalidValue(
+                    tr("option.output_format").to_owned(),
+                ));
+            }
+            if opts.sound_record.audio == options::RecordAudio::None {
+                return Err(PlanError::InvalidValue(tr("record.no_audio").to_owned()));
             }
         }
         Tool::Record => {
@@ -1582,6 +1602,46 @@ pub fn cd_track(device: &Path, track: (f64, f64), output: &Path, opts: &Options)
         .expect(Some(end - start))
 }
 
+/// Builds an ffmpeg plan to record live audio without screen capture.
+///
+/// `sounds` contains ffmpeg input format and device pairs. Multiple inputs are
+/// mixed for the duration of the longest input. The plan stops by asking ffmpeg
+/// to quit so it can finalize the output; this function does not run the plan.
+pub fn record_audio(output: &Path, opts: &Options, sounds: &[(&str, String)]) -> Plan {
+    let mut args = base();
+    args.0.retain(|a| a != "-nostdin");
+    for (format, device) in sounds {
+        args = args
+            .flag("-thread_queue_size", "1024")
+            .flag("-f", *format)
+            .flag("-i", device.as_str());
+    }
+    if sounds.len() > 1 {
+        let pads: String = (0..sounds.len()).map(|i| format!("[{i}:a]")).collect();
+        args = args
+            .flag(
+                "-filter_complex",
+                format!("{pads}amix=inputs={}:duration=longest[a]", sounds.len()),
+            )
+            .flag("-map", "[a]");
+    } else {
+        args = args.flag("-map", "0:a");
+    }
+    // The converters' advanced audio settings aren't shown for recordings, and
+    // some (such as a 44.1 kHz rate with Opus) would make the encoder fail.
+    let opts = Options {
+        audio: options::AudioSettings::default(),
+        ..opts.clone()
+    };
+    args = args
+        .switch("-vn")
+        .extend(audio_codec(opts.sound_format, &opts));
+    Plan {
+        stop: StopMode::Quit,
+        ..args.output(output).expect(None)
+    }
+}
+
 /// Where a recording's picture comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Capture {
@@ -1781,6 +1841,52 @@ pub fn record(
 mod tests {
     use super::*;
     use crate::options::Resolution;
+
+    #[test]
+    fn audio_recording_has_no_screen_and_quits_gracefully() {
+        for (format, codec) in [
+            (AudioFormat::Mp3, "libmp3lame"),
+            (AudioFormat::Wav, "pcm_s16le"),
+            (AudioFormat::Flac, "flac"),
+            (AudioFormat::Ogg, "libvorbis"),
+            (AudioFormat::Opus, "libopus"),
+            (AudioFormat::M4a, "aac"),
+        ] {
+            let opts = Options {
+                sound_format: format,
+                audio: options::AudioSettings {
+                    sample_rate: Some(44_100),
+                    volume_db: 6.0,
+                    ..options::AudioSettings::default()
+                },
+                ..Options::default()
+            };
+            for sounds in [
+                vec![("pulse", "default".to_owned())],
+                vec![
+                    ("pulse", "default".to_owned()),
+                    ("pulse", "monitor".to_owned()),
+                ],
+            ] {
+                let plan = record_audio(Path::new("/tmp/sound.mp3"), &opts, &sounds);
+                assert_eq!(plan.stop, StopMode::Quit);
+                let args: Vec<_> = plan.args.iter().map(|a| a.to_string_lossy()).collect();
+                assert!(args.iter().any(|a| a == codec));
+                assert!(
+                    !args
+                        .iter()
+                        .any(|a| a == "-nostdin" || a == "-c:v" || a == "x11grab")
+                );
+                assert_eq!(args.iter().filter(|a| *a == "-i").count(), sounds.len());
+                // Converter-only audio settings don't reach the recorder.
+                assert!(!args.iter().any(|a| a == "-ar" || a.contains("volume=")));
+                assert_eq!(
+                    args.iter().any(|a| a.contains("amix=inputs=2")),
+                    sounds.len() == 2
+                );
+            }
+        }
+    }
 
     fn media(video: bool, audio: bool, secs: f64) -> MediaInfo {
         MediaInfo {

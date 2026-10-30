@@ -475,6 +475,31 @@ fn run_tool(
                 Err(JobError::NoOutput)
             }
         }
+        Tool::RecordAudio => {
+            let ffmpeg = need(toolbox, External::Ffmpeg)?;
+            let rec = &spec.options.sound_record;
+            let devices = capture::detect(Some(ffmpeg));
+            let sounds = devices.sound_inputs(rec.audio);
+            let expected = usize::from(rec.audio.microphone()) + usize::from(rec.audio.system());
+            if sounds.is_empty() || sounds.len() != expected {
+                return Err(JobError::Recorder(tr("record.no_audio").to_owned()));
+            }
+            countdown(record_wait(rec), false, cancel, on_detail)?;
+            let plan = plan::record_audio(out, &spec.options, &sounds);
+            process::run(
+                ffmpeg,
+                &plan.args,
+                plan.stop,
+                cancel,
+                recording_lines(on_detail),
+            )
+            .map_err(JobError::Run)?;
+            if out.is_file() {
+                Ok(())
+            } else {
+                Err(JobError::NoOutput)
+            }
+        }
         Tool::Record => {
             record_screen(
                 out,

@@ -150,6 +150,7 @@ impl TextShape {
                 glyphs: _, // TODO(emilk): would it make sense to transform these?
                 size,
                 visuals,
+                rtl: _,
             } = Arc::make_mut(row);
 
             *size *= transform.scaling;

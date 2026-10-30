@@ -559,5 +559,12 @@
   "info.present": "Ja",
   "info.absent": "Keine",
   "info.technical": "Technische Details",
-  "info.failed": "Die Dateiinformationen konnten nicht gelesen werden."
+  "info.failed": "Die Dateiinformationen konnten nicht gelesen werden.",
+  "tool.record_audio": "Audiorekorder",
+  "desc.record_audio": "Mikrofon, Systemton oder beides in einer Audiodatei aufnehmen.",
+  "record.no_audio": "Keine Audioquelle verfügbar. Wählen Sie ein verfügbares Mikrofon oder den Systemton.",
+  "favorites.title": "Favoriten",
+  "favorites.empty": "Klicken Sie auf den Stern eines Werkzeugs, um es hier hinzuzufügen.",
+  "favorites.add": "Zu Favoriten hinzufügen",
+  "favorites.remove": "Aus Favoriten entfernen"
 }

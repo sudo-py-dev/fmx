@@ -559,5 +559,12 @@
   "info.present": "Sí",
   "info.absent": "Ninguno",
   "info.technical": "Detalles técnicos",
-  "info.failed": "No se pudo leer la información del archivo."
+  "info.failed": "No se pudo leer la información del archivo.",
+  "tool.record_audio": "Grabadora de sonido",
+  "desc.record_audio": "Graba el micrófono, el sonido del sistema o ambos en un archivo de audio.",
+  "record.no_audio": "No hay una fuente de audio disponible. Selecciona un micrófono o el sonido del sistema disponible.",
+  "favorites.title": "Favoritos",
+  "favorites.empty": "Pulsa la estrella de una herramienta para añadirla aquí.",
+  "favorites.add": "Añadir a favoritos",
+  "favorites.remove": "Quitar de favoritos"
 }

@@ -15,6 +15,8 @@ bidi characters"), so Hebrew renders with its letters and words reversed.
   reorders rows after alignment. Marked `FMX patch`.
 - `src/text/text_layout.rs`, `shape_text()`: forces left-to-right shaping, so
   glyphs stay in logical order for line breaking. Marked `FMX patch`.
+- `src/text/text_layout_types.rs`: maps logical insertion boundaries to visual glyph edges for RTL caret placement and mouse hit testing.
+- `src/text/bidi.rs`, `caret_offsets()`: computes the insertion edges using bidi levels.
 - `src/text/mod.rs`: declares `mod bidi`.
 - `Cargo.toml`: adds the two crates above.
 

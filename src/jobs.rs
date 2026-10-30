@@ -134,6 +134,8 @@ pub enum OutputKind {
     Into,
 }
 
+/// Determines whether the tool writes a file, a directory, or into a directory.
+/// `first_input` supplies the source format for tools that preserve it.
 pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> OutputKind {
     let first = first_input.unwrap_or(Path::new(""));
     OutputKind::File(match tool {
@@ -157,6 +159,7 @@ pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> Ou
         Tool::JoinAudio | Tool::AudioMix => opts.join_audio_format.ext(),
         Tool::Mux | Tool::Repair => "mkv",
         Tool::Record => opts.record.format.ext(),
+        Tool::RecordAudio => opts.sound_format.ext(),
         Tool::Screenshot => opts.screenshot.format.ext(),
         Tool::DvdToVideo => opts.disc_video_format.ext(),
         Tool::FolderToIso | Tool::CsoToIso => "iso",
@@ -254,6 +257,14 @@ pub struct Selection<'a> {
 }
 
 /// Groups the selection into job specs according to the tool's arity.
+///
+/// Allocated output paths are added to `claimed` to avoid name collisions.
+/// Recordings use the Music or Videos folder by default when it exists, or the
+/// home directory otherwise (or the current directory if no home is found).
+/// A download uses its destination directory directly.
+///
+/// Returns an error for invalid options, a non-web download URL, or an invalid
+/// input count. Input groups without a usable output directory are omitted.
 pub fn plan_jobs(
     sel: &Selection<'_>,
     claimed: &mut HashSet<PathBuf>,
@@ -291,15 +302,28 @@ pub fn plan_jobs(
             );
             return Ok(vec![spec(Vec::new(), None, output)]);
         }
-        Tool::Record => {
-            let dir = sel
-                .output_dir
-                .map_or_else(|| default_dir("Videos"), Path::to_path_buf);
+        Tool::Record | Tool::RecordAudio => {
+            let audio = sel.tool == Tool::RecordAudio;
+            let dir = sel.output_dir.map_or_else(
+                || default_dir(if audio { "Music" } else { "Videos" }),
+                Path::to_path_buf,
+            );
             let output = allocate_output(
                 &dir,
-                &capture_stem("screen_recording", chrono::Local::now()),
+                &capture_stem(
+                    if audio {
+                        "sound_recording"
+                    } else {
+                        "screen_recording"
+                    },
+                    chrono::Local::now(),
+                ),
                 "",
-                Some(sel.options.record.format.ext()),
+                Some(if audio {
+                    sel.options.sound_format.ext()
+                } else {
+                    sel.options.record.format.ext()
+                }),
                 claimed,
                 Path::exists,
             );
@@ -370,6 +394,31 @@ mod tests {
             output_dir: out,
             options: opts,
         }
+    }
+
+    #[test]
+    fn sound_recorder_allocates_audio_without_source_files() {
+        let opts = Options {
+            sound_format: AudioFormat::Flac,
+            ..Options::default()
+        };
+        let jobs = plan_jobs(
+            &select(Tool::RecordAudio, &[], Some(Path::new("/tmp/audio")), &opts),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].inputs.is_empty());
+        assert_eq!(jobs[0].output.extension().unwrap(), "flac");
+        assert!(
+            jobs[0]
+                .output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("sound_recording_")
+        );
+        jobs[0].validate().unwrap();
     }
 
     #[test]

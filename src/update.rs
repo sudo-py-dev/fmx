@@ -514,14 +514,15 @@ fn replace_from_archive(archive: &Path, exe: &Path) -> Result<(), UpdateError> {
     }
 }
 
-/// Starts the (updated) program again; the caller then closes this one.
+/// Starts the updated program with the restart flag; the caller then closes this one.
+/// Returns an error if the current executable cannot be found or the process cannot start.
 pub fn relaunch() -> Result<(), UpdateError> {
     let exe = std::env::current_exe()?;
     // Linux names a running program whose file was replaced "<path> (deleted)".
     let exe = exe.to_string_lossy();
     spawn_detached(
         exe.trim_end_matches(" (deleted)"),
-        std::iter::empty::<&str>(),
+        ["--restart-after-update"],
     )?;
     Ok(())
 }
