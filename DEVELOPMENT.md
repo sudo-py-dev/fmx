@@ -31,6 +31,20 @@ Debug builds can save a picture of the real window, to check layouts without cli
 them: `FMX_SCREENSHOT=shot.png cargo run` (see `src/devshot.rs` for the switches that open
 Settings, the editor, a menu and so on).
 
+### Fast UI audit
+
+Run `python3 packaging/audit-ui.py` from the repository (or pass its path).
+Add `--json /tmp/fmx-ui-audit.json` to save a structured report. The script
+uses only Python's standard library and reads source without changing it.
+It balances Rust calls while skipping comments and string contents, inventories
+tool variants, and checks common RTL, icon-label, dialog-position and size
+patterns. Across translations it checks missing and duplicate keys, empty values,
+and placeholder counts. Confirm each design warning in its UI context; this is
+not a Rust parser or a guarantee of accessibility or GNOME compliance.
+Only definite translation errors cause a nonzero exit code; review warnings do not.
+
+Run `python3 packaging/test_audit_ui.py` to check the scanner itself.
+
 ### Project layout
 
 | Path | What it holds |

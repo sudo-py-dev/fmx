@@ -39,6 +39,9 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
     template.push(name);
 
     let mut args = os(&[
+        // User and working-directory configs may contain --exec or override
+        // output paths. Only FMX's explicit options should control this child.
+        "--ignore-config",
         "--newline",
         "--no-mtime",
         // Titles keep their own letters but lose characters Windows forbids.
@@ -305,6 +308,7 @@ pub fn parse_info(json: &str) -> Option<LinkInfo> {
 pub fn fetch_info(ytdlp: &Path, url: &str, playlist: bool) -> Result<LinkInfo, String> {
     let mut child = command(ytdlp)
         .args([
+            "--ignore-config",
             "-J",
             "--flat-playlist",
             "--no-warnings",
@@ -331,23 +335,39 @@ pub fn fetch_info(ytdlp: &Path, url: &str, playlist: bool) -> Result<LinkInfo, S
             .read_to_string(&mut text)
             .map(|_| text)
     });
+    // Drain stderr concurrently so a full error pipe cannot stall stdout.
+    // Retain only a bounded error message, discarding the rest.
+    let error_reader = std::thread::spawn(move || {
+        let mut message = String::new();
+        if let Some(mut err) = stderr {
+            let _ = (&mut err).take(64 << 10).read_to_string(&mut message);
+            let _ = std::io::copy(&mut err, &mut std::io::sink());
+        }
+        message
+    });
     let started = Instant::now();
-    while !reader.is_finished() {
+    let status = loop {
         if started.elapsed() > INFO_TIMEOUT {
             return Err(tr("download.info_timeout").to_owned());
         }
+        if reader.is_finished()
+            && let Some(status) = child.0.try_wait().map_err(|e| e.to_string())?
+        {
+            break status;
+        }
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
     let text = reader
         .join()
         .map_err(|_| "reader failed".to_owned())?
         .map_err(|e| e.to_string())?;
-    let status = child.0.wait().map_err(|e| e.to_string())?;
     if !status.success() {
-        let mut message = String::new();
-        if let Some(err) = stderr {
-            let _ = err.take(64 << 10).read_to_string(&mut message);
-        }
+        // Do not block on a pipe inherited by a helper's descendant.
+        let message = if error_reader.is_finished() {
+            error_reader.join().unwrap_or_default()
+        } else {
+            String::new()
+        };
         let line = message
             .lines()
             .rev()
@@ -407,6 +427,7 @@ mod tests {
     fn options_end_before_the_link() {
         let t = build(&DownloadOptions::default());
         assert!(t.ends_with("-- https://e.com/v"));
+        assert!(t.contains("--ignore-config"));
         assert!(t.contains("--no-playlist"));
         assert!(
             t.contains("-S vcodec:h264,acodec:aac --merge-output-format mp4"),

@@ -1,6 +1,6 @@
 [package]
 name = "fmx"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.89"
 description = "Free Media Xpress (FMX) - A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
@@ -10,6 +10,7 @@ homepage = "https://github.com/sudo-py-dev/fmx"
 
 [dependencies]
 calamine = "0.37.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "7"
 # Old FB2 books are often windows-1251; already built in through calamine.
 encoding_rs = "0.8"

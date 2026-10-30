@@ -853,6 +853,91 @@ mod e2e {
     }
 
     #[test]
+    fn rotation_exports_match_preview_for_every_turn_and_flip() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).expect("ffmpeg");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let picture = dir.path().join("corners.png");
+        let colors = [
+            [240u8, 20, 20],
+            [20, 220, 20],
+            [20, 20, 240],
+            [240, 220, 20],
+        ];
+        let image = image::RgbImage::from_fn(96, 64, |x, y| {
+            image::Rgb(colors[usize::from(x >= 48) + 2 * usize::from(y >= 32)])
+        });
+        image.save(&picture).expect("save corners");
+        let source = dir.path().join("source.mp4");
+        generate(
+            ffmpeg,
+            &source,
+            &[
+                "-loop",
+                "1",
+                "-i",
+                picture.to_str().expect("path"),
+                "-t",
+                "0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        );
+        let mut claimed = HashSet::new();
+        for turns in 0..4 {
+            for mirror in [false, true] {
+                let orientation = crate::options::Orientation { turns, mirror };
+                if orientation.is_unchanged() {
+                    continue;
+                }
+                let opts = Options {
+                    orientation,
+                    ..Options::default()
+                };
+                let outputs = run(
+                    &tb,
+                    Tool::Rotate,
+                    std::slice::from_ref(&source),
+                    &opts,
+                    dir.path(),
+                    &mut claimed,
+                )
+                .expect("rotate");
+                let decoded = crate::process::command(ffmpeg)
+                    .args(["-hide_banner", "-loglevel", "error", "-i"])
+                    .arg(&outputs[0])
+                    .args(["-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"])
+                    .output()
+                    .expect("decode rotated video");
+                assert!(decoded.status.success());
+                let actual = image::load_from_memory(&decoded.stdout)
+                    .expect("frame")
+                    .to_rgb8();
+                assert_eq!(actual.dimensions(), orientation.transformed_size(96, 64));
+                for (index, expected) in colors.iter().enumerate() {
+                    let uv = (
+                        if index % 2 == 0 { 0.25 } else { 0.75 },
+                        if index < 2 { 0.25 } else { 0.75 },
+                    );
+                    let (x, y) = orientation.map_point(uv);
+                    let pixel = actual.get_pixel(
+                        (x * actual.width() as f32) as u32,
+                        (y * actual.height() as f32) as u32,
+                    );
+                    for channel in 0..3 {
+                        assert!(
+                            pixel[channel].abs_diff(expected[channel]) < 35,
+                            "orientation {orientation:?}: corner {index}, pixel {pixel:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_media_tool_produces_output() {
         let Some(tb) = toolbox() else {
             eprintln!("FMX_FFMPEG not set; skipping");

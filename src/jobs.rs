@@ -231,6 +231,12 @@ pub fn allocate_output(
     path
 }
 
+/// Sortable local capture time, with milliseconds and filesystem-safe separators.
+/// `allocate_output` also handles captures queued in the same millisecond.
+fn capture_stem(prefix: &str, at: chrono::DateTime<chrono::Local>) -> String {
+    format!("{prefix}_{}", at.format("%Y-%m-%d_%H-%M-%S%.3f"))
+}
+
 /// Where tools without a source file (downloads, recordings) save by default.
 fn default_dir(sub: &str) -> PathBuf {
     let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -277,7 +283,7 @@ pub fn plan_jobs(
                 .map_or_else(|| default_dir("Pictures"), Path::to_path_buf);
             let output = allocate_output(
                 &dir,
-                "screenshot",
+                &capture_stem("screenshot", chrono::Local::now()),
                 "",
                 Some(sel.options.screenshot.format.ext()),
                 claimed,
@@ -291,7 +297,7 @@ pub fn plan_jobs(
                 .map_or_else(|| default_dir("Videos"), Path::to_path_buf);
             let output = allocate_output(
                 &dir,
-                "screen_recording",
+                &capture_stem("screen_recording", chrono::Local::now()),
                 "",
                 Some(sel.options.record.format.ext()),
                 claimed,
@@ -388,6 +394,31 @@ mod tests {
             |p| p == taken,
         );
         assert_eq!(second, PathBuf::from("/out/clip (2).mp4"));
+    }
+
+    #[test]
+    fn capture_names_include_time_and_handle_collisions() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-30T09:05:07.123+02:00")
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        for prefix in ["screen_recording", "screenshot"] {
+            let stem = capture_stem(prefix, at);
+            assert_eq!(
+                stem,
+                format!("{prefix}_{}", at.format("%Y-%m-%d_%H-%M-%S%.3f"))
+            );
+            assert!(stem.ends_with(".123"));
+            assert!(!stem.contains(':'));
+            let mut claimed = HashSet::new();
+            let dir = Path::new("/captures");
+            let existing = dir.join(format!("{stem}.mp4"));
+            let first =
+                allocate_output(dir, &stem, "", Some("mp4"), &mut claimed, |p| p == existing);
+            let second =
+                allocate_output(dir, &stem, "", Some("mp4"), &mut claimed, |p| p == existing);
+            assert_eq!(first, dir.join(format!("{stem} (1).mp4")));
+            assert_eq!(second, dir.join(format!("{stem} (2).mp4")));
+        }
     }
 
     #[test]

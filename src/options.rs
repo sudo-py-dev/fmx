@@ -131,19 +131,19 @@ pub struct Orientation {
 
 impl Orientation {
     pub fn is_unchanged(self) -> bool {
-        self == Self::default()
+        self.turns.is_multiple_of(4) && !self.mirror
     }
 
     pub fn rotate_cw(self) -> Self {
         Self {
-            turns: (self.turns + 1) % 4,
+            turns: (self.turns % 4 + 1) % 4,
             ..self
         }
     }
 
     pub fn rotate_ccw(self) -> Self {
         Self {
-            turns: (self.turns + 3) % 4,
+            turns: (self.turns % 4 + 3) % 4,
             ..self
         }
     }
@@ -1122,6 +1122,25 @@ mod tests {
             serde_json::from_str(r#"{"quality":"High","trim_start":"1"}"#).expect("parse");
         assert_eq!(opts.quality, Quality::High);
         assert_eq!(opts.video, VideoSettings::default());
+    }
+
+    #[test]
+    fn saved_orientation_values_never_overflow_and_match_export() {
+        for turns in 0..=u8::MAX {
+            for mirror in [false, true] {
+                let orientation = Orientation { turns, mirror };
+                let normal = Orientation {
+                    turns: turns % 4,
+                    mirror,
+                };
+                assert_eq!(orientation.rotate_cw(), normal.rotate_cw());
+                assert_eq!(orientation.rotate_ccw(), normal.rotate_ccw());
+                assert_eq!(
+                    orientation.is_unchanged(),
+                    orientation.video_filter().is_none()
+                );
+            }
+        }
     }
 
     #[test]

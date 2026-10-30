@@ -1,5 +1,16 @@
 ## What's new
 
+### Interface and preview
+- Improve translated labels and accessible names for icon buttons.
+- Show media details without blocking the interface.
+- Improve the preview controls and keep exported rotations consistent with the preview.
+
+### Capture and reliability
+- Include local timestamps in screenshot and screen-recording filenames.
+- Keep cancellation working when a child process closes its output stream.
+- Ignore external yt-dlp configuration and improve handling of download metadata errors.
+- Add a fast source and translation audit for developers.
+
 ### Smaller packages and faster releases
 - Optimize the FMX executable for size across Linux, Windows and macOS.
 - Increase compression for the universal Mac disk image.

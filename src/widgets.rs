@@ -100,6 +100,20 @@ pub fn button(
     button_tinted(ui, icon, None, text, kind, size)
 }
 
+/// An icon action with one translated name for assistive tools and its tooltip.
+pub fn icon_button(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: impl AsRef<str>,
+    kind: Kind,
+    size: Size,
+) -> Response {
+    let label = label.as_ref();
+    let response = button(ui, Some(icon), "", kind, size);
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    response.on_hover_text(label)
+}
+
 /// A button's laid-out icon and text, and its size.
 struct ButtonContent {
     icon: Option<std::sync::Arc<egui::Galley>>,

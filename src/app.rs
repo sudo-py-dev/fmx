@@ -208,7 +208,7 @@ pub struct FmxApp {
     toasts: Toasts,
     show_settings: bool,
     settings_tab: SettingsTab,
-    media_info: Option<(String, String)>,
+    media_info: Option<MediaInfoDialog>,
     preview: Option<Preview>,
     /// The category shown in the tool grid.
     category: Category,
@@ -1137,7 +1137,13 @@ impl FmxApp {
     /// GNOME Settings, with a dot when an update is waiting there.
     fn settings_button(&mut self, ui: &mut egui::Ui) {
         let news = self.update_news();
-        let settings = widgets::button(ui, Some(icons::GEAR), "", Kind::Ghost, Size::Regular);
+        let settings = widgets::icon_button(
+            ui,
+            icons::GEAR,
+            tr("action.settings"),
+            Kind::Ghost,
+            Size::Regular,
+        );
         if news {
             // A dot on the button's top end corner: an update is waiting in Settings.
             let r = settings.rect;
@@ -1442,12 +1448,21 @@ impl FmxApp {
                 .max_rect(row)
                 .layout(dir::leading(Align::Center)),
         );
-        if widgets::button(&mut start, Some(back), "", Kind::Ghost, Size::Regular)
-            .on_hover_text(trf(
+        if widgets::icon_button(
+            &mut start,
+            back,
+            trf(
                 "hint.back_to",
                 &[("category", &self.tool.category().label())],
-            ))
-            .clicked()
+            ),
+            Kind::Ghost,
+            Size::Regular,
+        )
+        .on_hover_text(trf(
+            "hint.back_to",
+            &[("category", &self.tool.category().label())],
+        ))
+        .clicked()
         {
             self.in_editor = false;
         }
@@ -1506,10 +1521,10 @@ impl FmxApp {
             return;
         };
         let refresh = |ui: &mut egui::Ui| {
-            widgets::button(
+            widgets::icon_button(
                 ui,
-                Some(icons::ARROW_CLOCKWISE),
-                "",
+                icons::ARROW_CLOCKWISE,
+                tr("drive.refresh"),
                 Kind::Ghost,
                 Size::Regular,
             )
@@ -2147,7 +2162,7 @@ impl FmxApp {
                 self.files.remove(i);
             }
             Some(FileAction::Swap(a, b)) => self.files.swap(a, b),
-            Some(FileAction::Info(i)) => self.show_media_info(i),
+            Some(FileAction::Info(i)) => self.show_media_info(i, ui.ctx()),
             Some(FileAction::Preview(i)) if inline => self.preview_index = i,
             Some(FileAction::Preview(i)) => self.open_preview(i, ui.ctx()),
             Some(FileAction::Add) => self.pick_files(),
@@ -2289,7 +2304,7 @@ impl FmxApp {
                         let mut small = |icon, hint: &str, enabled, then: FileAction| {
                             if ui
                                 .add_enabled_ui(enabled, |ui| {
-                                    widgets::button(ui, Some(icon), "", Kind::Ghost, Size::Small)
+                                    widgets::icon_button(ui, icon, hint, Kind::Ghost, Size::Small)
                                 })
                                 .inner
                                 .on_hover_text(hint)
@@ -2391,21 +2406,37 @@ impl FmxApp {
         }
     }
 
-    fn show_media_info(&mut self, index: usize) {
+    fn show_media_info(&mut self, index: usize, ctx: &egui::Context) {
         let (Some(ffmpeg), Some(path)) =
             (self.toolbox.get(External::Ffmpeg), self.files.get(index))
         else {
             return;
         };
-        let text = match ffmpeg::describe(ffmpeg, path, None) {
-            Ok(text) => text
-                .lines()
-                .filter(|l| !l.contains("At least one output file") && !l.starts_with("Exiting"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            Err(e) => e.to_string(),
-        };
-        self.media_info = Some((file_name(path), text));
+        let (tx, rx) = mpsc::channel();
+        self.media_info = Some(MediaInfoDialog {
+            name: file_name(path),
+            bytes: std::fs::metadata(path).ok().map(|m| m.len()),
+            result: None,
+            rx,
+        });
+        let (ffmpeg, path, ctx) = (ffmpeg.to_path_buf(), path.clone(), ctx.clone());
+        // Opening the dialog must not freeze the UI while a file is inspected.
+        std::thread::spawn(move || {
+            let result = ffmpeg::describe(&ffmpeg, &path, None)
+                .map(|text| MediaInfoDetails {
+                    info: crate::probe::parse_ffmpeg_info(&text),
+                    text: text
+                        .lines()
+                        .filter(|l| {
+                            !l.contains("At least one output file") && !l.starts_with("Exiting")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
     }
 
     /// Starts finding the recorder's devices, or picks up what was found.
@@ -2993,6 +3024,9 @@ impl FmxApp {
             .interact(close, ui.scope_id().with("close"), egui::Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(tr("action.close"));
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tr("action.close"))
+        });
         let hover = ui
             .ctx()
             .animate_bool_with_time(response.id, response.hovered(), theme::MOTION);
@@ -3119,10 +3153,10 @@ impl FmxApp {
                         tr("settings.debug_logging"),
                         tr("settings.debug_short"),
                         |ui| {
-                            if widgets::button(
+                            if widgets::icon_button(
                                 ui,
-                                Some(icons::FOLDER_OPEN),
-                                "",
+                                icons::FOLDER_OPEN,
+                                tr("settings.open_logs"),
                                 Kind::Ghost,
                                 Size::Regular,
                             )
@@ -3261,9 +3295,15 @@ impl FmxApp {
                 });
             });
         if self.settings.completion_sound != CompletionSound::Off
-            && widgets::button(ui, Some(icons::PLAY), "", Kind::Ghost, Size::Regular)
-                .on_hover_text(tr("settings.sound_test"))
-                .clicked()
+            && widgets::icon_button(
+                ui,
+                icons::PLAY,
+                tr("settings.sound_test"),
+                Kind::Ghost,
+                Size::Regular,
+            )
+            .on_hover_text(tr("settings.sound_test"))
+            .clicked()
         {
             sound::play(
                 self.settings.completion_sound.clone(),
@@ -3271,9 +3311,15 @@ impl FmxApp {
             );
         }
         if let CompletionSound::Custom(path) = &mut self.settings.completion_sound
-            && widgets::button(ui, Some(icons::FOLDER_OPEN), "", Kind::Ghost, Size::Regular)
-                .on_hover_text(path.display().to_string())
-                .clicked()
+            && widgets::icon_button(
+                ui,
+                icons::FOLDER_OPEN,
+                tr("action.browse"),
+                Kind::Ghost,
+                Size::Regular,
+            )
+            .on_hover_text(path.display().to_string())
+            .clicked()
             && let Some(file) = pick_sound_file()
         {
             *path = file;
@@ -3342,9 +3388,15 @@ impl FmxApp {
                     self.settings.ffmpeg_path = None;
                     self.toolbox = Toolbox::detect(None);
                 }
-                if widgets::button(ui, Some(icons::FOLDER_OPEN), "", Kind::Ghost, Size::Regular)
-                    .on_hover_text(tr("action.browse"))
-                    .clicked()
+                if widgets::icon_button(
+                    ui,
+                    icons::FOLDER_OPEN,
+                    tr("action.browse"),
+                    Kind::Ghost,
+                    Size::Regular,
+                )
+                .on_hover_text(tr("action.browse"))
+                .clicked()
                     && let Some(path) = rfd::FileDialog::new().pick_file()
                 {
                     self.settings.ffmpeg_path = Some(path);
@@ -3726,24 +3778,22 @@ impl FmxApp {
         }
     }
 
-    /// yt-dlp's status in Settings.
+    /// A centered, bounded summary; raw probe output is secondary.
     fn media_info_window(&mut self, ctx: &egui::Context) {
-        let Some((title, text)) = &self.media_info else {
+        let Some(dialog) = &mut self.media_info else {
             return;
         };
-        let mut open = true;
-        egui::Window::new(icons::label(
-            icons::INFO,
-            &trf("info.title", &[("name", title)]),
-        ))
-        .open(&mut open)
-        .default_size([600.0, 380.0])
-        .show(ctx, |ui| {
-            ScrollArea::both().show(ui, |ui| {
-                ui.label(RichText::new(text.as_str()).monospace());
-            });
-        });
-        if !open {
+        if dialog.result.is_none() {
+            match dialog.rx.try_recv() {
+                Ok(result) => dialog.result = Some(result),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    dialog.result = Some(Err(tr("info.failed").to_owned()));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let modal = media_info_dialog(ctx, dialog);
+        if modal.should_close() {
             self.media_info = None;
         }
     }
@@ -3763,6 +3813,131 @@ enum FileAction {
     Info(usize),
     Preview(usize),
     Add,
+}
+
+struct MediaInfoDetails {
+    info: crate::probe::MediaInfo,
+    text: String,
+}
+
+struct MediaInfoDialog {
+    name: String,
+    bytes: Option<u64>,
+    result: Option<Result<MediaInfoDetails, String>>,
+    rx: mpsc::Receiver<Result<MediaInfoDetails, String>>,
+}
+
+fn media_info_dialog(ctx: &egui::Context, dialog: &MediaInfoDialog) -> egui::ModalResponse<()> {
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 64.0).clamp(1.0, 520.0);
+    egui::Modal::new(Id::unique("media_info_dialog")).show(ctx, |ui| {
+        ui.set_width(width);
+        dir::vertical(ui, |ui| {
+            ui.heading(tr("action.media_info"));
+            ui.add(Label::new(RichText::new(&dialog.name).strong()).truncate())
+                .on_hover_text(&dialog.name);
+            ui.add_space(8.0);
+            ScrollArea::vertical()
+                .id_salt("media_info_body")
+                .max_height((screen.height() - 180.0).max(40.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    media_info_contents(ui, dialog);
+                });
+            ui.add_space(12.0);
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
+                if widgets::button(ui, None, tr("action.close"), Kind::Secondary, Size::Regular)
+                    .clicked()
+                {
+                    ui.close();
+                }
+            });
+        });
+    })
+}
+
+fn media_info_contents(ui: &mut egui::Ui, dialog: &MediaInfoDialog) {
+    if let Some(bytes) = dialog.bytes {
+        row(ui, tr("info.size"), |ui| {
+            ui.label(human_size(bytes));
+        });
+    }
+    match &dialog.result {
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr("preview.loading"));
+            });
+        }
+        Some(Err(error)) => {
+            ui.label(tr("info.failed"));
+            widgets::collapsible_section(
+                ui,
+                "media_info_technical",
+                None,
+                tr("info.technical"),
+                None,
+                |ui| {
+                    ui.label(error);
+                },
+            );
+        }
+        Some(Ok(details)) => {
+            let info = &details.info;
+            if let Some(duration) = info.duration_s {
+                row(ui, tr("info.duration"), |ui| {
+                    ui.label(options::display_time(duration));
+                });
+            }
+            if let (Some(w), Some(h)) = (info.width, info.height) {
+                row(ui, tr("info.dimensions"), |ui| {
+                    ui.label(format!("{w} × {h}"));
+                });
+            }
+            if let Some(fps) = info.fps {
+                row(ui, tr("info.frame_rate"), |ui| {
+                    ui.label(format!("{fps:.2}"));
+                });
+            }
+            for (label, present) in [
+                ("info.video", info.has_video),
+                ("info.audio", info.has_audio),
+                ("info.subtitles", info.has_subtitles),
+            ] {
+                row(ui, tr(label), |ui| {
+                    ui.label(tr(if present {
+                        "info.present"
+                    } else {
+                        "info.absent"
+                    }));
+                });
+            }
+            ui.add_space(8.0);
+            widgets::collapsible_section(
+                ui,
+                "media_info_technical",
+                None,
+                tr("info.technical"),
+                None,
+                |ui| {
+                    ScrollArea::both()
+                        .id_salt("media_info_raw")
+                        .max_height(180.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            // Diagnostic output keeps its line structure and a compact font.
+                            ui.add(
+                                Label::new(
+                                    RichText::new(&details.text)
+                                        .font(egui::FontId::monospace(11.0)),
+                                )
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                        });
+                },
+            );
+        }
+    }
 }
 
 /// What is known about an added file.
@@ -4953,7 +5128,7 @@ fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
     if let Some(path) = slot.as_ref() {
         ui.label(file_name(path))
             .on_hover_text(path.display().to_string());
-        if widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Small)
+        if widgets::icon_button(ui, icons::X, tr("action.remove"), Kind::Ghost, Size::Small)
             .on_hover_text(tr("action.remove"))
             .clicked()
         {
@@ -5065,7 +5240,7 @@ fn job_controls(
     remove: &mut Option<JobId>,
 ) {
     let icon = |ui: &mut egui::Ui, icon: &str, hint: &str| {
-        widgets::button(ui, Some(icon), "", Kind::Ghost, Size::Small)
+        widgets::icon_button(ui, icon, hint, Kind::Ghost, Size::Small)
             .on_hover_text(hint)
             .clicked()
     };
@@ -5331,6 +5506,53 @@ impl eframe::App for FmxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_info_stays_centered_and_bounded_with_long_metadata() {
+        for size in [egui::vec2(800.0, 600.0), egui::vec2(360.0, 480.0)] {
+            let ctx = egui::Context::default();
+            icons::install(&ctx);
+            let (_, rx) = mpsc::channel();
+            let dialog = MediaInfoDialog {
+                name: "A very long media filename ".repeat(20),
+                bytes: Some(69_100_000),
+                result: Some(Ok(MediaInfoDetails {
+                    info: crate::probe::MediaInfo {
+                        duration_s: Some(325.6),
+                        width: Some(640),
+                        height: Some(360),
+                        fps: Some(29.97),
+                        has_video: true,
+                        has_audio: true,
+                        ..Default::default()
+                    },
+                    text: "Long technical metadata ".repeat(10_000),
+                })),
+                rx,
+            };
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let mut bounds = egui::Rect::NOTHING;
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                ctx.run_ui(input, |ui| {
+                    bounds = media_info_dialog(ui.ctx(), &dialog).response.rect;
+                })
+                .textures_delta
+                .clear();
+            }
+            assert!(
+                screen.contains_rect(bounds),
+                "{bounds:?} outside {screen:?}"
+            );
+            assert!(
+                (bounds.center() - screen.center()).length() < 2.0,
+                "dialog {bounds:?} is not centered in {screen:?}"
+            );
+        }
+    }
 
     #[test]
     fn clock_formats_minutes_and_hours() {

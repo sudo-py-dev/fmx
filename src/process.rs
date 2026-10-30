@@ -287,8 +287,13 @@ fn supervise(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            // The watched stream closed: the program is exiting.
-            Err(mpsc::RecvTimeoutError::Disconnected) => break child.0.wait(),
+            // Closing a pipe does not mean the process has exited. Keep draining
+            // its other pipe and checking cancellation until it actually exits.
+            Err(mpsc::RecvTimeoutError::Disconnected) => match child.0.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Err(error) => break Err(error),
+                Ok(None) => thread::sleep(POLL_INTERVAL),
+            },
         }
         for line in other.try_iter() {
             if watch == Watch::Stdout {
@@ -336,6 +341,27 @@ mod tests {
         )
         .expect("run");
         assert_eq!(lines, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn cancellation_still_works_after_stdout_closes() {
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let result = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(300));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            run(
+                Path::new("/bin/sh"),
+                &sh("exec 1>&-; exec sleep 3"),
+                StopMode::Kill,
+                &cancel,
+                |_| {},
+            )
+        });
+        assert!(matches!(result, Err(RunError::Cancelled)));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

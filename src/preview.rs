@@ -262,6 +262,18 @@ fn to_screen(rect: Rect, shown: ScreenRect, source: (u32, u32)) -> ScreenRect {
     )
 }
 
+/// Fits a picture into the stage without stretching or changing the stage.
+fn fitted_frame(stage: ScreenRect, source: (u32, u32)) -> ScreenRect {
+    let size = Vec2::new(source.0.max(1) as f32, source.1.max(1) as f32);
+    let scale = (stage.width() / size.x).min(stage.height() / size.y);
+    ScreenRect::from_center_size(stage.center(), size * scale)
+}
+
+/// Icon controls expose the same action name to tooltips and screen readers.
+fn preview_button(ui: &mut egui::Ui, icon: &str, label: &str, kind: Kind) -> egui::Response {
+    widgets::icon_button(ui, icon, label, kind, Size::Regular)
+}
+
 /// Paints the frame turned and mirrored as `orientation` says, filling `rect`.
 fn paint_oriented(
     painter: &egui::Painter,
@@ -433,11 +445,16 @@ impl Preview {
         );
         egui::Window::new(title)
             .id(egui::Id::unique("clip_window"))
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .open(&mut open)
-            .default_width(WINDOW_DISPLAY_WIDTH + 32.0)
+            .default_width(
+                (WINDOW_DISPLAY_WIDTH + 32.0).min((ctx.content_rect().width() - 48.0).max(1.0)),
+            )
             .resizable(false)
             .show(ctx, |ui| {
-                ui.set_max_width(WINDOW_DISPLAY_WIDTH);
+                ui.set_max_width(
+                    WINDOW_DISPLAY_WIDTH.min((ctx.content_rect().width() - 64.0).max(1.0)),
+                );
                 dir::vertical(ui, |ui| {
                     self.contents(
                         ui,
@@ -445,7 +462,7 @@ impl Preview {
                         rect,
                         &mut Vec::new(),
                         Mode::BOTH,
-                        DISPLAY_MAX_HEIGHT,
+                        DISPLAY_MAX_HEIGHT.min((ctx.content_rect().height() - 320.0).max(80.0)),
                         edit.rotation.map(Orientation::from).as_mut(),
                     );
                 });
@@ -507,19 +524,34 @@ impl Preview {
             (source.0, source.1)
         };
         let aspect = src_w.max(1) as f32 / src_h.max(1) as f32;
-        let width = ui
-            .available_width()
-            .min(DISPLAY_MAX_WIDTH)
-            .min(max_height * aspect);
-        let height = width / aspect;
+        // Rotation changes only the picture inside a fixed stage. The timeline
+        // and buttons must not move when portrait and landscape are swapped.
+        let stage_width = ui.available_width().clamp(1.0, DISPLAY_MAX_WIDTH);
+        let stage_height = max_height.max(1.0).min(stage_width);
+        let width = if mode.rotate {
+            stage_width
+        } else {
+            stage_width.min(stage_height * aspect)
+        };
+        let height = if mode.rotate {
+            stage_height
+        } else {
+            width / aspect
+        };
         let sense = if mode.area {
             Sense::drag()
         } else {
             Sense::hover()
         };
-        let (shown, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
-        let painter = ui.painter_at(shown);
-        painter.rect_filled(shown, CornerRadius::same(6), p.sunken);
+        let (stage, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        let shown = if mode.rotate {
+            fitted_frame(stage, (src_w, src_h))
+        } else {
+            stage
+        };
+        let response = ui.interact(shown, ui.scope_id().with("preview_picture"), sense);
+        let painter = ui.painter_at(stage);
+        painter.rect_filled(stage, CornerRadius::same(6), p.sunken);
         if let Some(texture) = &self.texture {
             if !turned.is_unchanged() {
                 paint_oriented(&painter, texture.id(), shown, turned);
@@ -544,10 +576,11 @@ impl Preview {
             clock_font.clone(),
             Color32::WHITE,
         );
-        if clock.size().x + 32.0 > shown.width() {
+        let clock_bounds = if mode.rotate { stage } else { shown };
+        if clock.size().x + 32.0 > clock_bounds.width() {
             clock = painter.layout_no_wrap(display_time(self.time), clock_font, Color32::WHITE);
         }
-        let at = shown.right_bottom() - Vec2::new(10.0, 8.0) - clock.size();
+        let at = clock_bounds.right_bottom() - Vec2::new(10.0, 8.0) - clock.size();
         let badge = ScreenRect::from_min_size(at, clock.size()).expand2(Vec2::new(6.0, 3.0));
         painter.rect_filled(badge, CornerRadius::same(4), Color32::from_black_alpha(160));
         painter.galley(at, clock, Color32::WHITE);
@@ -579,7 +612,7 @@ impl Preview {
         if response.drag_stopped() {
             self.drag_from = None;
         }
-        if let Some(r) = *rect {
+        if let Some(r) = (*rect).filter(|_| mode.area) {
             let area = to_screen(r, shown, source);
             let shade = Color32::from_black_alpha(140);
             for outside in [
@@ -625,9 +658,7 @@ impl Preview {
             + icon_w(ui, icons::SKIP_FORWARD);
         centered_row(ui, width, transport_w + 2.0 * gap, |ui| {
             let skip = |ui: &mut egui::Ui, icon, hint| {
-                widgets::button(ui, Some(icon), "", Kind::Ghost, Size::Regular)
-                    .on_hover_text(hint)
-                    .clicked()
+                preview_button(ui, icon, hint, Kind::Ghost).clicked()
             };
             if skip(ui, icons::SKIP_BACK, tr("preview.back")) {
                 self.time = (self.time - SKIP_S).max(0.0);
@@ -637,10 +668,7 @@ impl Preview {
             } else {
                 (icons::PLAY, tr("preview.play"))
             };
-            if widgets::button(ui, Some(icon), "", Kind::Primary, Size::Regular)
-                .on_hover_text(hint)
-                .clicked()
-            {
+            if preview_button(ui, icon, hint, Kind::Primary).clicked() {
                 self.toggle_play(ui.ctx());
             }
             if skip(ui, icons::SKIP_FORWARD, tr("preview.forward")) {
@@ -697,8 +725,13 @@ impl Preview {
                 Size::Regular,
             ));
         }
-        if has_edit {
-            add_w(icon_w(ui, icons::X));
+        if has_edit || rotating {
+            add_w(widgets::button_width(
+                ui,
+                None,
+                tr("action.reset"),
+                Size::Regular,
+            ));
         }
         if actions_w > 0.0 {
             if mode.clip {
@@ -707,11 +740,9 @@ impl Preview {
             centered_row(ui, width, actions_w, |ui| {
                 if let Some(o) = orientation.as_deref_mut().filter(|_| rotating) {
                     for (icon, hint, turn) in turns {
-                        if widgets::button(ui, Some(icon), "", Kind::Secondary, Size::Regular)
-                            .on_hover_text(hint)
-                            .clicked()
-                        {
+                        if preview_button(ui, icon, hint, Kind::Secondary).clicked() {
                             *o = turn(*o);
+                            ui.ctx().request_repaint();
                         }
                     }
                 }
@@ -728,9 +759,18 @@ impl Preview {
                 {
                     add_frame_time(marks, self.time);
                 }
-                if has_edit
-                    && widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Regular)
-                        .on_hover_text(tr("preview.clear"))
+                if (has_edit || rotating)
+                    && ui
+                        .add_enabled_ui(has_edit, |ui| {
+                            widgets::button(
+                                ui,
+                                None,
+                                tr("action.reset"),
+                                Kind::Ghost,
+                                Size::Regular,
+                            )
+                        })
+                        .inner
                         .clicked()
                 {
                     if mode.area {
@@ -738,6 +778,7 @@ impl Preview {
                     }
                     if let Some(o) = orientation.filter(|_| rotating) {
                         *o = Orientation::default();
+                        ui.ctx().request_repaint();
                     }
                 }
             });
@@ -761,7 +802,7 @@ impl Preview {
                 tr("rotation.landscape")
             };
             lines.push(format!(
-                "{}  •  {out_w} × {out_h} ({shape})",
+                "{}  •  \u{200e}{out_w} × {out_h}\u{200e} ({shape})",
                 turned.describe()
             ));
         }
@@ -795,10 +836,10 @@ impl Preview {
             + 4.0 * gap
             + if clear { icon_w + gap } else { 0.0 };
         centered_row(ui, width, content, |ui| {
-            if widgets::button(
+            if widgets::icon_button(
                 ui,
-                Some(icons::ARROW_LINE_LEFT),
-                "",
+                icons::ARROW_LINE_LEFT,
+                tr("preview.set_start_hint"),
                 Kind::Ghost,
                 Size::Regular,
             )
@@ -812,10 +853,10 @@ impl Preview {
             ui.label(length).on_hover_text(tr("preview.length"));
             ui.add_space(CLIP_GAP);
             time_field(ui, &mut edit.trim_end, &display_time(duration), empty);
-            if widgets::button(
+            if widgets::icon_button(
                 ui,
-                Some(icons::ARROW_LINE_RIGHT),
-                "",
+                icons::ARROW_LINE_RIGHT,
+                tr("preview.set_end_hint"),
                 Kind::Ghost,
                 Size::Regular,
             )
@@ -825,9 +866,15 @@ impl Preview {
                 edit.trim_end = compact_timestamp(self.time);
             }
             if clear
-                && widgets::button(ui, Some(icons::X), "", Kind::Ghost, Size::Regular)
-                    .on_hover_text(tr("preview.clear"))
-                    .clicked()
+                && widgets::icon_button(
+                    ui,
+                    icons::X,
+                    tr("preview.clear"),
+                    Kind::Ghost,
+                    Size::Regular,
+                )
+                .on_hover_text(tr("preview.clear"))
+                .clicked()
             {
                 edit.trim_start.clear();
                 edit.trim_end.clear();
@@ -1033,7 +1080,7 @@ fn separator(ui: &mut egui::Ui, width: f32) {
 
 /// A left-to-right row of `content_w` points, centred in `width`.
 fn centered_row(ui: &mut egui::Ui, width: f32, content_w: f32, add: impl FnOnce(&mut egui::Ui)) {
-    let row = egui::Layout::left_to_right(egui::Align::Center);
+    let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(content_w > width);
     ui.allocate_ui_with_layout(Vec2::new(width, theme::BUTTON_HEIGHT), row, |ui| {
         ui.add_space(((width - content_w) / 2.0).max(0.0));
         add(ui);
@@ -1059,6 +1106,24 @@ fn clip_range(edit: &Edit, duration: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotation_picture_stays_inside_fixed_stage_without_stretching() {
+        for size in [Vec2::new(704.0, 265.0), Vec2::new(280.0, 240.0)] {
+            let stage = ScreenRect::from_min_size(Pos2::new(24.0, 30.0), size);
+            for turns in 0..4 {
+                for mirror in [false, true] {
+                    let orientation = Orientation { turns, mirror };
+                    let source = orientation.transformed_size(640, 360);
+                    let shown = fitted_frame(stage, source);
+                    assert!(stage.contains_rect(shown));
+                    assert!((shown.center() - stage.center()).length() < 0.01);
+                    let expected = source.0 as f32 / source.1 as f32;
+                    assert!((shown.aspect_ratio() - expected).abs() < 0.001);
+                }
+            }
+        }
+    }
 
     #[test]
     fn clip_range_stays_inside_the_video() {
