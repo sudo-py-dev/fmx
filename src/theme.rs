@@ -311,6 +311,25 @@ pub fn apply(ctx: &egui::Context, choice: ThemeChoice, reduce_motion: bool) {
     }
 }
 
+/// Adwaita-like scales: a slim accent rail and a round, softly outlined handle.
+pub fn slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    let p = palette(ui);
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_rail_height = 4.0;
+        let v = ui.visuals_mut();
+        v.selection.bg_fill = p.accent;
+        // Handle outlines share fg_stroke with the numeric value button.
+        // Keep text readable independently of the subtle handle outline.
+        v.override_text_color = Some(p.text);
+        for state in [&mut v.widgets.inactive, &mut v.widgets.hovered] {
+            state.fg_stroke = Stroke::new(1.0, p.border);
+        }
+        v.widgets.active.fg_stroke = Stroke::new(1.0, p.accent);
+        ui.add(slider)
+    })
+    .inner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,23 +368,4 @@ mod tests {
         assert_eq!(style_for(&base, &DARK, true, true).animation_time, 0.0);
         assert!(style_for(&base, &DARK, true, false).animation_time > 0.0);
     }
-}
-
-/// Adwaita-like scales: a slim accent rail and a round, softly outlined handle.
-pub fn slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
-    let p = palette(ui);
-    ui.scope(|ui| {
-        ui.spacing_mut().slider_rail_height = 4.0;
-        let v = ui.visuals_mut();
-        v.selection.bg_fill = p.accent;
-        // Handle outlines share fg_stroke with the numeric value button.
-        // Keep text readable independently of the subtle handle outline.
-        v.override_text_color = Some(p.text);
-        for state in [&mut v.widgets.inactive, &mut v.widgets.hovered] {
-            state.fg_stroke = Stroke::new(1.0, p.border);
-        }
-        v.widgets.active.fg_stroke = Stroke::new(1.0, p.accent);
-        ui.add(slider)
-    })
-    .inner
 }
