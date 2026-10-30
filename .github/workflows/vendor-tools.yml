@@ -1,0 +1,66 @@
+name: Build owned tool bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_TAG: tools-ffmpeg-9.0.2-ytdlp-2026.10.26
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux64
+            artifact: fmx-tools-linux64
+          - os: windows-latest
+            platform: win64
+            artifact: fmx-tools-win64
+          - os: macos-latest
+            platform: macos-universal
+            artifact: fmx-tools-macos-universal
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Assemble pinned tools
+        run: python packaging/vendor-tools.py bundle ${{ matrix.platform }}
+      - name: Pack Unix bundle
+        if: runner.os != 'Windows'
+        run: tar -C bundle -cJf "${{ matrix.artifact }}.tar.xz" .
+      - name: Pack Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path bundle/* -DestinationPath "${{ matrix.artifact }}.zip" -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish immutable FMX-owned bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum dist/* > dist/SHA256SUMS
+          gh release create "$BUNDLE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "FMX tools: FFmpeg 9.0.2 + yt-dlp 2026.10.26" \
+            --notes "Pinned tool bundle maintained by FMX. Inputs and checksums are recorded in packaging/vendor-tools.py."
