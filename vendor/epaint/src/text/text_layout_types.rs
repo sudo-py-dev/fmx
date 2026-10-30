@@ -855,6 +855,10 @@ pub struct Row {
 
     /// The mesh, ready to be rendered.
     pub visuals: RowVisuals,
+
+    /// FMX patch: whether each glyph is right-to-left, from its paragraph's
+    /// bidi levels. Empty when the paragraph has no right-to-left text.
+    pub(crate) rtl: Vec<bool>,
 }
 
 /// The tessellated output of a row.
@@ -976,7 +980,7 @@ impl Row {
     /// Returns something in the range `[0, char_count_excluding_newline()]`.
     pub fn char_at(&self, desired_x: f32) -> CharIndex {
         // FMX patch: glyphs remain in logical order after bidi reordering.
-        if let Some(offsets) = super::bidi::caret_offsets(&self.glyphs) {
+        if let Some(offsets) = super::bidi::caret_offsets(&self.glyphs, &self.rtl) {
             return CharIndex(offsets.iter().enumerate()
                 .min_by(|(_, a), (_, b)| (*a - desired_x).abs().total_cmp(&(*b - desired_x).abs()))
                 .map_or(0, |(i, _)| i));
@@ -991,7 +995,7 @@ impl Row {
 
     pub fn x_offset(&self, column: CharIndex) -> f32 {
         // FMX patch: the logical end of an RTL run is its left edge.
-        if let Some(offsets) = super::bidi::caret_offsets(&self.glyphs) {
+        if let Some(offsets) = super::bidi::caret_offsets(&self.glyphs, &self.rtl) {
             return offsets[column.0.min(offsets.len() - 1)];
         }
         if let Some(glyph) = self.glyphs.get(column.0) {

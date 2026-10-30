@@ -97,6 +97,9 @@ fn reorder_paragraph(rows: &mut [PlacedRow], pixels_per_point: f32) {
             continue;
         };
         let (levels, runs) = info.visual_runs(para, line);
+        // Caret placement needs these even on rows with no RTL glyphs, since
+        // the paragraph's direction still moved them.
+        let rtl = offsets.iter().map(|&at| levels[at].is_rtl()).collect();
         let glyph_at = |byte: usize| offsets.partition_point(|&o| o < byte);
         let order: Vec<Range<usize>> = runs
             .iter()
@@ -108,11 +111,9 @@ fn reorder_paragraph(rows: &mut [PlacedRow], pixels_per_point: f32) {
                 clusters
             })
             .collect();
-        place(
-            &mut alloc::sync::Arc::make_mut(&mut placed.row).glyphs,
-            &order,
-            pixels_per_point,
-        );
+        let row = alloc::sync::Arc::make_mut(&mut placed.row);
+        row.rtl = rtl;
+        place(&mut row.glyphs, &order, pixels_per_point);
     }
 }
 
@@ -209,15 +210,14 @@ mod tests {
 /// Logical insertion boundaries for a visually reordered row. At a bidi
 /// boundary prefer the trailing edge of the preceding logical character,
 /// which keeps the caret with text just typed.
-pub(super) fn caret_offsets(glyphs: &[Glyph]) -> Option<Vec<f32>> {
-    let text: String = glyphs.iter().map(|g| g.chr).collect();
-    if !has_rtl(&text) { return None; }
-    let info = BidiInfo::new(&text, None);
-    let para = info.paragraphs.first()?;
-    let levels = info.reordered_levels(para, 0..text.len());
+/// `rtl` holds the paragraph-level direction of each glyph, as set by
+/// [`reorder_rows`]; `None` means the row was never reordered.
+pub(super) fn caret_offsets(glyphs: &[Glyph], rtl: &[bool]) -> Option<Vec<f32>> {
+    if rtl.len() != glyphs.len() || glyphs.is_empty() {
+        return None;
+    }
     let mut offsets = Vec::with_capacity(glyphs.len() + 1);
-    for ((at, _), glyph) in text.char_indices().zip(glyphs) {
-        let rtl = levels[at].is_rtl();
+    for (glyph, &rtl) in glyphs.iter().zip(rtl) {
         if offsets.is_empty() {
             offsets.push(glyph.pos.x + if rtl { glyph.advance_width } else { 0.0 });
         }

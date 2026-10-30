@@ -1627,9 +1627,15 @@ pub fn record_audio(output: &Path, opts: &Options, sounds: &[(&str, String)]) ->
     } else {
         args = args.flag("-map", "0:a");
     }
+    // The converters' advanced audio settings aren't shown for recordings, and
+    // some (such as a 44.1 kHz rate with Opus) would make the encoder fail.
+    let opts = Options {
+        audio: options::AudioSettings::default(),
+        ..opts.clone()
+    };
     args = args
         .switch("-vn")
-        .extend(audio_codec(opts.sound_format, opts));
+        .extend(audio_codec(opts.sound_format, &opts));
     Plan {
         stop: StopMode::Quit,
         ..args.output(output).expect(None)
@@ -1848,6 +1854,11 @@ mod tests {
         ] {
             let opts = Options {
                 sound_format: format,
+                audio: options::AudioSettings {
+                    sample_rate: Some(44_100),
+                    volume_db: 6.0,
+                    ..options::AudioSettings::default()
+                },
                 ..Options::default()
             };
             for sounds in [
@@ -1867,6 +1878,8 @@ mod tests {
                         .any(|a| a == "-nostdin" || a == "-c:v" || a == "x11grab")
                 );
                 assert_eq!(args.iter().filter(|a| *a == "-i").count(), sounds.len());
+                // Converter-only audio settings don't reach the recorder.
+                assert!(!args.iter().any(|a| a == "-ar" || a.contains("volume=")));
                 assert_eq!(
                     args.iter().any(|a| a.contains("amix=inputs=2")),
                     sounds.len() == 2

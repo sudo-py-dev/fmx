@@ -321,8 +321,9 @@ pub fn slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
         // Handle outlines share fg_stroke with the numeric value button.
         // Keep text readable independently of the subtle handle outline.
         v.override_text_color = Some(p.text);
+        // The handle fill sits close to the surface, so its outline carries it.
         for state in [&mut v.widgets.inactive, &mut v.widgets.hovered] {
-            state.fg_stroke = Stroke::new(1.0, p.border);
+            state.fg_stroke = Stroke::new(1.5, p.text_weak);
         }
         v.widgets.active.fg_stroke = Stroke::new(1.0, p.accent);
         ui.add(slider)

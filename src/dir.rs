@@ -193,6 +193,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bidi_caret_uses_paragraph_direction_on_wrapped_latin_row() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        let galley = ctx.fonts_mut(|fonts| {
+            fonts.layout(
+                "שלום hello world!".to_owned(),
+                egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+                90.0,
+            )
+        });
+        // The last row holds only Latin text: no right-to-left glyph of its own.
+        let row = galley.rows.last().unwrap();
+        let text: String = row.glyphs.iter().map(|g| g.chr).collect();
+        assert_eq!(text, "world!");
+        // The closing `!` takes the paragraph's right-to-left direction, so
+        // the row's logical end is that glyph's left edge.
+        let bang = row.glyphs.last().unwrap();
+        let end = row.x_offset(egui::epaint::text::CharIndex(row.glyphs.len()));
+        assert!((end - bang.pos.x).abs() < 0.01, "{end} != {}", bang.pos.x);
+    }
+
     fn x_of(row: &[(char, f32)], c: char) -> f32 {
         row.iter().find(|(g, _)| *g == c).expect("char in row").1
     }
