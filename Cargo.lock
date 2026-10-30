@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "fmx"
-version = "0.5.0"
+version = "0.4.4"
 dependencies = [
  "calamine",
  "chrono",
