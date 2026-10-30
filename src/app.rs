@@ -311,7 +311,7 @@ impl FmxApp {
             media_info: None,
             preview: None,
             category: settings.last_tool.category(),
-            show_favorites: true,
+            show_favorites: !settings.favorite_tools.is_empty(),
             in_editor: false,
             search: String::new(),
             focus_url: false,
@@ -593,6 +593,9 @@ impl FmxApp {
         let clicked = response.clicked();
         if clicked {
             self.settings.toggle_favorite(tool);
+            if self.settings.favorite_tools.is_empty() {
+                self.show_favorites = false;
+            }
         }
         clicked
     }
@@ -1342,28 +1345,30 @@ impl FmxApp {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
-                card_frame(ui).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let selected = self.show_favorites && self.search.trim().is_empty();
-                    if widgets::nav_item(
-                        ui,
-                        Some(art::Art {
-                            glyph: icons::STAR,
-                            hue: art::hue::AMBER,
-                        }),
-                        tr("favorites.title"),
-                        selected,
-                        false,
-                        Some(self.settings.favorite_tools.len()),
-                    )
-                    .clicked()
-                    {
-                        self.show_favorites = true;
-                        self.in_editor = false;
-                        self.search.clear();
-                    }
-                });
-                ui.add_space(10.0);
+                if !self.settings.favorite_tools.is_empty() {
+                    card_frame(ui).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let selected = self.show_favorites && self.search.trim().is_empty();
+                        if widgets::nav_item(
+                            ui,
+                            Some(art::Art {
+                                glyph: icons::STAR,
+                                hue: art::hue::AMBER,
+                            }),
+                            tr("favorites.title"),
+                            selected,
+                            false,
+                            Some(self.settings.favorite_tools.len()),
+                        )
+                        .clicked()
+                        {
+                            self.show_favorites = true;
+                            self.in_editor = false;
+                            self.search.clear();
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
                 widgets::nav_list(ui, "categories", |ui| {
                     let mut chosen = None;
                     for (i, category) in Category::ALL.into_iter().enumerate() {
@@ -1392,8 +1397,8 @@ impl FmxApp {
 
     // ── Tool grid ───────────────────────────────────────────────────────
 
-    fn tool_grid(&mut self, ui: &mut egui::Ui) {
-        let p = theme::palette(ui);
+    /// Page title stays above the independently scrolling tool cards.
+    fn tool_grid_header(&self, ui: &mut egui::Ui) {
         let searching = !self.search.trim().is_empty();
         ui.horizontal(|ui| {
             if searching {
@@ -1416,6 +1421,11 @@ impl FmxApp {
             }
         });
         ui.add_space(12.0);
+    }
+
+    fn tool_grid(&mut self, ui: &mut egui::Ui) {
+        let p = theme::palette(ui);
+        let searching = !self.search.trim().is_empty();
         if self.toolbox.get(External::Ffmpeg).is_none() {
             widgets::chip(
                 ui,
@@ -1527,7 +1537,10 @@ impl FmxApp {
             None => step_panel(ui, size, 1, input_done, title, &help, |ui| {
                 self.input_ui(ui, true);
             }),
-            Some((settings_title, settings_help)) if size.x >= TWO_COLUMN_MIN_WIDTH => {
+            Some((settings_title, settings_help))
+                if size.x >= TWO_COLUMN_MIN_WIDTH
+                    && self.tool.input_kind() != InputKind::Capture =>
+            {
                 let preview = self.preview_mode();
                 let share = if preview.is_some() {
                     FILES_SHARE_BESIDE_PREVIEW
@@ -3643,6 +3656,12 @@ impl FmxApp {
                 .on_hover_text(tr("settings.ytdlp_hint"));
         });
         ui.add_space(GROUP_GAP);
+        ui.label(
+            RichText::new(tr("settings.install_hint"))
+                .small()
+                .color(p.text_weak),
+        );
+        ui.add_space(6.0);
         pref_group(
             ui,
             Some((tr("settings.programs"), tr("settings.programs_hint"))),
@@ -3651,13 +3670,14 @@ impl FmxApp {
                 let shown_above = [External::Ffmpeg, External::YtDlp];
                 for ext in External::ALL
                     .into_iter()
-                    .filter(|e| !shown_above.contains(e))
+                    .filter(|e| e.installation_supported() && !shown_above.contains(e))
                 {
                     if !seen.insert(ext.name()) {
                         continue;
                     }
                     let found = self.toolbox.get(ext).is_some();
                     widgets::pref_row(ui, ext.name(), "", |ui| {
+                        ui.hyperlink_to(tr("settings.install_program"), ext.install_url());
                         if found {
                             widgets::chip(
                                 ui,
@@ -4973,6 +4993,7 @@ fn record_rows(
         let choices = RecordQuality::ALL.map(|q| (q, q.label()));
         widgets::segmented(ui, &mut r.quality, &choices);
     });
+    resolution_row(ui, &mut r.resolution);
     row(ui, tr("option.fps"), |ui| {
         ui.add(DragValue::new(&mut r.fps).range(1..=options::MAX_RECORD_FPS));
     });
@@ -5743,7 +5764,9 @@ impl eframe::App for FmxApp {
                             if depth == 1 {
                                 centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                             } else {
+                                self.tool_grid_header(ui);
                                 theme::page_scroll()
+                                    .id_salt("tool_cards")
                                     .auto_shrink([false; 2])
                                     .show(ui, |ui| self.tool_grid(ui));
                             }

@@ -566,5 +566,7 @@
   "favorites.title": "Favorites",
   "favorites.empty": "Click the star on a tool to add it here.",
   "favorites.add": "Add to favorites",
-  "favorites.remove": "Remove from favorites"
+  "favorites.remove": "Remove from favorites",
+  "settings.install_program": "Installation / download",
+  "settings.install_hint": "Install optional programs using the links below. Make their command-line tools available on PATH, then click Rescan. You can also place executables in tools/bin beside FMX."
 }

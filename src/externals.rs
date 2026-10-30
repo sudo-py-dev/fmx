@@ -56,6 +56,35 @@ impl External {
         }
     }
 
+    /// Whether FMX offers installation help for this program on this OS.
+    /// Monkey's Audio's linked installer is Windows-only; xorriso targets Unix.
+    /// Discovery remains independent so existing command-line ports still work.
+    pub fn installation_supported(self) -> bool {
+        match self {
+            Self::MonkeysAudio => cfg!(target_os = "windows"),
+            Self::Xorriso => cfg!(unix),
+            _ => true,
+        }
+    }
+
+    /// Official download or installation documentation for the program.
+    pub fn install_url(self) -> &'static str {
+        match self {
+            Self::Ffmpeg => "https://ffmpeg.org/download.html",
+            Self::YtDlp => "https://github.com/yt-dlp/yt-dlp#installation",
+            Self::Pdftoppm
+            | Self::Pdftotext
+            | Self::Pdftohtml
+            | Self::Pdfunite
+            | Self::Pdfseparate => "https://poppler.freedesktop.org/",
+            Self::Ghostscript => "https://ghostscript.com/releases/gsdnld.html",
+            Self::Soffice => "https://www.libreoffice.org/download/download-libreoffice/",
+            Self::EbookConvert => "https://calibre-ebook.com/download",
+            Self::Xorriso => "https://www.gnu.org/software/xorriso/",
+            Self::MonkeysAudio => "https://monkeysaudio.com/download.html",
+        }
+    }
+
     /// Program name shown to users (not translated).
     pub fn name(self) -> &'static str {
         match self {

@@ -1769,8 +1769,18 @@ pub fn record(
             .flag("-i", device.as_str());
     }
 
-    // libx264 needs even sides; cutting a pixel off never scales the picture.
-    let mut graph = format!("[0:v]{}crop=trunc(iw/2)*2:trunc(ih/2)*2[v]", crop_to(crop));
+    // Resize after selecting the capture region. Keep the aspect ratio and
+    // avoid upscaling; both encoders require even dimensions.
+    let scale = rec
+        .resolution
+        .max_height()
+        .map_or_else(String::new, |height| {
+            format!("scale=-2:trunc(min(ih\\,{height})/2)*2,")
+        });
+    let mut graph = format!(
+        "[0:v]{}{scale}crop=trunc(iw/2)*2:trunc(ih/2)*2[v]",
+        crop_to(crop)
+    );
     let audio_map = match sounds.len() {
         0 => None,
         1 => Some("1:a".to_owned()),
@@ -2436,6 +2446,52 @@ mod tests {
         assert!(cmd.contains("[1:a][2:a]amix=inputs=2"), "{cmd}");
         assert!(cmd.contains("-map [a]"), "{cmd}");
         assert!(!cmd.contains("-shortest"), "{cmd}");
+    }
+
+    #[test]
+    fn recording_resolution_applies_to_each_capture_backend() {
+        let rec = RecordOptions {
+            resolution: Resolution::P720,
+            ..RecordOptions::default()
+        };
+        let captures = [
+            Capture::X11 {
+                display: ":0".into(),
+                area: None,
+            },
+            Capture::Desktop { area: None },
+            Capture::MacScreen {
+                device: "0".into(),
+                area: Some(ScreenRect {
+                    x: 10,
+                    y: 20,
+                    width: 1920,
+                    height: 1080,
+                }),
+            },
+            Capture::Stdin,
+        ];
+        for capture in captures {
+            let plan = record(Path::new("rec.mkv"), &rec, &capture, &[]);
+            let filter = plan
+                .args
+                .windows(2)
+                .find(|pair| pair[0] == "-filter_complex")
+                .unwrap()[1]
+                .to_string_lossy();
+            assert!(
+                filter.contains("scale=-2:trunc(min(ih\\,720)/2)*2,"),
+                "{filter}"
+            );
+            if matches!(capture, Capture::MacScreen { .. }) {
+                assert!(
+                    filter.starts_with("[0:v]crop=1920:1080:10:20,scale="),
+                    "{filter}"
+                );
+            }
+        }
+        let restored: RecordOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(restored.resolution, Resolution::Original);
     }
 
     #[test]

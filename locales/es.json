@@ -566,5 +566,7 @@
   "favorites.title": "Favoritos",
   "favorites.empty": "Pulsa la estrella de una herramienta para añadirla aquí.",
   "favorites.add": "Añadir a favoritos",
-  "favorites.remove": "Quitar de favoritos"
+  "favorites.remove": "Quitar de favoritos",
+  "settings.install_program": "Instalación / descarga",
+  "settings.install_hint": "Instala los programas opcionales con los enlaces siguientes. Añade sus herramientas de línea de comandos al PATH y vuelve a buscar. También puedes colocar los ejecutables en tools/bin junto a FMX."
 }

@@ -638,6 +638,8 @@ pub const MAX_RECORD_SIDE: u32 = 16_384;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecordOptions {
+    /// Output size limit, independent of the captured screen or region.
+    pub resolution: Resolution,
     pub fps: u32,
     pub audio: RecordAudio,
     pub area: RecordArea,
@@ -654,6 +656,7 @@ pub struct RecordOptions {
 impl Default for RecordOptions {
     fn default() -> Self {
         Self {
+            resolution: Resolution::Original,
             fps: 30,
             audio: RecordAudio::Microphone,
             area: RecordArea::Screen,

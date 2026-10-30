@@ -566,5 +566,7 @@
   "favorites.title": "מועדפים",
   "favorites.empty": "לחצו על הכוכב בכרטיס של כלי כדי להוסיף אותו למועדפים.",
   "favorites.add": "הוספה למועדפים",
-  "favorites.remove": "הסרה מהמועדפים"
+  "favorites.remove": "הסרה מהמועדפים",
+  "settings.install_program": "התקנה / הורדה",
+  "settings.install_hint": "התקינו תוכנות נוספות באמצעות הקישורים למטה. הוסיפו את כלי שורת הפקודה שלהן ל־PATH ולחצו על סריקה מחדש. ניתן גם למקם קובצי הפעלה בתיקיית tools/bin לצד FMX."
 }
