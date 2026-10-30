@@ -26,10 +26,11 @@ python3 packaging/fetch-bundled.py "$app/Contents/MacOS/tools" macos-universal
 codesign --force --deep --sign - "$app"
 
 staging=$(mktemp -d)
+trap 'rm -rf "$staging"' EXIT
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 dmg="dist/fmx-$version-macos-universal.dmg"
 rm -f "$dmg"
-hdiutil create -volname "FMX $version" -srcfolder "$staging" -ov -format UDZO "$dmg"
+hdiutil create -volname "FMX $version" -srcfolder "$staging" -ov -format UDZO -imagekey zlib-level=9 "$dmg"
 rm -rf "$staging"
 echo "$dmg"

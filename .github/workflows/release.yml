@@ -11,6 +11,10 @@ on:
   push:
     tags: ["v*.*.*"]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -45,9 +49,12 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev
+          sudo apt-get install -y --no-install-recommends dpkg-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          cache-all-crates: true
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Bundle ffmpeg, ffprobe and yt-dlp
@@ -67,6 +74,8 @@ jobs:
             out/*.tar.gz
             out/*.deb
           if-no-files-found: error
+          compression-level: 0 # installers and archives are already compressed
+          retention-days: 3
 
   windows:
     needs: version
@@ -78,6 +87,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          cache-all-crates: true
       - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Bundle ffmpeg, ffprobe and yt-dlp
@@ -93,7 +105,7 @@ jobs:
           $name = "fmx-$env:VERSION-windows-x64"
           New-Item -ItemType Directory -Force "out/$name" | Out-Null
           Copy-Item -Recurse target/release/fmx.exe, target/release/tools, README.md, LICENSE-MIT, LICENSE-APACHE, packaging/THIRD-PARTY-NOTICES.md "out/$name"
-          Compress-Archive -Path "out/$name/*" -DestinationPath "out/$name.zip"
+          Compress-Archive -Path "out/$name/*" -DestinationPath "out/$name.zip" -CompressionLevel Optimal
       - name: Setup wizard (Inno Setup)
         shell: pwsh
         run: |
@@ -108,6 +120,8 @@ jobs:
             out/*.zip
             out/*-setup.exe
           if-no-files-found: error
+          compression-level: 0 # installers and archives are already compressed
+          retention-days: 3
 
   macos:
     needs: version
@@ -117,6 +131,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          cache-all-crates: true
       - run: cargo test --locked
       - run: packaging/macos/build-dmg.sh
       - uses: actions/upload-artifact@v7
@@ -124,6 +141,8 @@ jobs:
           name: macos
           path: dist/*.dmg
           if-no-files-found: error
+          compression-level: 0 # installers and archives are already compressed
+          retention-days: 3
 
   publish:
     needs: [version, linux, windows, macos]
@@ -138,7 +157,25 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: cargo install rsign2 --locked --version 0.6.7
+      - name: Cache release signer
+        id: signer
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/rsign
+          key: rsign2-0.6.7-${{ runner.os }}-${{ runner.arch }}-v1
+      - name: Install release signer
+        if: steps.signer.outputs.cache-hit != 'true'
+        run: cargo install rsign2 --locked --version 0.6.7
+      - name: Record package sizes
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("| Package | MiB |\n| --- | ---: |\n")
+              for path in sorted(Path("dist").iterdir()):
+                  summary.write(f"| {path.name} | {path.stat().st_size / 2**20:.2f} |\n")
+          PYTHON
       - name: Sign and verify every file
         env:
           SIGNING_KEY: ${{ secrets.FMX_SIGNING_KEY }}

@@ -1,6 +1,6 @@
 [package]
 name = "fmx"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Free Media Xpress (FMX) - A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
@@ -48,7 +48,8 @@ winit = { version = "0.30.13", default-features = false, features = ["wayland-cs
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
-opt-level = 3
+# Optimize shipped code for size; keep thin LTO for reasonable link times.
+opt-level = "z"
 lto = "thin"
 codegen-units = 1
 strip = true
