@@ -559,5 +559,12 @@
   "info.present": "Yes",
   "info.absent": "None",
   "info.technical": "Technical details",
-  "info.failed": "Could not read the file information."
+  "info.failed": "Could not read the file information.",
+  "tool.record_audio": "Sound recorder",
+  "desc.record_audio": "Record your microphone, system sound, or both to an audio file.",
+  "record.no_audio": "No audio source is available. Select an available microphone or system sound source.",
+  "favorites.title": "Favorites",
+  "favorites.empty": "Click the star on a tool to add it here.",
+  "favorites.add": "Add to favorites",
+  "favorites.remove": "Remove from favorites"
 }

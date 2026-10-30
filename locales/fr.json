@@ -559,5 +559,12 @@
   "info.present": "Oui",
   "info.absent": "Aucun",
   "info.technical": "Détails techniques",
-  "info.failed": "Impossible de lire les informations du fichier."
+  "info.failed": "Impossible de lire les informations du fichier.",
+  "tool.record_audio": "Enregistreur audio",
+  "desc.record_audio": "Enregistrez le microphone, le son du système ou les deux dans un fichier audio.",
+  "record.no_audio": "Aucune source audio disponible. Sélectionnez un microphone ou une source audio système disponible.",
+  "favorites.title": "Favoris",
+  "favorites.empty": "Cliquez sur l’étoile d’un outil pour l’ajouter ici.",
+  "favorites.add": "Ajouter aux favoris",
+  "favorites.remove": "Retirer des favoris"
 }

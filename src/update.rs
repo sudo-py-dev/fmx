@@ -521,7 +521,7 @@ pub fn relaunch() -> Result<(), UpdateError> {
     let exe = exe.to_string_lossy();
     spawn_detached(
         exe.trim_end_matches(" (deleted)"),
-        std::iter::empty::<&str>(),
+        ["--restart-after-update"],
     )?;
     Ok(())
 }

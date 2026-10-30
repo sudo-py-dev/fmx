@@ -45,6 +45,25 @@ fn dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("fmx"))
 }
 
+/// An update starts its replacement before closing the old window. Wait for
+/// the old process to release its lock instead of forwarding focus and exiting.
+pub fn acquire_for_start(restarting: bool) -> bool {
+    acquire_with_retry(restarting, acquire)
+}
+
+fn acquire_with_retry(restarting: bool, mut attempt: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if attempt() {
+            return true;
+        }
+        if !restarting || Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Whether this is the only FMX running. If it is, it stays so until it exits.
 pub fn acquire() -> bool {
     let Some(dir) = dir() else {
@@ -250,5 +269,30 @@ mod tests {
         assert_eq!(take(dir.path()), vec![request]);
         assert!(take(dir.path()).is_empty());
         assert!(dir.path().join("9-3.part").exists());
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn restart_waits_until_previous_instance_releases_lock() {
+        let mut attempts = 0;
+        assert!(acquire_with_retry(true, || {
+            attempts += 1;
+            attempts == 3
+        }));
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn normal_start_does_not_wait() {
+        let mut attempts = 0;
+        assert!(!acquire_with_retry(false, || {
+            attempts += 1;
+            false
+        }));
+        assert_eq!(attempts, 1);
     }
 }

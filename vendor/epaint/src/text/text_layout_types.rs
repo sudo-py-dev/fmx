@@ -975,6 +975,12 @@ impl Row {
     /// Closest char at the desired x coordinate in row-relative coordinates.
     /// Returns something in the range `[0, char_count_excluding_newline()]`.
     pub fn char_at(&self, desired_x: f32) -> CharIndex {
+        // FMX patch: glyphs remain in logical order after bidi reordering.
+        if let Some(offsets) = super::bidi::caret_offsets(&self.glyphs) {
+            return CharIndex(offsets.iter().enumerate()
+                .min_by(|(_, a), (_, b)| (*a - desired_x).abs().total_cmp(&(*b - desired_x).abs()))
+                .map_or(0, |(i, _)| i));
+        }
         for (i, glyph) in self.glyphs.iter().enumerate() {
             if desired_x < glyph.logical_rect().center().x {
                 return CharIndex(i);
@@ -984,6 +990,10 @@ impl Row {
     }
 
     pub fn x_offset(&self, column: CharIndex) -> f32 {
+        // FMX patch: the logical end of an RTL run is its left edge.
+        if let Some(offsets) = super::bidi::caret_offsets(&self.glyphs) {
+            return offsets[column.0.min(offsets.len() - 1)];
+        }
         if let Some(glyph) = self.glyphs.get(column.0) {
             glyph.pos.x
         } else {

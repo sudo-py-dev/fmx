@@ -395,7 +395,7 @@ pub fn nav_item(
             let label = ui.painter().layout_no_wrap(
                 count.to_string(),
                 FontId::proportional(11.5),
-                p.on_accent,
+                p.text_weak,
             );
             let pill = Rect::from_center_size(
                 rect.right_center() - Vec2::new(10.0 + label.size().x / 2.0 + 6.0, 0.0),
@@ -405,11 +405,11 @@ pub fn nav_item(
                 dir::mirror_x(rect, pill.min.x, pill.width()) - pill.min.x,
                 0.0,
             ));
-            painter.rect_filled(pill, CornerRadius::same(255), p.accent);
+            painter.rect_filled(pill, CornerRadius::same(255), p.control);
             painter.galley_with_override_text_color(
                 pill.center() - label.size() / 2.0,
                 label,
-                p.on_accent,
+                p.text_weak,
             );
         }
     }

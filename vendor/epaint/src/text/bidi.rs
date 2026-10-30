@@ -205,3 +205,23 @@ mod tests {
         assert_eq!(clusters(&glyphs, 0..3), vec![0..2, 2..3]);
     }
 }
+
+/// Logical insertion boundaries for a visually reordered row. At a bidi
+/// boundary prefer the trailing edge of the preceding logical character,
+/// which keeps the caret with text just typed.
+pub(super) fn caret_offsets(glyphs: &[Glyph]) -> Option<Vec<f32>> {
+    let text: String = glyphs.iter().map(|g| g.chr).collect();
+    if !has_rtl(&text) { return None; }
+    let info = BidiInfo::new(&text, None);
+    let para = info.paragraphs.first()?;
+    let levels = info.reordered_levels(para, 0..text.len());
+    let mut offsets = Vec::with_capacity(glyphs.len() + 1);
+    for ((at, _), glyph) in text.char_indices().zip(glyphs) {
+        let rtl = levels[at].is_rtl();
+        if offsets.is_empty() {
+            offsets.push(glyph.pos.x + if rtl { glyph.advance_width } else { 0.0 });
+        }
+        offsets.push(glyph.pos.x + if rtl { 0.0 } else { glyph.advance_width });
+    }
+    Some(offsets)
+}

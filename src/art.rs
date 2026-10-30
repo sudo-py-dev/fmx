@@ -300,7 +300,7 @@ pub fn tool(t: Tool) -> Art {
         Tool::Normalize => art(glyph::WAVEFORM, hue::VIOLET),
         Tool::Repair => art(glyph::FIRST_AID, hue::RED),
         Tool::Download => art(glyph::DOWNLOAD, hue::BLUE),
-        Tool::Record => art(glyph::RECORD, hue::RED),
+        Tool::Record | Tool::RecordAudio => art(glyph::RECORD, hue::RED),
         Tool::Screenshot => art(glyph::CAMERA, hue::TEAL),
     }
 }
@@ -327,7 +327,7 @@ mod tests {
     fn every_glyph_is_in_the_icon_font() {
         let font = include_bytes!("../assets/fonts/Phosphor-Fill.ttf");
         let face = ttf_parser::Face::parse(font, 0).expect("font");
-        for g in glyph::ALL {
+        for g in glyph::ALL.into_iter().chain([crate::icons::STAR]) {
             let c = g.chars().next().expect("glyph");
             assert!(face.glyph_index(c).is_some(), "U+{:04X} missing", c as u32);
         }

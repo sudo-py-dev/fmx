@@ -99,6 +99,7 @@ fn renderer() -> eframe::Renderer {
 
 fn main() {
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let restarting = take_flag(&mut args, "--restart-after-update");
     let debug = take_flag(&mut args, DEBUG_FLAG);
     let self_test = take_flag(&mut args, SELF_TEST_FLAG);
     let register_shell = take_flag(&mut args, REGISTER_SHELL_FLAG);
@@ -110,7 +111,7 @@ fn main() {
         && !shell_only
         && !(cfg!(debug_assertions) && std::env::var_os("FMX_SCREENSHOT").is_some());
     // Taken before logging starts, so only the FMX that opens a window starts a new log.
-    let primary = !single_instance || instance::acquire();
+    let primary = !single_instance || instance::acquire_for_start(restarting);
     diagnostics::init(
         debug || self_test,
         self_test || shell_only,

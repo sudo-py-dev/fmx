@@ -41,6 +41,8 @@ pub struct Settings {
     pub start_on_add: bool,
     pub options: Options,
     pub last_tool: Tool,
+    /// Tools pinned for quick access, in the order they were added.
+    pub favorite_tools: Vec<Tool>,
     /// UI language code; `None` follows the system locale.
     pub language: Option<String>,
     /// Device path for audio-CD ripping.
@@ -76,7 +78,17 @@ pub fn default_cd_device() -> &'static str {
 }
 
 impl Settings {
+    pub fn toggle_favorite(&mut self, tool: Tool) {
+        if self.favorite_tools.contains(&tool) {
+            self.favorite_tools.retain(|t| *t != tool);
+        } else {
+            self.favorite_tools.push(tool);
+        }
+    }
+
     pub fn sanitize(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.favorite_tools.retain(|tool| seen.insert(*tool));
         self.parallel_jobs = self.parallel_jobs.clamp(1, MAX_PARALLEL_JOBS);
         self.cd_device.retain(|c| !c.is_control());
         if self.cd_device.trim().is_empty() {
@@ -103,6 +115,7 @@ impl Default for Settings {
             start_on_add: false,
             options: Options::default(),
             last_tool: Tool::ToVideo(VideoFormat::Mp4),
+            favorite_tools: Vec::new(),
             language: None,
             cd_device: default_cd_device().to_owned(),
             theme: ThemeChoice::System,
@@ -127,6 +140,27 @@ mod tests {
         assert!(s.start_on_add);
         assert!(s.parallel_jobs >= 1);
         assert_eq!(s.options, Options::default());
+    }
+
+    #[test]
+    fn favorites_persist_and_toggle_without_duplicates() {
+        let mut settings = Settings::default();
+        assert!(settings.favorite_tools.is_empty());
+        settings.toggle_favorite(Tool::RecordAudio);
+        settings.toggle_favorite(Tool::Record);
+        let saved = serde_json::to_string(&settings).unwrap();
+        let mut restored: Settings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            restored.favorite_tools,
+            vec![Tool::RecordAudio, Tool::Record]
+        );
+        restored.favorite_tools.push(Tool::RecordAudio);
+        restored.sanitize();
+        assert_eq!(restored.favorite_tools, settings.favorite_tools);
+        restored.toggle_favorite(Tool::RecordAudio);
+        assert_eq!(restored.favorite_tools, vec![Tool::Record]);
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.favorite_tools.is_empty());
     }
 
     #[test]

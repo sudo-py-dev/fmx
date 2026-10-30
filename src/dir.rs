@@ -152,6 +152,47 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn bidi_caret_tracks_logical_text_and_clicks() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        for text in ["שלום", "שלום MP4", "MP4 שלום", "search"] {
+            let galley = ctx.fonts_mut(|fonts| {
+                fonts.layout(
+                    text.to_owned(),
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                    f32::INFINITY,
+                )
+            });
+            let row = &galley.rows[0];
+            let n = text.chars().count();
+            let end = row.x_offset(egui::epaint::text::CharIndex(n));
+            let last = row.glyphs.last().unwrap();
+            let expected = if text == "search" {
+                row.size.x
+            } else if text.ends_with('ם') {
+                last.pos.x
+            } else {
+                last.pos.x + last.advance_width
+            };
+            assert!((end - expected).abs() < 0.01, "{text}: {end} != {expected}");
+            for i in 0..=n {
+                let x = row.x_offset(egui::epaint::text::CharIndex(i));
+                let hit = row.char_at(x);
+                assert!((row.x_offset(hit) - x).abs() < 0.01, "{text}: {i}");
+            }
+            if text == "שלום" {
+                assert!(row.x_offset(egui::epaint::text::CharIndex(0)) > end);
+                assert_eq!(row.char_at(-100.0).0, n);
+                assert_eq!(row.char_at(1000.0).0, 0);
+            }
+        }
+    }
+
     fn x_of(row: &[(char, f32)], c: char) -> f32 {
         row.iter().find(|(g, _)| *g == c).expect("char in row").1
     }

@@ -267,6 +267,7 @@ fn style_for(base: &egui::Style, p: &Palette, dark: bool, reduce_motion: bool) -
     };
     v.selection.bg_fill = p.accent.gamma_multiply(if dark { 0.45 } else { 0.25 });
     v.selection.stroke = Stroke::new(2.0, p.accent);
+    v.handle_shape = egui::style::HandleShape::Circle;
     v.slider_trailing_fill = true;
     v.striped = true;
     v.window_highlight_topmost = false;
@@ -348,4 +349,23 @@ mod tests {
         assert_eq!(style_for(&base, &DARK, true, true).animation_time, 0.0);
         assert!(style_for(&base, &DARK, true, false).animation_time > 0.0);
     }
+}
+
+/// Adwaita-like scales: a slim accent rail and a round, softly outlined handle.
+pub fn slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    let p = palette(ui);
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_rail_height = 4.0;
+        let v = ui.visuals_mut();
+        v.selection.bg_fill = p.accent;
+        // Handle outlines share fg_stroke with the numeric value button.
+        // Keep text readable independently of the subtle handle outline.
+        v.override_text_color = Some(p.text);
+        for state in [&mut v.widgets.inactive, &mut v.widgets.hovered] {
+            state.fg_stroke = Stroke::new(1.0, p.border);
+        }
+        v.widgets.active.fg_stroke = Stroke::new(1.0, p.accent);
+        ui.add(slider)
+    })
+    .inner
 }

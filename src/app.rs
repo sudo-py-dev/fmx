@@ -212,6 +212,7 @@ pub struct FmxApp {
     preview: Option<Preview>,
     /// The category shown in the tool grid.
     category: Category,
+    show_favorites: bool,
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
@@ -310,6 +311,7 @@ impl FmxApp {
             media_info: None,
             preview: None,
             category: settings.last_tool.category(),
+            show_favorites: true,
             in_editor: false,
             search: String::new(),
             focus_url: false,
@@ -534,7 +536,68 @@ impl FmxApp {
         self.focus_url = tool.input_kind() == InputKind::Url;
     }
 
+    fn favorite_button(&mut self, ui: &mut egui::Ui, tool: Tool) -> bool {
+        let favorite = self.settings.favorite_tools.contains(&tool);
+        let label = tr(if favorite {
+            "favorites.remove"
+        } else {
+            "favorites.add"
+        });
+        let p = theme::palette(ui);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::Vec2::splat(28.0), egui::Sense::click());
+        response
+            .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, favorite, label));
+        let response = response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(label);
+        if ui.is_rect_visible(rect) {
+            let hover = ui.ctx().animate_bool_with_time(
+                response.id.with("hover"),
+                response.hovered(),
+                theme::MOTION,
+            );
+            let amber = art::hue::AMBER;
+            let fill = if favorite {
+                amber.gamma_multiply(0.16 + 0.08 * hover)
+            } else {
+                p.control_hover.gamma_multiply(hover)
+            };
+            if fill != egui::Color32::TRANSPARENT {
+                ui.painter().circle_filled(rect.center(), 13.0, fill);
+            }
+            if response.has_focus() {
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    13.0,
+                    egui::Stroke::new(2.0, p.accent.gamma_multiply(0.55)),
+                );
+            }
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icons::STAR,
+                if favorite {
+                    icons::fill(16.0)
+                } else {
+                    egui::FontId::proportional(16.0)
+                },
+                if favorite {
+                    amber
+                } else {
+                    p.text_weak.gamma_multiply(0.5 + 0.35 * hover)
+                },
+            );
+        }
+        let clicked = response.clicked();
+        if clicked {
+            self.settings.toggle_favorite(tool);
+        }
+        clicked
+    }
+
     fn open_category(&mut self, category: Category) {
+        self.show_favorites = false;
         self.category = category;
         self.in_editor = false;
         self.search.clear();
@@ -709,7 +772,10 @@ impl FmxApp {
                 self.in_editor = false;
                 // "Start recording" and "Download" mean now; everything else waits for Start.
                 if self.settings.start_on_add
-                    || matches!(self.tool, Tool::Record | Tool::Screenshot | Tool::Download)
+                    || matches!(
+                        self.tool,
+                        Tool::Record | Tool::RecordAudio | Tool::Screenshot | Tool::Download
+                    )
                 {
                     self.queue.is_running = true;
                 }
@@ -1225,13 +1291,47 @@ impl FmxApp {
         ui.add_space(10.0);
         // Searching shows the matching tools from every category, and leaves
         // an open tool to show them.
-        let search = ui.add(
-            TextEdit::singleline(&mut self.search)
-                .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
-                .align(egui::Align2([dir::start(), Align::Center]))
-                .margin(Margin::symmetric(10, 7))
-                .desired_width(f32::INFINITY),
-        );
+        let p = theme::palette(ui);
+        let mut clear_search = false;
+        // A bounded row: a bare `with_layout` here would take the panel's
+        // whole height and centre the field in it.
+        let search = ui
+            .horizontal(|ui| {
+                ui.with_layout(dir::leading(Align::Center), |ui| {
+                    let clear_width = if self.search.is_empty() {
+                        0.0
+                    } else {
+                        theme::SMALL_BUTTON_HEIGHT + ui.spacing().item_spacing.x
+                    };
+                    let search_width = (ui.available_width() - clear_width).max(80.0);
+                    let search = ui.add(
+                        TextEdit::singleline(&mut self.search)
+                            .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
+                            .align(egui::Align2([dir::start(), Align::Center]))
+                            .background_color(p.surface)
+                            .margin(Margin::symmetric(10, 7))
+                            .desired_width(search_width),
+                    );
+                    if !self.search.is_empty() {
+                        clear_search = widgets::icon_button(
+                            ui,
+                            icons::X,
+                            tr("action.clear"),
+                            Kind::Ghost,
+                            Size::Small,
+                        )
+                        .clicked();
+                    }
+                    search
+                })
+                .inner
+            })
+            .inner;
+        clear_search |= search.has_focus() && ui.input(|input| input.key_pressed(Key::Escape));
+        if clear_search {
+            self.search.clear();
+            search.request_focus();
+        }
         if search.changed() && !self.search.trim().is_empty() {
             self.in_editor = false;
         }
@@ -1240,17 +1340,41 @@ impl FmxApp {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
+                card_frame(ui).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let selected = self.show_favorites && self.search.trim().is_empty();
+                    if widgets::nav_item(
+                        ui,
+                        Some(art::Art {
+                            glyph: icons::STAR,
+                            hue: art::hue::AMBER,
+                        }),
+                        tr("favorites.title"),
+                        selected,
+                        false,
+                        Some(self.settings.favorite_tools.len()),
+                    )
+                    .clicked()
+                    {
+                        self.show_favorites = true;
+                        self.in_editor = false;
+                        self.search.clear();
+                    }
+                });
+                ui.add_space(10.0);
                 widgets::nav_list(ui, "categories", |ui| {
                     let mut chosen = None;
                     for (i, category) in Category::ALL.into_iter().enumerate() {
-                        let selected = self.category == category && self.search.is_empty();
+                        let selected = !self.show_favorites
+                            && self.category == category
+                            && self.search.is_empty();
                         let item = widgets::nav_item(
                             ui,
                             Some(art::category(category)),
                             category.label(),
                             selected,
                             false,
-                            None,
+                            Some(category.tools().len()),
                         );
                         if selected {
                             chosen = Some((i, item.rect));
@@ -1272,6 +1396,17 @@ impl FmxApp {
         ui.horizontal(|ui| {
             if searching {
                 ui.label(RichText::new(tr("grid.results")).heading().strong());
+            } else if self.show_favorites {
+                widgets::icon_tile(
+                    ui,
+                    art::Art {
+                        glyph: icons::STAR,
+                        hue: art::hue::AMBER,
+                    },
+                    40.0,
+                    true,
+                );
+                ui.label(RichText::new(tr("favorites.title")).heading().strong());
             } else {
                 widgets::icon_tile(ui, art::category(self.category), 40.0, true);
                 ui.add_space(4.0);
@@ -1291,21 +1426,28 @@ impl FmxApp {
             );
             ui.add_space(12.0);
         }
-        let needle = self.search.trim().to_lowercase();
+        let terms: Vec<String> = self
+            .search
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
         let tools: Vec<Tool> = if searching {
             Category::ALL
                 .into_iter()
                 .flat_map(Category::tools)
-                .filter(|t| {
-                    t.label().to_lowercase().contains(&needle)
-                        || t.description().to_lowercase().contains(&needle)
-                })
+                .filter(|tool| tool_matches_search(*tool, &terms))
                 .collect()
+        } else if self.show_favorites {
+            self.settings.favorite_tools.clone()
         } else {
             self.category.tools()
         };
         if tools.is_empty() {
-            widgets::empty_state(ui, icons::MAGNIFYING_GLASS, tr("grid.no_results"), 160.0);
+            if self.show_favorites && !searching {
+                widgets::empty_state(ui, icons::STAR, tr("favorites.empty"), 160.0);
+            } else {
+                widgets::empty_state(ui, icons::MAGNIFYING_GLASS, tr("grid.no_results"), 160.0);
+            }
             return;
         }
         let mut picked = None;
@@ -1322,7 +1464,7 @@ impl FmxApp {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
             for tool in tools {
                 let reason = self.unavailable_reason(tool);
-                let subtitle = if searching {
+                let subtitle = if searching || self.show_favorites {
                     tool.category().label().to_owned()
                 } else {
                     card_detail(tool)
@@ -1331,7 +1473,7 @@ impl FmxApp {
                     Some(r) => format!("{}\n\n{} {r}", tool.description(), icons::WARNING),
                     None => tool.description().to_owned(),
                 };
-                if widgets::tool_card(
+                let card = widgets::tool_card(
                     ui,
                     card_width,
                     art::tool(tool),
@@ -1339,9 +1481,25 @@ impl FmxApp {
                     &subtitle,
                     reason.is_some(),
                 )
-                .on_hover_text(hover)
-                .clicked()
-                {
+                .on_hover_text(hover);
+                // The star has its own click target and keyboard focus, separate
+                // from opening the tool. Mirror it into the card's end corner.
+                let star_size = 28.0;
+                let star = egui::Rect::from_min_size(
+                    egui::pos2(
+                        dir::mirror_x(card.rect, card.rect.right() - star_size - 10.0, star_size),
+                        card.rect.top() + 10.0,
+                    ),
+                    egui::Vec2::splat(star_size),
+                );
+                let mut actions = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("favorite", tool))
+                        .max_rect(star)
+                        .layout(dir::leading(Align::Center)),
+                );
+                let toggled = self.favorite_button(&mut actions, tool);
+                if card.clicked() && !toggled {
                     picked = Some(tool);
                 }
             }
@@ -1453,19 +1611,40 @@ impl FmxApp {
             back,
             trf(
                 "hint.back_to",
-                &[("category", &self.tool.category().label())],
+                &[(
+                    "category",
+                    &if self.show_favorites {
+                        tr("favorites.title")
+                    } else {
+                        self.tool.category().label()
+                    },
+                )],
             ),
             Kind::Ghost,
             Size::Regular,
         )
         .on_hover_text(trf(
             "hint.back_to",
-            &[("category", &self.tool.category().label())],
+            &[(
+                "category",
+                &if self.show_favorites {
+                    tr("favorites.title")
+                } else {
+                    self.tool.category().label()
+                },
+            )],
         ))
         .clicked()
         {
             self.in_editor = false;
         }
+        let mut end = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("editor_favorite")
+                .max_rect(row)
+                .layout(dir::trailing(Align::Center)),
+        );
+        self.favorite_button(&mut end, self.tool);
         ui.vertical_centered(|ui| {
             ui.add(
                 egui::Label::new(RichText::new(self.tool.description()).color(p.text_weak)).wrap(),
@@ -1596,12 +1775,16 @@ impl FmxApp {
             InputKind::Device => self.drive_picker(ui),
             InputKind::Capture => {
                 let screenshot = self.tool == Tool::Screenshot;
-                ui.label(tr(if screenshot {
+                ui.label(tr(if self.tool == Tool::RecordAudio {
+                    "desc.record_audio"
+                } else if screenshot {
                     "shot.input"
                 } else {
                     "input.capture"
                 }));
-                let note = if capture::system_picks_area() {
+                let note = if self.tool == Tool::RecordAudio {
+                    None
+                } else if capture::system_picks_area() {
                     Some(tr(if screenshot {
                         "shot.system_picks"
                     } else {
@@ -1827,7 +2010,7 @@ impl FmxApp {
 
     fn primary_action(&self) -> (&'static str, &'static str) {
         match self.tool {
-            Tool::Record => (icons::RECORD, tr("action.start_recording")),
+            Tool::Record | Tool::RecordAudio => (icons::RECORD, tr("action.start_recording")),
             Tool::Screenshot => (icons::CAMERA, tr("action.take_screenshot")),
             Tool::Download => (icons::DOWNLOAD, tr("action.download")),
             _ => (icons::LIST_PLUS, tr("action.enqueue")),
@@ -2463,7 +2646,7 @@ impl FmxApp {
 
     fn options_ui(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
-        if matches!(tool, Tool::Record | Tool::Screenshot) {
+        if matches!(tool, Tool::Record | Tool::RecordAudio | Tool::Screenshot) {
             self.poll_capture_devices(ui.ctx());
         }
         let opts = &mut self.settings.options;
@@ -2700,7 +2883,10 @@ impl FmxApp {
             }
             Tool::IsoToCso => {
                 row(ui, tr("option.compression"), |ui| {
-                    ui.add(Slider::new(&mut opts.cso_level, 1..=options::MAX_CSO_LEVEL));
+                    theme::slider(
+                        ui,
+                        Slider::new(&mut opts.cso_level, 1..=options::MAX_CSO_LEVEL),
+                    );
                 });
             }
             Tool::Download => {
@@ -2711,7 +2897,31 @@ impl FmxApp {
                 download_rows(ui, &mut opts.download, best);
             }
             Tool::Record => {
-                record_rows(ui, &mut opts.record, self.capture_devices.as_ref());
+                record_rows(ui, &mut opts.record, self.capture_devices.as_ref(), false);
+            }
+            Tool::RecordAudio => {
+                record_rows(
+                    ui,
+                    &mut opts.sound_record,
+                    self.capture_devices.as_ref(),
+                    true,
+                );
+                row(ui, tr("option.output_format"), |ui| {
+                    combo(
+                        ui,
+                        "sound_format",
+                        &mut opts.sound_format,
+                        &[
+                            AudioFormat::Mp3,
+                            AudioFormat::Wav,
+                            AudioFormat::Flac,
+                            AudioFormat::Ogg,
+                            AudioFormat::Opus,
+                            AudioFormat::M4a,
+                        ],
+                        |f| f.label().to_owned(),
+                    );
+                });
             }
             Tool::Screenshot => {
                 screenshot_rows(ui, &mut opts.screenshot, self.capture_devices.as_ref());
@@ -2721,7 +2931,8 @@ impl FmxApp {
         }
         if tool == Tool::Speed {
             row_hint(ui, tr("option.speed"), tr("hint.speed"), |ui| {
-                ui.add(
+                theme::slider(
+                    ui,
                     Slider::new(&mut opts.speed, options::MIN_SPEED..=options::MAX_SPEED)
                         .suffix("×")
                         .step_by(0.05),
@@ -3357,6 +3568,25 @@ impl FmxApp {
     /// ffmpeg and yt-dlp, then the optional helper programs, each a row
     /// with whether it was found.
     fn programs_settings(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            group_title(ui, tr("settings.group_core"));
+            ui.with_layout(dir::trailing(Align::Center), |ui| {
+                if widgets::icon_button(
+                    ui,
+                    icons::ARROW_CLOCKWISE,
+                    tr("action.rescan"),
+                    Kind::Ghost,
+                    Size::Small,
+                )
+                .on_hover_text(tr("action.rescan"))
+                .clicked()
+                {
+                    self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
+                }
+            });
+        });
+        ui.add_space(6.0);
         let p = theme::palette(ui);
         let status = |ui: &mut egui::Ui, found: bool| {
             if found {
@@ -3377,10 +3607,9 @@ impl FmxApp {
         };
         let ffmpeg = path_of(External::Ffmpeg);
         let ytdlp = path_of(External::YtDlp);
-        pref_group(ui, Some((tr("settings.group_core"), "")), |ui| {
+        pref_group(ui, None, |ui| {
             let sub = ffmpeg.clone().unwrap_or_default();
             widgets::pref_row(ui, tr("settings.ffmpeg"), &sub, |ui| {
-                status(ui, ffmpeg.is_some());
                 if self.settings.ffmpeg_path.is_some()
                     && widgets::button(ui, None, tr("action.auto_detect"), Kind::Ghost, Size::Small)
                         .clicked()
@@ -3402,6 +3631,8 @@ impl FmxApp {
                     self.settings.ffmpeg_path = Some(path);
                     self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
                 }
+                // Last in reading order: right in LTR, left in RTL.
+                status(ui, ffmpeg.is_some());
             });
             let sub = ytdlp
                 .clone()
@@ -3410,7 +3641,6 @@ impl FmxApp {
                 .on_hover_text(tr("settings.ytdlp_hint"));
         });
         ui.add_space(GROUP_GAP);
-        let mut rescan = false;
         pref_group(
             ui,
             Some((tr("settings.programs"), tr("settings.programs_hint"))),
@@ -3445,20 +3675,6 @@ impl FmxApp {
                 }
             },
         );
-        ui.add_space(10.0);
-        ui.with_layout(dir::leading(Align::Center), |ui| {
-            rescan = widgets::button(
-                ui,
-                Some(icons::ARROW_CLOCKWISE),
-                tr("action.rescan"),
-                Kind::Secondary,
-                Size::Small,
-            )
-            .clicked();
-        });
-        if rescan {
-            self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
-        }
     }
 
     // ── Updates ─────────────────────────────────────────────────────────
@@ -4413,6 +4629,19 @@ fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
+/// Matches every query word anywhere in the tool's searchable details.
+fn tool_matches_search(tool: Tool, terms: &[String]) -> bool {
+    let searchable = format!(
+        "{} {} {} {}",
+        tool.label(),
+        tool.description(),
+        tool.category().label(),
+        card_detail(tool)
+    )
+    .to_lowercase();
+    terms.iter().all(|term| searchable.contains(term))
+}
+
 /// The second line on a tool card: the file extension or a device's screen box.
 /// Empty when it would only repeat the name, as ".mp4" under "MP4" or
 /// "MP4 (H.265)" does; ".jxl" under "JPEG XL" stays.
@@ -4681,9 +4910,10 @@ fn record_rows(
     ui: &mut egui::Ui,
     r: &mut options::RecordOptions,
     devices: Option<&capture::Devices>,
+    audio_only: bool,
 ) {
     use options::{RecordAudio, RecordQuality};
-    if !capture::system_picks_area() {
+    if !audio_only && !capture::system_picks_area() {
         area_rows(
             ui,
             "record_area",
@@ -4695,9 +4925,14 @@ fn record_rows(
     }
     let audio_choices = match devices {
         Some(d) => {
-            let choices = d.audio_choices();
+            let mut choices = d.audio_choices();
+            if audio_only {
+                choices.retain(|a| *a != RecordAudio::None);
+            }
             if !choices.contains(&r.audio) {
-                r.audio = *choices.get(1).unwrap_or(&RecordAudio::None);
+                r.audio = *choices
+                    .get(if audio_only { 0 } else { 1 })
+                    .unwrap_or(&RecordAudio::None);
             }
             choices
         }
@@ -4718,6 +4953,13 @@ fn record_rows(
         row(ui, tr("option.audio"), audio_row);
     } else {
         row_hint(ui, tr("option.audio"), loopback_hint, audio_row);
+    }
+    if audio_only {
+        if audio_choices.is_empty() {
+            ui.label(tr("record.no_audio"));
+        }
+        switch_row(ui, tr("record.countdown"), &mut r.countdown);
+        return;
     }
     row_hint(ui, tr("option.output_format"), r.format.hint(), |ui| {
         let choices = options::RecordFormat::ALL.map(|f| (f, f.label()));
@@ -4904,7 +5146,8 @@ fn resolution_row(ui: &mut egui::Ui, r: &mut Resolution) {
 
 fn volume_row(ui: &mut egui::Ui, db: &mut f32) {
     row(ui, tr("option.volume"), |ui| {
-        ui.add(
+        theme::slider(
+            ui,
             Slider::new(db, -options::MAX_VOLUME_DB..=options::MAX_VOLUME_DB)
                 .suffix(" dB")
                 .step_by(0.5),
@@ -5192,7 +5435,7 @@ fn job_status(job: &Job, p: &theme::Palette) -> (String, egui::Color32) {
     match &job.state {
         JobState::Queued => (tr("status.queued").to_owned(), p.text_weak),
         // The recorder's own detail: the countdown, then time and size.
-        JobState::Running { .. } if job.spec.tool == Tool::Record => (
+        JobState::Running { .. } if matches!(job.spec.tool, Tool::Record | Tool::RecordAudio) => (
             job.detail.clone().unwrap_or_else(|| {
                 format!(
                     "{} {}",
@@ -5247,18 +5490,20 @@ fn job_controls(
     match &job.state {
         JobState::Running {
             progress: Some(fraction),
-        } if job.spec.tool != Tool::Record => {
+        } if !matches!(job.spec.tool, Tool::Record | Tool::RecordAudio) => {
             let bar_id = Id::unique(("job_progress", job.id));
             let percent = format!("{:.0}%", fraction * 100.0);
             widgets::progress(ui, bar_id, *fraction, percent, PROGRESS_WIDTH);
         }
-        JobState::Running { progress: None } if job.spec.tool != Tool::Record => {
+        JobState::Running { progress: None }
+            if !matches!(job.spec.tool, Tool::Record | Tool::RecordAudio) =>
+        {
             widgets::busy(ui, "", PROGRESS_WIDTH);
         }
         _ => {}
     }
     match &job.state {
-        JobState::Running { .. } if job.spec.tool == Tool::Record => {
+        JobState::Running { .. } if matches!(job.spec.tool, Tool::Record | Tool::RecordAudio) => {
             if widgets::button(
                 ui,
                 Some(icons::STOP),
@@ -5464,11 +5709,21 @@ impl eframe::App for FmxApp {
             // subpage; another category fades in, rising or sinking the way
             // the sidebar's highlight moves.
             let depth = u8::from(self.in_editor);
-            let order = Category::ALL
-                .iter()
-                .position(|c| *c == self.category)
-                .unwrap_or_default();
-            let key = (self.tool, self.category, self.search.is_empty());
+            let order = if self.show_favorites {
+                0
+            } else {
+                Category::ALL
+                    .iter()
+                    .position(|c| *c == self.category)
+                    .unwrap_or_default()
+                    + 1
+            };
+            let key = (
+                self.tool,
+                self.category,
+                self.show_favorites,
+                self.search.is_empty(),
+            );
             widgets::navigation(ui, "main", depth, order, key, |ui, depth| {
                 egui::Frame::new()
                     // The same top margin as the sidebar, so a page's header row
@@ -5582,6 +5837,22 @@ mod tests {
         assert_eq!(card_detail(Tool::ToVideo(VideoFormat::Mp4Hevc)), "");
         assert_eq!(card_detail(Tool::ToImage(ImageFormat::Jxl)), ".jxl");
         assert_eq!(card_detail(Tool::JoinImages), "");
+    }
+
+    #[test]
+    fn search_matches_multiple_words_categories_and_formats() {
+        assert!(tool_matches_search(
+            Tool::RecordAudio,
+            &["sound".to_owned(), "record".to_owned()]
+        ));
+        assert!(tool_matches_search(
+            Tool::ToImage(ImageFormat::Jxl),
+            &["image".to_owned(), "jxl".to_owned()]
+        ));
+        assert!(!tool_matches_search(
+            Tool::ToImage(ImageFormat::Jxl),
+            &["video".to_owned(), "jxl".to_owned()]
+        ));
     }
 
     #[test]
