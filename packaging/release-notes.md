@@ -1,28 +1,22 @@
 ## What's new
 
-### Current, FMX-owned media tools
-- Upgrade every platform to FFmpeg 9.0.2 and yt-dlp 2026.10.26.
-- Store reduced Linux, Windows and universal macOS tool bundles as immutable assets in the FMX repository.
-- Verify every upstream input and every FMX-owned bundle with pinned SHA-256 checksums.
-- Normal releases now download media tools only from the FMX repository.
+### Favorites
+- Star any tool to pin it. A Favorites entry at the top of the sidebar lists your starred tools, and FMX remembers them.
 
-### Interface and preview
-- Improve translated labels and accessible names for icon buttons.
-- Show media details without blocking the interface.
-- Improve the preview controls and keep exported rotations consistent with the preview.
+### Sound recorder
+- New tool that records your microphone, the computer's sound, or both, as MP3, WAV, FLAC, OGG, Opus or M4A.
 
-### Capture and reliability
-- Include local timestamps in screenshot and screen-recording filenames.
-- Keep cancellation working when a child process closes its output stream.
-- Ignore external yt-dlp configuration and improve handling of download metadata errors.
-- Add a fast source and translation audit for developers.
+### Sidebar and search
+- Each category shows how many tools it has.
+- Search finds tools that match every word you type, and has a button to clear it.
 
-### Smaller packages and faster releases
-- Optimize the FMX executable for size across Linux, Windows and macOS.
-- Increase compression for the universal Mac disk image.
-- Improve release build caching and reuse the cached release-signing tool.
-- Upload compressed packages without compressing them again.
-- Report package sizes in the release workflow summary.
+### Hebrew and right-to-left text
+- The text cursor and mouse clicks land in the right place in Hebrew and mixed Hebrew/English text.
+- Clearer Hebrew wording across the app.
+
+### Reliability
+- After an update, the new FMX waits for the old window to close instead of quitting.
+- Sliders have round handles that are easier to see.
 
 ## Download
 
