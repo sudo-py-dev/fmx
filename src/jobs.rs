@@ -134,6 +134,8 @@ pub enum OutputKind {
     Into,
 }
 
+/// Determines whether the tool writes a file, a directory, or into a directory.
+/// `first_input` supplies the source format for tools that preserve it.
 pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> OutputKind {
     let first = first_input.unwrap_or(Path::new(""));
     OutputKind::File(match tool {
@@ -255,6 +257,14 @@ pub struct Selection<'a> {
 }
 
 /// Groups the selection into job specs according to the tool's arity.
+///
+/// Allocated output paths are added to `claimed` to avoid name collisions.
+/// Recordings use the Music or Videos folder by default when it exists, or the
+/// home directory otherwise (or the current directory if no home is found).
+/// A download uses its destination directory directly.
+///
+/// Returns an error for invalid options, a non-web download URL, or an invalid
+/// input count. Input groups without a usable output directory are omitted.
 pub fn plan_jobs(
     sel: &Selection<'_>,
     claimed: &mut HashSet<PathBuf>,

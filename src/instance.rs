@@ -45,8 +45,11 @@ fn dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("fmx"))
 }
 
-/// An update starts its replacement before closing the old window. Wait for
-/// the old process to release its lock instead of forwarding focus and exiting.
+/// Attempts the single-instance lock once, or retries for up to 30 seconds
+/// when `restarting` is true to allow the old instance to close.
+///
+/// Returns false if the lock remains held. If the lock cannot be used for
+/// another reason, this permits the instance to run and returns true.
 pub fn acquire_for_start(restarting: bool) -> bool {
     acquire_with_retry(restarting, acquire)
 }

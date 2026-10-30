@@ -724,7 +724,9 @@ pub fn validate_edit(edit: &Edit, duration: Option<f64>) -> Result<(), PlanError
     Ok(())
 }
 
-/// Validates [`Options`] for the given [`Tool`].
+/// Validates [`Options`] for the given [`Tool`], including the shared edit settings.
+/// Returns a [`PlanError`] for invalid values. Audio recording requires a sound
+/// source selection and an MP3, WAV, FLAC, OGG, Opus, or M4A output format.
 pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
     opts.edit.validate(None)?;
     match tool {
@@ -1600,7 +1602,11 @@ pub fn cd_track(device: &Path, track: (f64, f64), output: &Path, opts: &Options)
         .expect(Some(end - start))
 }
 
-/// Records live audio without opening a screen capture device.
+/// Builds an ffmpeg plan to record live audio without screen capture.
+///
+/// `sounds` contains ffmpeg input format and device pairs. Multiple inputs are
+/// mixed for the duration of the longest input. The plan stops by asking ffmpeg
+/// to quit so it can finalize the output; this function does not run the plan.
 pub fn record_audio(output: &Path, opts: &Options, sounds: &[(&str, String)]) -> Plan {
     let mut args = base();
     args.0.retain(|a| a != "-nostdin");

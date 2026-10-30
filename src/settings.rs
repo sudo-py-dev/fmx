@@ -78,6 +78,7 @@ pub fn default_cd_device() -> &'static str {
 }
 
 impl Settings {
+    /// Adds a tool to the end of favorites, or removes all its entries if present.
     pub fn toggle_favorite(&mut self, tool: Tool) {
         if self.favorite_tools.contains(&tool) {
             self.favorite_tools.retain(|t| *t != tool);
@@ -86,6 +87,8 @@ impl Settings {
         }
     }
 
+    /// Normalizes saved settings, including removing duplicate favorites while
+    /// preserving their first occurrence.
     pub fn sanitize(&mut self) {
         let mut seen = std::collections::HashSet::new();
         self.favorite_tools.retain(|tool| seen.insert(*tool));

@@ -536,6 +536,7 @@ impl FmxApp {
         self.focus_url = tool.input_kind() == InputKind::Url;
     }
 
+    /// Shows a star that toggles the tool's favorite status and returns whether it was clicked.
     fn favorite_button(&mut self, ui: &mut egui::Ui, tool: Tool) -> bool {
         let favorite = self.settings.favorite_tools.contains(&tool);
         let label = tr(if favorite {
@@ -596,6 +597,7 @@ impl FmxApp {
         clicked
     }
 
+    /// Opens a category, leaving the editor and favorites view and clearing the search.
     fn open_category(&mut self, category: Category) {
         self.show_favorites = false;
         self.category = category;
@@ -4905,7 +4907,9 @@ fn screenshot_rows(
     switch_row(ui, tr("shot.minimize"), &mut s.minimize);
 }
 
-/// The screen recorder's options; `devices` is `None` while still being found.
+/// Shows recorder options; `audio_only` hides screen and video controls.
+/// `devices` is `None` while detection is still in progress. The selected audio
+/// source may be adjusted to an available choice once devices are known.
 fn record_rows(
     ui: &mut egui::Ui,
     r: &mut options::RecordOptions,
