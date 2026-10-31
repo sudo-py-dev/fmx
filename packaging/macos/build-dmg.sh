@@ -12,7 +12,7 @@ for target in "${targets[@]}"; do
   cargo build --release --locked --target "$target"
 done
 
-app=dist/FMX.app
+app=dist/fmx.app
 rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create -output "$app/Contents/MacOS/fmx" \
   target/aarch64-apple-darwin/release/fmx target/x86_64-apple-darwin/release/fmx
@@ -31,6 +31,6 @@ cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 dmg="dist/fmx-$version-macos-universal.dmg"
 rm -f "$dmg"
-hdiutil create -volname "FMX $version" -srcfolder "$staging" -ov -format UDZO -imagekey zlib-level=9 "$dmg"
+hdiutil create -volname "fmx $version" -srcfolder "$staging" -ov -format UDZO -imagekey zlib-level=9 "$dmg"
 rm -rf "$staging"
 echo "$dmg"

@@ -20,16 +20,16 @@
 [Setup]
 ; Never change AppId: Windows tells installs apart by it, and upgrades find the old one with it.
 AppId={{D051A784-A327-47BE-8A12-B2FBF998D023}
-AppName=FMX
+AppName=fmx
 AppVersion={#AppVersion}
-AppVerName=FMX {#AppVersion}
+AppVerName=fmx {#AppVersion}
 AppPublisher=Free Media Xpress
 AppPublisherURL=https://github.com/sudo-py-dev/fmx
 AppSupportURL=https://github.com/sudo-py-dev/fmx/issues
 AppUpdatesURL=https://github.com/sudo-py-dev/fmx/releases
 VersionInfoVersion={#AppVersion}
 DefaultDirName={autopf}\FMX
-DefaultGroupName=FMX
+DefaultGroupName=fmx
 DisableProgramGroupPage=yes
 ; FMX needs no administrator rights, so it installs for the current user by default
 ; (and updates without a UAC prompt); the wizard still offers an install for all users.
@@ -41,7 +41,7 @@ MinVersion=10.0
 LicenseFile=..\..\LICENSE-MIT
 SetupIconFile=..\icons\fmx.ico
 UninstallDisplayIcon={app}\fmx.ico
-UninstallDisplayName=FMX
+UninstallDisplayName=fmx
 WizardStyle=modern
 ; A running FMX is closed for the upgrade and started again afterwards.
 CloseApplications=yes
@@ -91,17 +91,17 @@ Name: "{autoprograms}\fmx"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.
 Name: "{autodesktop}\fmx"; Filename: "{app}\fmx.exe"; IconFilename: "{app}\fmx.ico"; Tasks: desktopicon
 
 [CustomMessages]
-ContextMenu=Add "Convert with FMX" to the right-click menu of files
-es.ContextMenu=Añadir "Convertir con FMX" al menú contextual de los archivos
-fr.ContextMenu=Ajouter « Convertir avec FMX » au menu contextuel des fichiers
-de.ContextMenu=„Mit FMX konvertieren“ zum Kontextmenü von Dateien hinzufügen
-he.ContextMenu=הוספת "המרה עם FMX" לתפריט הלחיצה הימנית של קבצים
+ContextMenu=Add "Convert with fmx" to the right-click menu of files
+es.ContextMenu=Añadir "Convertir con fmx" al menú contextual de los archivos
+fr.ContextMenu=Ajouter « Convertir avec fmx » au menu contextuel des fichiers
+de.ContextMenu=„Mit fmx konvertieren“ zum Kontextmenü von Dateien hinzufügen
+he.ContextMenu=הוספת "המרה עם fmx" לתפריט הלחיצה הימנית של קבצים
 
 [Run]
 ; FMX writes its right-click menu itself (src/shell.rs); unticking the task removes it.
 Filename: "{app}\fmx.exe"; Parameters: "--register-shell"; Flags: runhidden waituntilterminated; Tasks: contextmenu
 Filename: "{app}\fmx.exe"; Parameters: "--unregister-shell"; Flags: runhidden waituntilterminated; Tasks: not contextmenu
-Filename: "{app}\fmx.exe"; Description: "{cm:LaunchProgram,FMX}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\fmx.exe"; Description: "{cm:LaunchProgram,fmx}"; Flags: nowait postinstall skipifsilent
 ; An update FMX started (silent): FMX closed for it, so start it again.
 Filename: "{app}\fmx.exe"; Flags: nowait runasoriginaluser; Check: WizardSilent
 

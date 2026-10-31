@@ -6,8 +6,8 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         winresource::WindowsResource::new()
             .set_icon("packaging/icons/fmx.ico")
-            .set("ProductName", "FMX")
-            .set("FileDescription", "Free Media Xpress (FMX) media converter")
+            .set("ProductName", "fmx")
+            .set("FileDescription", "Free Media Xpress (fmx) media converter")
             .compile()
             .expect("embed the Windows icon");
     }

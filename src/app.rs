@@ -3978,7 +3978,7 @@ impl FmxApp {
             _ => version,
         };
         pref_group(ui, None, |ui| {
-            widgets::pref_row(ui, "FMX (Free Media Xpress)", &status, |ui| {
+            widgets::pref_row(ui, "fmx (Free Media Xpress)", &status, |ui| {
                 let busy = matches!(
                     self.update,
                     UpdateState::Checking { .. } | UpdateState::Downloading { .. }

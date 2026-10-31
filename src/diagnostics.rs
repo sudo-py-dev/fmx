@@ -84,7 +84,7 @@ pub fn init(force_debug: bool, quiet: bool, fresh_log: bool) {
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         debug_logging = debug_on,
-        "FMX starting"
+        "fmx starting"
     );
 }
 
@@ -143,14 +143,14 @@ fn install_panic_hook() {
             .unwrap_or("unnamed")
             .to_owned();
         let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!(%message, %location, %thread, "FMX crashed");
+        tracing::error!(%message, %location, %thread, "fmx crashed");
         let details = format!(
             "Panic in thread '{thread}' at {location}:\n{message}\n\nBacktrace:\n{backtrace}"
         );
-        let report = write_crash_report("FMX crashed", &details);
+        let report = write_crash_report("fmx crashed", &details);
         default_hook(info);
         show_error(
-            &format!("FMX ran into a problem and has to close.\n\n{message}"),
+            &format!("fmx ran into a problem and has to close.\n\n{message}"),
             report.as_deref(),
         );
     }));
@@ -158,10 +158,10 @@ fn install_panic_hook() {
 
 /// Records that FMX could not start (for example, no usable graphics) and tells the user.
 pub fn report_startup_failure(error: &dyn std::fmt::Display) {
-    tracing::error!(%error, "FMX could not start");
-    let report = write_crash_report("FMX could not start", &error.to_string());
+    tracing::error!(%error, "fmx could not start");
+    let report = write_crash_report("fmx could not start", &error.to_string());
     show_error(
-        &format!("FMX could not start.\n\n{error}"),
+        &format!("fmx could not start.\n\n{error}"),
         report.as_deref(),
     );
 }
@@ -175,7 +175,7 @@ fn write_crash_report(title: &str, details: &str) -> Option<PathBuf> {
     let mut file = File::create(&path).ok()?;
     writeln!(
         file,
-        "{title}\n\nFMX {}\nSystem: {} {}\nTime: {millis} (milliseconds since 1970, UTC)\nLog: {}\n\n{details}",
+        "{title}\n\nfmx {}\nSystem: {} {}\nTime: {millis} (milliseconds since 1970, UTC)\nLog: {}\n\n{details}",
         crate::update::VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -250,7 +250,7 @@ fn show_error(message: &str, report: Option<&Path>) {
     };
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title("FMX")
+        .set_title("fmx")
         .set_description(text)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
