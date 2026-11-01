@@ -26,7 +26,7 @@
 - **Light and dark mode** - follows your system, or pick one yourself.
 - **Right-click to convert** - choose files in your file manager, right-click, and pick **Convert with FMX**.
 - **Many files at once** - add a whole folder; FMX works on several files side by side and shows the progress of each.
-- **Speaks your language** - English, Español, Français, Deutsch and עברית.
+- **Speaks your language** - English, Español, Français, Deutsch, עברית and Русский.
 - **Free, no ads, no account** - open source and free forever.
 
 ---
