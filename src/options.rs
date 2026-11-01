@@ -373,15 +373,27 @@ pub enum DownloadKind {
     /// Audio only (saved by older versions as `AudioMp3`).
     #[serde(alias = "AudioMp3")]
     Audio,
+    Subtitles,
+    Thumbnail,
+    Metadata,
 }
 
 impl DownloadKind {
-    pub const ALL: [Self; 2] = [Self::Video, Self::Audio];
+    pub const ALL: [Self; 5] = [
+        Self::Video,
+        Self::Audio,
+        Self::Subtitles,
+        Self::Thumbnail,
+        Self::Metadata,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Video => tr("download.video"),
             Self::Audio => tr("download.audio"),
+            Self::Subtitles => tr("download.only_subtitles"),
+            Self::Thumbnail => tr("download.only_thumbnail"),
+            Self::Metadata => tr("download.only_metadata"),
         }
     }
 }
@@ -701,6 +713,23 @@ pub struct DownloadOptions {
     pub embed_metadata: bool,
     /// Download speed limit; `None` is unlimited.
     pub rate_limit_kbps: Option<u32>,
+    pub auto_subtitles: bool,
+    pub save_subtitles: bool,
+    pub save_thumbnail: bool,
+    pub save_info_json: bool,
+    pub save_description: bool,
+    pub split_chapters: bool,
+    pub remove_sponsors: bool,
+    pub remember_downloads: bool,
+    pub live_from_start: bool,
+    pub playlist_items: String,
+    pub clip: bool,
+    pub start_seconds: u32,
+    pub end_seconds: Option<u32>,
+    pub concurrent_fragments: u8,
+    pub retries: u8,
+    /// A user-selected Netscape cookies file; never read browser stores implicitly.
+    pub cookies_file: String,
 }
 
 impl Default for DownloadOptions {
@@ -716,6 +745,22 @@ impl Default for DownloadOptions {
             embed_thumbnail: true,
             embed_metadata: true,
             rate_limit_kbps: None,
+            auto_subtitles: false,
+            save_subtitles: false,
+            save_thumbnail: false,
+            save_info_json: false,
+            save_description: false,
+            split_chapters: false,
+            remove_sponsors: false,
+            remember_downloads: false,
+            live_from_start: false,
+            playlist_items: String::new(),
+            clip: false,
+            start_seconds: 0,
+            end_seconds: None,
+            concurrent_fragments: 1,
+            retries: 10,
+            cookies_file: String::new(),
         }
     }
 }

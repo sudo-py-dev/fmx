@@ -882,6 +882,10 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
             tr("option.volume_label").to_owned(),
         ));
     }
+    if tool == Tool::Download {
+        crate::download::validate(&opts.download)
+            .map_err(|key| PlanError::InvalidValue(tr(key).to_owned()))?;
+    }
     if opts.download.subtitle_langs.len() > options::MAX_SUBTITLE_LANGS_LEN
         || opts.download.subtitle_langs.chars().any(|c| c.is_control())
     {

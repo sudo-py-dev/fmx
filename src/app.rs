@@ -98,6 +98,7 @@ const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
 struct LinkPreview {
     url: String,
     playlist: bool,
+    cookies_file: String,
     state: LinkState,
     thumbnail: Option<egui::TextureHandle>,
     thumbnail_rx: Option<mpsc::Receiver<Result<image::RgbaImage, String>>>,
@@ -2100,6 +2101,7 @@ impl FmxApp {
         }
         let url = self.url.trim().to_owned();
         let playlist = self.settings.options.download.playlist;
+        let cookies_file = self.settings.options.download.cookies_file.clone();
         let Some(ytdlp) = self.toolbox.get(External::YtDlp).map(Path::to_path_buf) else {
             self.link = None;
             return;
@@ -2108,10 +2110,9 @@ impl FmxApp {
             self.link = None;
             return;
         }
-        let current = self
-            .link
-            .as_ref()
-            .is_some_and(|l| l.url == url && l.playlist == playlist);
+        let current = self.link.as_ref().is_some_and(|l| {
+            l.url == url && l.playlist == playlist && l.cookies_file == cookies_file
+        });
         if !current {
             let waited = self.url_edited.map_or(LINK_LOOKUP_DELAY, |t| t.elapsed());
             if waited < LINK_LOOKUP_DELAY {
@@ -2120,13 +2121,20 @@ impl FmxApp {
             }
             let (tx, rx) = mpsc::channel();
             let (thread_url, thread_ctx) = (url.clone(), ctx.clone());
+            let thread_cookies = cookies_file.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(download::fetch_info(&ytdlp, &thread_url, playlist));
+                let _ = tx.send(download::fetch_info(
+                    &ytdlp,
+                    &thread_url,
+                    playlist,
+                    &thread_cookies,
+                ));
                 thread_ctx.request_repaint();
             });
             self.link = Some(LinkPreview {
                 url,
                 playlist,
+                cookies_file,
                 state: LinkState::Loading(rx),
                 thumbnail: None,
                 thumbnail_rx: None,
@@ -5005,8 +5013,9 @@ fn record_rows(
 /// The video downloader's options. `best` is the link's tallest picture, if known.
 fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Option<u32>) {
     row(ui, tr("option.download_kind"), |ui| {
-        let choices = DownloadKind::ALL.map(|k| (k, k.label()));
-        widgets::segmented(ui, &mut d.kind, &choices);
+        combo(ui, "download_kind", &mut d.kind, &DownloadKind::ALL, |k| {
+            k.label().to_owned()
+        });
     });
     if d.kind == DownloadKind::Video {
         let hint = best.map_or_else(
@@ -5047,7 +5056,7 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
             let choices = options::DownloadContainer::ALL.map(|c| (c, c.label()));
             widgets::segmented(ui, &mut d.container, &choices);
         });
-    } else {
+    } else if d.kind == DownloadKind::Audio {
         row(ui, tr("option.output_format"), |ui| {
             combo(
                 ui,
@@ -5066,27 +5075,40 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
             widgets::switch(ui, &mut d.playlist);
         },
     );
-    if d.kind == DownloadKind::Video {
-        row(ui, tr("download.subtitles"), |ui| {
-            widgets::switch(ui, &mut d.subtitles);
-            if d.subtitles {
-                ui.add(
-                    TextEdit::singleline(&mut d.subtitle_langs)
-                        .hint_text("en")
-                        .char_limit(options::MAX_SUBTITLE_LANGS_LEN)
-                        .desired_width(90.0),
-                )
-                .on_hover_text(tr("download.subtitle_langs_hint"));
-            }
-        });
+    if d.kind == DownloadKind::Video || d.kind == DownloadKind::Subtitles {
+        row(
+            ui,
+            tr(if d.kind == DownloadKind::Subtitles {
+                "download.subtitles_label"
+            } else {
+                "download.subtitles"
+            }),
+            |ui| {
+                if d.kind == DownloadKind::Video {
+                    widgets::switch(ui, &mut d.subtitles);
+                }
+                if d.subtitles || d.save_subtitles || d.kind == DownloadKind::Subtitles {
+                    ui.add(
+                        TextEdit::singleline(&mut d.subtitle_langs)
+                            .hint_text("en")
+                            .char_limit(options::MAX_SUBTITLE_LANGS_LEN)
+                            .desired_width(90.0),
+                    )
+                    .on_hover_text(tr("download.subtitle_langs_hint"));
+                }
+            },
+        );
     }
-    let cover = download::supports_cover(d);
-    row(ui, tr("download.cover"), |ui| {
-        ui.add_enabled_ui(cover, |ui| widgets::switch(ui, &mut d.embed_thumbnail))
-            .response
-            .on_disabled_hover_text(tr("download.cover_unsupported"));
-    });
-    switch_row(ui, tr("download.metadata"), &mut d.embed_metadata);
+    let media = matches!(d.kind, DownloadKind::Video | DownloadKind::Audio);
+    if media {
+        let cover = download::supports_cover(d);
+        row(ui, tr("download.cover"), |ui| {
+            ui.add_enabled_ui(cover, |ui| widgets::switch(ui, &mut d.embed_thumbnail))
+                .response
+                .on_disabled_hover_text(tr("download.cover_unsupported"));
+        });
+        switch_row(ui, tr("download.metadata"), &mut d.embed_metadata);
+    }
     row_hint(
         ui,
         tr("download.speed_label"),
@@ -5099,6 +5121,139 @@ fn download_rows(ui: &mut egui::Ui, d: &mut options::DownloadOptions, best: Opti
                 50..=options::MAX_RATE_LIMIT_KBPS,
                 " KB/s",
                 tr("download.unlimited"),
+            );
+        },
+    );
+    widgets::collapsible_section(
+        ui,
+        "download_advanced",
+        None,
+        tr("download.advanced"),
+        None,
+        |ui| {
+            if d.playlist {
+                row_hint(
+                    ui,
+                    tr("download.playlist_items"),
+                    tr("download.playlist_items_hint"),
+                    |ui| {
+                        ui.add(
+                            TextEdit::singleline(&mut d.playlist_items)
+                                .hint_text("1:5,8,10")
+                                .char_limit(256)
+                                .desired_width(150.0),
+                        );
+                    },
+                );
+            }
+            if media {
+                switch_row(ui, tr("download.clip"), &mut d.clip);
+                if d.clip {
+                    row(ui, tr("download.clip_start"), |ui| {
+                        ui.add(
+                            DragValue::new(&mut d.start_seconds)
+                                .range(0..=604800)
+                                .suffix(" s"),
+                        );
+                    });
+                    row(ui, tr("download.clip_end"), |ui| {
+                        optional_number(
+                            ui,
+                            &mut d.end_seconds,
+                            d.start_seconds.saturating_add(60),
+                            1..=604800,
+                            " s",
+                            tr("download.to_end"),
+                        );
+                    });
+                }
+                switch_row(ui, tr("download.split_chapters"), &mut d.split_chapters);
+                row_hint(
+                    ui,
+                    tr("download.remove_sponsors"),
+                    tr("download.sponsor_hint"),
+                    |ui| {
+                        widgets::switch(ui, &mut d.remove_sponsors);
+                    },
+                );
+                row_hint(
+                    ui,
+                    tr("download.remember"),
+                    tr("download.remember_hint"),
+                    |ui| {
+                        widgets::switch(ui, &mut d.remember_downloads);
+                    },
+                );
+                row_hint(
+                    ui,
+                    tr("download.live_start"),
+                    tr("download.live_hint"),
+                    |ui| {
+                        widgets::switch(ui, &mut d.live_from_start);
+                    },
+                );
+            }
+            if media || d.kind == DownloadKind::Subtitles {
+                if media {
+                    switch_row(ui, tr("download.save_subtitles"), &mut d.save_subtitles);
+                }
+                if d.save_subtitles && d.kind == DownloadKind::Audio {
+                    row(ui, tr("download.subtitles_label"), |ui| {
+                        ui.add(
+                            TextEdit::singleline(&mut d.subtitle_langs)
+                                .char_limit(options::MAX_SUBTITLE_LANGS_LEN)
+                                .desired_width(100.0),
+                        );
+                    });
+                }
+                ui.add_enabled_ui(
+                    (d.kind == DownloadKind::Video && d.subtitles)
+                        || d.save_subtitles
+                        || d.kind == DownloadKind::Subtitles,
+                    |ui| {
+                        switch_row(ui, tr("download.auto_subtitles"), &mut d.auto_subtitles);
+                    },
+                );
+            }
+            if media {
+                switch_row(ui, tr("download.save_thumbnail"), &mut d.save_thumbnail);
+                switch_row(ui, tr("download.save_info"), &mut d.save_info_json);
+                switch_row(ui, tr("download.save_description"), &mut d.save_description);
+            }
+            row_hint(
+                ui,
+                tr("download.fragments"),
+                tr("download.fragments_hint"),
+                |ui| {
+                    ui.add(DragValue::new(&mut d.concurrent_fragments).range(1..=16));
+                },
+            );
+            row(ui, tr("download.retries"), |ui| {
+                ui.add(DragValue::new(&mut d.retries).range(0..=100));
+            });
+            row_hint(
+                ui,
+                tr("download.cookies"),
+                tr("download.cookies_hint"),
+                |ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut d.cookies_file)
+                            .char_limit(4096)
+                            .desired_width(140.0),
+                    );
+                    if widgets::button(
+                        ui,
+                        Some(icons::FOLDER_OPEN),
+                        tr("action.browse"),
+                        Kind::Secondary,
+                        Size::Small,
+                    )
+                    .clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_file()
+                    {
+                        d.cookies_file = path.to_string_lossy().into_owned();
+                    }
+                },
             );
         },
     );

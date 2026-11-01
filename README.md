@@ -174,3 +174,32 @@ If FMX closes unexpectedly, it saves a crash report in the same folder and tells
 FMX is free to use, share and change, under the [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE) license.
 
 Want to build FMX yourself or help out? See [**DEVELOPMENT.md**](DEVELOPMENT.md).
+
+### Video downloader
+
+Paste a video, playlist or channel link from YouTube, X (Twitter), Vimeo, TikTok,
+or another [site supported by yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md).
+Site support depends on the bundled yt-dlp version and the site's current restrictions.
+
+The Download selector offers video, audio, subtitles only, thumbnail only, and
+metadata with a text description. Video and audio retain the existing quality,
+format, cover-art, metadata and speed-limit controls.
+
+Open **More download options** for:
+
+- Playlist indices and slices (`1:5,8` selects items 1–5 and 8).
+- A clip's start and end in seconds, or an open-ended range.
+- Separate files for the video's chapters, while retaining the complete download.
+- SponsorBlock removal of sponsored segments using community timestamps.
+- A download history in the output folder to skip completed media. Histories are
+  separated by media kind, format, quality, clip range and chapter/sponsor choices.
+- Live streams from the beginning, where supported. Recording continues until
+  the stream finishes or the job is cancelled.
+- Automatic captions and separate subtitle, thumbnail, JSON metadata and description files.
+- Parallel DASH/HLS fragments and retry counts.
+- A Netscape-format cookies file for signed-in access; the same file is used
+  for the link preview. Clear the field to stop using it.
+
+The interface covers these media tasks rather than exposing every yt-dlp command-line
+switch. Custom commands/plugins, arbitrary output templates, proxy and extractor
+configuration, credential entry, and unattended channel scheduling remain CLI workflows.

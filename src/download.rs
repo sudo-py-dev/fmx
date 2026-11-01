@@ -61,6 +61,10 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
         template,
     ]);
     let video = opts.kind == DownloadKind::Video;
+    let media = matches!(opts.kind, DownloadKind::Video | DownloadKind::Audio);
+    if !media {
+        args.extend(os(&["--skip-download"]));
+    }
     if video {
         // Sorting (not filtering) keeps the sharpest picture up to the limit and,
         // among equals, prefers codecs the container plays best: H.264/AAC in MP4
@@ -80,12 +84,7 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
             args.extend(os(&["-S", &sort.join(",")]));
         }
         args.extend(os(&["--merge-output-format", opts.container.ext()]));
-        if opts.subtitles {
-            let langs = clean_langs(&opts.subtitle_langs);
-            // --embed-subs alone fetches the subtitles and deletes the files once embedded.
-            args.extend(os(&["--sub-langs", &langs, "--embed-subs"]));
-        }
-    } else {
+    } else if opts.kind == DownloadKind::Audio {
         args.extend(os(&[
             "-f",
             "ba/b",
@@ -96,10 +95,108 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
             "0",
         ]));
     }
+    let wants_subs = (video && opts.subtitles)
+        || (media && opts.save_subtitles)
+        || opts.kind == DownloadKind::Subtitles;
+    if wants_subs {
+        args.extend(os(&["--sub-langs", &clean_langs(&opts.subtitle_langs)]));
+        if video && opts.subtitles {
+            args.extend(os(&["--embed-subs"]));
+        }
+        if opts.save_subtitles || opts.kind == DownloadKind::Subtitles {
+            args.extend(os(&["--write-subs"]));
+        }
+        if opts.auto_subtitles {
+            args.extend(os(&["--write-auto-subs"]));
+        }
+    }
+    if (media && opts.save_thumbnail) || opts.kind == DownloadKind::Thumbnail {
+        args.extend(os(&["--write-thumbnail"]));
+    }
+    if (media && opts.save_info_json) || opts.kind == DownloadKind::Metadata {
+        args.extend(os(&["--write-info-json"]));
+    }
+    if (media && opts.save_description) || opts.kind == DownloadKind::Metadata {
+        args.extend(os(&["--write-description"]));
+    }
+    if opts.playlist && !opts.playlist_items.trim().is_empty() {
+        args.extend(os(&["--playlist-items", opts.playlist_items.trim()]));
+    }
+    if media {
+        if opts.clip {
+            let end = opts
+                .end_seconds
+                .map_or_else(|| "inf".to_owned(), |s| s.to_string());
+            args.extend(os(&[
+                "--download-sections",
+                &format!("*{}-{end}", opts.start_seconds),
+            ]));
+        }
+        if opts.split_chapters {
+            // Explicit absolute chapter output prevents yt-dlp's default from
+            // writing split files into the application's working directory.
+            let chapter = out_dir.join(
+                "%(title).150B [%(id)s] - %(section_number)03d - %(section_title).100B.%(ext)s",
+            );
+            let mut template = OsString::from("chapter:");
+            template.push(chapter);
+            args.extend(["--split-chapters".into(), "-o".into(), template]);
+        }
+        if opts.remove_sponsors {
+            args.extend(os(&["--sponsorblock-remove", "sponsor"]));
+        }
+        if opts.live_from_start {
+            args.extend(os(&["--live-from-start"]));
+        }
+        if opts.remember_downloads {
+            // Separate histories avoid skipping audio after downloading video,
+            // or treating a saved clip as a completed full video.
+            let range = if opts.clip {
+                format!(
+                    "{}-{}",
+                    opts.start_seconds,
+                    opts.end_seconds
+                        .map_or_else(|| "end".to_owned(), |n| n.to_string())
+                )
+            } else {
+                "full".to_owned()
+            };
+            let archive = format!(
+                ".fmx-archive-{:?}-{}-{}-{}-{}-{}.txt",
+                opts.kind,
+                if video {
+                    opts.container.ext()
+                } else {
+                    opts.audio_format.ext()
+                },
+                if video {
+                    opts.max_height.unwrap_or(0)
+                } else {
+                    0
+                },
+                range,
+                opts.split_chapters,
+                opts.remove_sponsors
+            );
+            args.extend([
+                "--download-archive".into(),
+                out_dir.join(archive).into_os_string(),
+            ]);
+        }
+    }
+    args.extend(os(&[
+        "--concurrent-fragments",
+        &opts.concurrent_fragments.clamp(1, 16).to_string(),
+        "--retries",
+        &opts.retries.min(100).to_string(),
+        "--fragment-retries",
+        &opts.retries.min(100).to_string(),
+    ]));
+    args.extend(access_args(&opts.cookies_file));
     if opts.embed_thumbnail && supports_cover(opts) {
         args.extend(os(&["--embed-thumbnail"]));
     }
-    if opts.embed_metadata {
+    if media && opts.embed_metadata {
         args.extend(os(&["--embed-metadata"]));
         if video {
             args.extend(os(&["--embed-chapters"]));
@@ -114,11 +211,74 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
     args
 }
 
+/// Shared by link lookup and download, so authenticated links can be previewed.
+fn access_args(cookies_file: &str) -> Vec<OsString> {
+    if cookies_file.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec!["--cookies".into(), cookies_file.trim().into()]
+    }
+}
+
+/// yt-dlp's comma-separated indices and START:STOP:STEP slices.
+fn valid_playlist_items(text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    if text.len() > 256 {
+        return false;
+    }
+    text.split(',').all(|item| {
+        let fields: Vec<_> = item.split(':').collect();
+        !item.is_empty()
+            && fields.len() <= 3
+            && fields.iter().enumerate().all(|(i, n)| {
+                if n.is_empty() {
+                    return fields.len() > 1;
+                }
+                // ASCII-only: do not let plus signs or other yt-dlp expressions through.
+                let digits = n.strip_prefix('-').unwrap_or(n);
+                !digits.is_empty()
+                    && digits.bytes().all(|c| c.is_ascii_digit())
+                    && n.parse::<i32>()
+                        .is_ok_and(|n| n != 0 || (fields.len() > 1 && i < 2))
+            })
+    })
+}
+
+/// Checks user-entered advanced values before a job is queued.
+pub fn validate(opts: &DownloadOptions) -> Result<(), &'static str> {
+    let items = opts.playlist_items.trim();
+    if opts.playlist && !valid_playlist_items(items) {
+        return Err("download.playlist_items");
+    }
+    if matches!(opts.kind, DownloadKind::Video | DownloadKind::Audio)
+        && opts.clip
+        && (opts.start_seconds > 604800
+            || opts
+                .end_seconds
+                .is_some_and(|end| end <= opts.start_seconds || end > 604800))
+    {
+        return Err("download.clip");
+    }
+    if !(1..=16).contains(&opts.concurrent_fragments) || opts.retries > 100 {
+        return Err("download.connection");
+    }
+    if opts.cookies_file.len() > 4096
+        || opts.cookies_file.chars().any(|c| c.is_control())
+        || (!opts.cookies_file.trim().is_empty() && !Path::new(opts.cookies_file.trim()).is_file())
+    {
+        return Err("download.cookies");
+    }
+    Ok(())
+}
+
 /// Whether the chosen format can hold cover art.
 pub fn supports_cover(opts: &DownloadOptions) -> bool {
     match opts.kind {
         DownloadKind::Video => opts.container != DownloadContainer::Webm,
         DownloadKind::Audio => opts.audio_format != DownloadAudio::Wav,
+        _ => false,
     }
 }
 
@@ -305,7 +465,12 @@ pub fn parse_info(json: &str) -> Option<LinkInfo> {
 }
 
 /// Asks yt-dlp what `url` is, without downloading it. Blocks; run it off the UI thread.
-pub fn fetch_info(ytdlp: &Path, url: &str, playlist: bool) -> Result<LinkInfo, String> {
+pub fn fetch_info(
+    ytdlp: &Path,
+    url: &str,
+    playlist: bool,
+    cookies_file: &str,
+) -> Result<LinkInfo, String> {
     let mut child = command(ytdlp)
         .args([
             "--ignore-config",
@@ -317,9 +482,9 @@ pub fn fetch_info(ytdlp: &Path, url: &str, playlist: bool) -> Result<LinkInfo, S
             } else {
                 "--no-playlist"
             },
-            "--",
-            url.trim(),
         ])
+        .args(access_args(cookies_file))
+        .args(["--", url.trim()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -473,6 +638,141 @@ mod tests {
         assert!(!t.contains("--embed-subs") && !t.contains("--embed-chapters"));
         opts.audio_format = DownloadAudio::Wav;
         assert!(!build(&opts).contains("--embed-thumbnail"));
+    }
+
+    #[test]
+    fn asset_modes_skip_media_and_ignore_hidden_media_options() {
+        for kind in [
+            DownloadKind::Subtitles,
+            DownloadKind::Thumbnail,
+            DownloadKind::Metadata,
+        ] {
+            let opts = DownloadOptions {
+                kind,
+                clip: true,
+                split_chapters: true,
+                remember_downloads: true,
+                save_thumbnail: true,
+                save_subtitles: true,
+                save_info_json: true,
+                ..DownloadOptions::default()
+            };
+            let t = build(&opts);
+            assert!(t.contains("--skip-download"), "{t}");
+            for flag in [
+                "--download-sections",
+                "--split-chapters",
+                "--download-archive",
+                "--embed-",
+                "-x ",
+                "-f ",
+            ] {
+                assert!(!t.contains(flag), "{flag}: {t}");
+            }
+            assert_eq!(t.contains("--write-subs"), kind == DownloadKind::Subtitles);
+            assert_eq!(
+                t.contains("--write-thumbnail"),
+                kind == DownloadKind::Thumbnail
+            );
+            assert_eq!(
+                t.contains("--write-info-json"),
+                kind == DownloadKind::Metadata
+            );
+        }
+    }
+
+    #[test]
+    fn advanced_download_options_and_paths_reach_ytdlp() {
+        let opts = DownloadOptions {
+            playlist: true,
+            playlist_items: "1:5,8".into(),
+            clip: true,
+            start_seconds: 30,
+            end_seconds: Some(90),
+            split_chapters: true,
+            remove_sponsors: true,
+            live_from_start: true,
+            remember_downloads: true,
+            save_subtitles: true,
+            auto_subtitles: true,
+            save_thumbnail: true,
+            save_info_json: true,
+            save_description: true,
+            concurrent_fragments: 4,
+            retries: 3,
+            cookies_file: "/tmp/cookies with spaces.txt".into(),
+            ..DownloadOptions::default()
+        };
+        let a = args(
+            "https://e.com/v",
+            Path::new("/out dir"),
+            Path::new("/ffmpeg"),
+            &opts,
+        );
+        let t = text(&a);
+        for flag in [
+            "--playlist-items 1:5,8",
+            "--download-sections *30-90",
+            "--split-chapters",
+            "--sponsorblock-remove sponsor",
+            "--live-from-start",
+            "--write-auto-subs",
+            "--write-subs",
+            "--write-thumbnail",
+            "--write-info-json",
+            "--write-description",
+            "--concurrent-fragments 4",
+            "--retries 3",
+            "--fragment-retries 3",
+        ] {
+            assert!(t.contains(flag), "{flag}: {t}");
+        }
+        assert!(
+            a.windows(2)
+                .any(|a| a[0] == "--cookies" && a[1] == "/tmp/cookies with spaces.txt")
+        );
+        let chapter = a
+            .iter()
+            .find(|s| s.to_string_lossy().starts_with("chapter:"))
+            .unwrap()
+            .to_string_lossy();
+        assert!(chapter.starts_with("chapter:/out dir/"));
+        let archive =
+            a.windows(2).find(|a| a[0] == "--download-archive").unwrap()[1].to_string_lossy();
+        assert!(archive.starts_with("/out dir/.fmx-archive-"));
+        let mut other = opts.clone();
+        other.kind = DownloadKind::Audio;
+        assert_ne!(
+            archive.as_ref(),
+            args("u", Path::new("/out dir"), Path::new("/ffmpeg"), &other)
+                .windows(2)
+                .find(|a| a[0] == "--download-archive")
+                .unwrap()[1]
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn invalid_advanced_values_are_rejected_and_old_settings_load() {
+        let mut opts: DownloadOptions = serde_json::from_str(r#"{"kind":"AudioMp3"}"#).unwrap();
+        assert_eq!(opts.kind, DownloadKind::Audio);
+        assert_eq!(validate(&opts), Ok(()));
+        opts.clip = true;
+        opts.start_seconds = 90;
+        opts.end_seconds = Some(30);
+        assert_eq!(validate(&opts), Err("download.clip"));
+        opts.clip = false;
+        opts.playlist = true;
+        for valid in ["", "1:5,8", "-1", ":5", "1::2", "::-1"] {
+            assert!(valid_playlist_items(valid), "{valid}");
+        }
+        for invalid in ["1,,2", "1:2:0", "0", "1:2:3:4", "--exec", "1;cmd"] {
+            opts.playlist_items = invalid.into();
+            assert_eq!(validate(&opts), Err("download.playlist_items"), "{invalid}");
+        }
+        opts.playlist = false;
+        opts.cookies_file = "/definitely/missing/fmx-cookies.txt".into();
+        assert_eq!(validate(&opts), Err("download.cookies"));
     }
 
     #[test]
