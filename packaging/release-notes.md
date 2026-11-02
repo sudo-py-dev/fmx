@@ -1,22 +1,21 @@
 ## What's new
 
-### Favorites
-- Star any tool to pin it. A Favorites entry at the top of the sidebar lists your starred tools, and FMX remembers them.
+### Getting started
+- A welcome guide walks through the basics on first launch.
+- Russian is now available alongside the existing interface languages.
 
-### Sound recorder
-- New tool that records your microphone, the computer's sound, or both, as MP3, WAV, FLAC, OGG, Opus or M4A.
+### More conversion formats
+- Added ALAC (Apple Lossless), CAF and AU audio output.
+- Added PPM, PGM and PAM image output.
 
-### Sidebar and search
-- Each category shows how many tools it has.
-- Search finds tools that match every word you type, and has a button to clear it.
+### Video downloader
+- Save video, audio, subtitles, thumbnails or metadata.
+- Choose playlist items and clip ranges, split chapters and use SponsorBlock.
+- Added download history, live-stream options and cookies-file support.
 
-### Hebrew and right-to-left text
-- The text cursor and mouse clicks land in the right place in Hebrew and mixed Hebrew/English text.
-- Clearer Hebrew wording across the app.
-
-### Reliability
-- After an update, the new FMX waits for the old window to close instead of quitting.
-- Sliders have round handles that are easier to see.
+### Documentation and checks
+- Clearer setup instructions and new screenshots in the README and download website.
+- macOS lint and test checks now run on code changes, alongside Linux and Windows.
 
 ## Download
 
