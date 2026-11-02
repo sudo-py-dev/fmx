@@ -1,12 +1,18 @@
-# Checks every push and pull request, so problems show up before a release is
-# tagged: formatting, lints and tests on Linux, and on Windows (no GPU, like
-# many PCs) that FMX starts and its right-click menu works.
+# Checks code changes on pushes and pull requests before a release is tagged.
+# Root documentation and README screenshots do not need these checks.
+# Runs formatting, lints and tests on Linux, plus Windows startup and shell tests.
 name: Check
 
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - '*.md'
+      - 'assets/screenshot*.png'
   pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'assets/screenshot*.png'
 
 permissions:
   contents: read

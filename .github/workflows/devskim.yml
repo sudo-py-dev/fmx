@@ -8,8 +8,14 @@ name: DevSkim
 on:
   push:
     branches: [ "master" ]
+    paths-ignore:
+      - '*.md'
+      - 'assets/screenshot*.png'
   pull_request:
     branches: [ "master" ]
+    paths-ignore:
+      - '*.md'
+      - 'assets/screenshot*.png'
   schedule:
     - cron: '32 13 * * 0'
 

@@ -1,18 +1,18 @@
-# FMX — Free Media Xpress
+# FMX | Free Media Xpress
 
 <img src="packaging/icons/fmx-128.png" alt="FMX icon" width="80" align="right" />
 
 Convert video, audio, images, documents and discs in one desktop app for Windows,
-macOS and Linux. FMX combines format presets, editing tools and a batch queue,
-with bundled FFmpeg and yt-dlp for common conversion and download tasks.
+macOS and Linux. Pick a format, add your files and let FMX handle the queue.
+FFmpeg and yt-dlp are included for common conversions and video downloads.
 
 [**Download the latest release**](https://github.com/sudo-py-dev/fmx/releases/latest)
-· [Getting started](#your-first-conversion)
+· [Getting started](#-your-first-conversion)
 · [Build and contribute](DEVELOPMENT.md)
 · [Report a problem](https://github.com/sudo-py-dev/fmx/issues)
 
 [![Release](https://img.shields.io/github/v/release/sudo-py-dev/fmx?style=flat-square&color=3584e4)](https://github.com/sudo-py-dev/fmx/releases/latest)
-[![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](#license)
+[![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](#-license)
 
 ![FMX main window](assets/screenshot.png)
 
@@ -24,7 +24,7 @@ with bundled FFmpeg and yt-dlp for common conversion and download tasks.
   Deutsch, עברית or Русский, with a mirrored layout for Hebrew.
 - Free and open source, with no ads or account required.
 
-## Download and install
+## 📦 Download and install
 
 Get the file for your computer from the [**latest release**](https://github.com/sudo-py-dev/fmx/releases/latest):
 
@@ -41,11 +41,12 @@ Get the file for your computer from the [**latest release**](https://github.com/
 
 ---
 
-## Your first conversion
+## 🚀 Your first conversion
 
-1. **Pick what you want to make** - choose a category on the left (Video, Audio, Image…) and click a format, like **MP4** or **MP3**.
-2. **Add your files** - drag them into the window, or click **Add files**.
-3. **Choose the output folder**, then click **Add to queue**. Jobs start automatically when that setting is enabled; otherwise, click **Start** in the queue.
+1. **Pick a format.** Choose a category on the left, then a format such as **MP4** or **MP3**.
+2. **Add files.** Drag them into the window or click **Add files**.
+3. **Check the output folder.** Choose where to save the converted files.
+4. **Click Add to queue.** If automatic start is off, click **Start** in the queue.
 
 The default settings work well for most people. If you want more control, open **Output settings** or **Edit** to trim, crop, rotate or add subtitles.
 
@@ -55,11 +56,12 @@ The default settings work well for most people. If you want more control, open *
 
 </div>
 
-When everything is done, FMX can play a sound, show a notification, open the folder - or even shut down your computer.
+Choose what happens when the queue finishes: play a sound, show a notification,
+open the output folder or shut down the computer.
 
 ---
 
-## Conversion and editing tools
+## 🧰 Conversion and editing tools
 
 | Category | What you can do |
 |---|---|
@@ -72,7 +74,7 @@ When everything is done, FMX can play a sound, show a notification, open the fol
 | 🔧 **Extras** | Join videos or songs, make a video smaller, change speed or volume, remove a logo, download videos from a link, record your screen, or record microphone and system audio. |
 
 <details>
-<summary><b>See every supported format</b></summary>
+<summary><b>Format reference</b></summary>
 
 **Video:** MP4 (H.264 · H.265) · MKV · WebM · MOV · AVI · FLV · WMV · MPG · VOB · TS · OGV · 3GP · SWF · GIF · Animated WebP
 
@@ -88,19 +90,23 @@ When everything is done, FMX can play a sound, show a notification, open the fol
 
 ---
 
-## Video downloader
+## 📥 Video downloader
 
 Paste a video, playlist or channel link from YouTube, X (Twitter), Vimeo, TikTok,
 or another [site supported by yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md).
 Site support depends on the bundled yt-dlp version and the site's current restrictions.
 
-The Download selector offers video, audio, subtitles only, thumbnail only, and
-metadata with a text description. Video and audio retain the existing quality,
-format, cover-art, metadata and speed-limit controls.
+1. Open the video downloader and paste a link.
+2. Choose what to save: **video**, **audio**, **subtitles**, **thumbnail** or **metadata**.
+3. For video or audio, choose the format and quality.
+4. Check the output folder and add the download to the queue.
+
+<details>
+<summary><b>More download options</b></summary>
 
 Open **More download options** for:
 
-- Playlist indices and slices (`1:5,8` selects items 1–5 and 8).
+- Playlist indices and slices (`1:5,8` selects items 1 through 5 and item 8).
 - A clip's start and end in seconds, or an open-ended range.
 - Separate files for the video's chapters, while retaining the complete download.
 - SponsorBlock removal of sponsored segments using community timestamps.
@@ -113,13 +119,14 @@ Open **More download options** for:
 - A Netscape-format cookies file for signed-in access; the same file is used
   for the link preview. Clear the field to stop using it.
 
-The interface covers these media tasks rather than exposing every yt-dlp command-line
-switch. Custom commands/plugins, arbitrary output templates, proxy and extractor
-configuration, credential entry, and unattended channel scheduling remain CLI workflows.
+For custom commands, plugins, output templates, proxies, extractor settings or
+scheduled channel downloads, use yt-dlp directly.
+
+</details>
 
 ---
 
-## Convert with a right-click
+## 🖱️ Convert with a right-click
 
 Select one or more files in your file manager, right-click, and choose **Convert with FMX**:
 
@@ -140,7 +147,7 @@ FMX starts right away and saves the new files next to the originals. Choose **Op
 
 ---
 
-## Appearance
+## 🎨 Appearance
 
 <div align="center">
 
@@ -152,21 +159,26 @@ Open **Settings → General → Appearance** and pick **System**, **Light** or *
 
 ---
 
-## Updates
+## 🔄 Updates
 
-FMX checks for a new version once a day. When one is ready, a small blue dot appears on **Settings** - open **Settings → Updates** and click **Update now**. Nothing pops up while you work.
+FMX checks for updates once a day. A blue dot on **Settings** means an update is available.
+
+1. Open **Settings → Updates**.
+2. Read what changed, then click **Update now**.
+
+You can also check manually or turn off automatic checks on that page.
 
 Every update is digitally signed, so FMX only installs genuine releases from this page.
 
 ---
 
-## Optional programs
+## ➕ Optional programs
 
 Release packages bundle FFmpeg and yt-dlp. Some formats and document or disc tools
 need an additional program. FMX detects available programs and disables tools whose
 requirements are missing; supported codecs also depend on the FFmpeg build.
 
-| To… | Install |
+| What you want to do | Install |
 |---|---|
 | Turn PDFs into pictures, Word, Excel or text, or merge/split PDFs | Poppler (`poppler-utils`) |
 | Make PDFs smaller | Ghostscript |
@@ -179,7 +191,7 @@ You can check what's installed in **Settings → Programs**.
 
 ---
 
-## Troubleshooting
+## 🛠️ Troubleshooting
 
 1. Open **Settings → General** and turn on **Debug logging**.
 2. Try the same thing again.
@@ -196,7 +208,7 @@ If FMX closes unexpectedly, it saves a crash report in the same folder and tells
 
 ---
 
-## License
+## 📜 License
 
 FMX is free to use, share and change, under the [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE) license.
 
