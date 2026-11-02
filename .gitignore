@@ -1,3 +1,32 @@
-/target
+# Rust build outputs, including nested crates.
+target/
+
+# Python caches.
 __pycache__/
-vendor/epaint/target/
+*.py[cod]
+.pytest_cache/
+
+# Release packaging and bundled tool outputs (root only).
+/out/
+/dist/
+/bundle/
+/fmx-tools-*.tar.xz
+/fmx-tools-*.zip
+/devskim-results.sarif
+
+# Local deployment state and environment overrides.
+.vercel/
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Editor and operating system files.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

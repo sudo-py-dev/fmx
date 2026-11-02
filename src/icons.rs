@@ -196,7 +196,7 @@ mod tests {
         ctx.run_ui(egui::RawInput::default(), |_| {})
             .textures_delta
             .clear();
-        let mut texts: Vec<String> = ["en", "es", "fr", "de", "he"]
+        let mut texts: Vec<String> = ["en", "es", "fr", "de", "he", "ru"]
             .iter()
             .flat_map(|code| {
                 let path = format!("{}/locales/{code}.json", env!("CARGO_MANIFEST_DIR"));

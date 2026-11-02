@@ -5,6 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use image::codecs::jpeg::JpegEncoder;
+use image::codecs::pnm::{PnmEncoder, PnmSubtype, SampleEncoding};
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader, RgbImage};
 
@@ -172,6 +173,39 @@ fn write_image(
     {
         let mut out = BufWriter::new(tmp.as_file_mut());
         match format {
+            ImageFormat::Ppm => {
+                let rgb = flatten(img);
+                PnmEncoder::new(&mut out)
+                    .with_subtype(PnmSubtype::Pixmap(SampleEncoding::Binary))
+                    .encode(
+                        rgb.as_raw().as_slice(),
+                        img.width(),
+                        img.height(),
+                        image::ExtendedColorType::Rgb8,
+                    )?;
+            }
+            ImageFormat::Pgm => {
+                let gray = DynamicImage::ImageRgb8(flatten(img)).to_luma8();
+                PnmEncoder::new(&mut out)
+                    .with_subtype(PnmSubtype::Graymap(SampleEncoding::Binary))
+                    .encode(
+                        gray.as_raw().as_slice(),
+                        img.width(),
+                        img.height(),
+                        image::ExtendedColorType::L8,
+                    )?;
+            }
+            ImageFormat::Pam => {
+                let rgba = img.to_rgba8();
+                PnmEncoder::new(&mut out)
+                    .with_subtype(PnmSubtype::ArbitraryMap)
+                    .encode(
+                        rgba.as_raw().as_slice(),
+                        img.width(),
+                        img.height(),
+                        image::ExtendedColorType::Rgba8,
+                    )?;
+            }
             ImageFormat::Jpeg => encode_jpeg(img, jpeg_quality(opts), &mut out)?,
             // PNG and TIFF keep 16-bit depth; the rest want 8-bit RGBA.
             ImageFormat::Png | ImageFormat::Tiff => img.write_to(&mut out, codec)?,
@@ -507,6 +541,28 @@ mod tests {
             .save(&path)
             .expect("write sample");
         path
+    }
+
+    #[test]
+    fn portable_images_use_correct_subtypes_and_preserve_pam_alpha() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = sample(dir.path(), "in.png", 4, 3);
+        for (format, magic) in [
+            (ImageFormat::Ppm, b"P6"),
+            (ImageFormat::Pgm, b"P5"),
+            (ImageFormat::Pam, b"P7"),
+        ] {
+            let out = dir.path().join(format!("out.{}", format.ext()));
+            convert(&src, &out, format, &Options::default(), None).unwrap();
+            assert!(std::fs::read(&out).unwrap().starts_with(magic));
+            let decoded = image::open(&out).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (4, 3));
+            if format == ImageFormat::Pam {
+                assert_eq!(decoded.to_rgba8().get_pixel(0, 0).0, [200, 30, 30, 128]);
+            } else {
+                assert!(!decoded.color().has_alpha());
+            }
+        }
     }
 
     #[test]
