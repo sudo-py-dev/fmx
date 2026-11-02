@@ -132,7 +132,7 @@ Turn auto-check off, or hit **Check now**, in **Settings → Updates**.
    **Settings → Updates** before people update.
 3. Tag and push, with the tag matching that version:
    ```bash
-   git tag v1.2.3 && git push origin master v1.2.3
+   git tag v1.2.3 && git push origin main v1.2.3
    ```
 4. The [release workflow](.github/workflows/release.yml) builds on Linux, Windows and macOS.
    On Windows it also starts the real `fmx.exe` (`--self-test`, on a machine without a GPU) and

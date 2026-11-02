@@ -7,12 +7,12 @@ name: DevSkim
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths-ignore:
       - '*.md'
       - 'assets/screenshot*.png'
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths-ignore:
       - '*.md'
       - 'assets/screenshot*.png'

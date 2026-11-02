@@ -4536,19 +4536,19 @@ fn about_page(ui: &mut egui::Ui) {
                 ui,
                 "MIT License",
                 "",
-                &format!("{repo}/blob/master/LICENSE-MIT"),
+                &format!("{repo}/blob/main/LICENSE-MIT"),
             );
             link_row(
                 ui,
                 "Apache License 2.0",
                 "",
-                &format!("{repo}/blob/master/LICENSE-APACHE"),
+                &format!("{repo}/blob/main/LICENSE-APACHE"),
             );
             link_row(
                 ui,
                 tr("about.third_party"),
                 tr("about.third_party_hint"),
-                &format!("{repo}/blob/master/packaging/THIRD-PARTY-NOTICES.md"),
+                &format!("{repo}/blob/main/packaging/THIRD-PARTY-NOTICES.md"),
             );
         },
     );
