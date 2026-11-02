@@ -579,7 +579,7 @@
   "welcome.start_body": "Vérifiez le dossier de sortie, où vos fichiers terminés seront enregistrés.\n\nCliquez sur « Ajouter à la file », puis sur « Démarrer ». La file affiche vos tâches et leur progression.",
   "welcome.done_title": "Retrouvez vos fichiers",
   "welcome.done_body": "Quand une tâche se termine, cliquez sur son bouton de dossier pour voir le résultat. Il est enregistré à côté de l’original, sauf si vous choisissez un autre dossier.\n\nEn cas d’échec, ouvrez le message de la tâche pour savoir quoi corriger.",
-  "welcome.reassurance": "Vous pouvez rouvrir ce guide dans Paramètres → Général.",
+  "welcome.reassurance": "Vous pouvez rouvrir ce guide depuis la barre latérale des paramètres.",
   "welcome.skip": "Passer le guide",
   "welcome.back": "Retour",
   "welcome.next": "Suivant",

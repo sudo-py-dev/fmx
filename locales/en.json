@@ -579,7 +579,7 @@
   "welcome.start_body": "Check the output folder, where your finished files will be saved.\n\nClick “Add to queue”, then “Start”. The queue lists your jobs and shows their progress.",
   "welcome.done_title": "Find your finished files",
   "welcome.done_body": "When a job finishes, click its folder button to see the result. Results are saved beside the original file unless you choose another output folder.\n\nIf a job fails, open its message to see what needs fixing.",
-  "welcome.reassurance": "You can reopen this guide in Settings → General.",
+  "welcome.reassurance": "You can reopen this guide from the Settings sidebar.",
   "welcome.skip": "Skip guide",
   "welcome.back": "Back",
   "welcome.next": "Next",

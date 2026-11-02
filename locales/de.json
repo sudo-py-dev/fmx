@@ -579,7 +579,7 @@
   "welcome.start_body": "Prüfe den Ausgabeordner. Dort werden deine fertigen Dateien gespeichert.\n\nKlicke auf „Zur Warteschlange hinzufügen“ und dann auf „Start“. Die Warteschlange zeigt deine Aufgaben und ihren Fortschritt.",
   "welcome.done_title": "Fertige Dateien finden",
   "welcome.done_body": "Klicke nach Abschluss auf die Ordner-Schaltfläche der Aufgabe, um das Ergebnis zu sehen. Ohne andere Auswahl wird es neben der Originaldatei gespeichert.\n\nBei einem Fehler öffne die Meldung, um die Ursache zu erfahren.",
-  "welcome.reassurance": "Du kannst diese Anleitung unter Einstellungen → Allgemein erneut öffnen.",
+  "welcome.reassurance": "Du kannst diese Anleitung über die Seitenleiste der Einstellungen erneut öffnen.",
   "welcome.skip": "Überspringen",
   "welcome.back": "Zurück",
   "welcome.next": "Weiter",

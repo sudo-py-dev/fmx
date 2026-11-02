@@ -579,7 +579,7 @@
   "welcome.start_body": "Comprueba la carpeta de salida, donde se guardarán tus archivos terminados.\n\nHaz clic en «Añadir a la cola» y después en «Iniciar». La cola muestra tus tareas y su progreso.",
   "welcome.done_title": "Encuentra los resultados",
   "welcome.done_body": "Cuando termine una tarea, pulsa su botón de carpeta para ver el resultado. Se guarda junto al archivo original, salvo que elijas otra carpeta.\n\nSi una tarea falla, abre su mensaje para ver qué necesitas corregir.",
-  "welcome.reassurance": "Puedes volver a abrir esta guía en Ajustes → General.",
+  "welcome.reassurance": "Puedes volver a abrir esta guía desde la barra lateral de Ajustes.",
   "welcome.skip": "Omitir guía",
   "welcome.back": "Atrás",
   "welcome.next": "Siguiente",

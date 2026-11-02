@@ -3313,6 +3313,21 @@ impl FmxApp {
                     }
                     chosen
                 });
+                // Keep help outside the preferences pages and visible while they scroll.
+                ui.add_space((ui.available_height() - 58.0).max(12.0));
+                ui.separator();
+                if ui
+                    .add_sized(
+                        [SETTINGS_NAV_WIDTH, 44.0],
+                        egui::Button::new(icons::label(icons::INFO, tr("welcome.reopen")))
+                            .frame(false)
+                            .wrap(),
+                    )
+                    .clicked()
+                {
+                    self.show_settings = false;
+                    self.welcome_step = Some(0);
+                }
             });
             ui.add_space(12.0);
             let right_width = ui.available_width();
@@ -3359,19 +3374,6 @@ impl FmxApp {
     fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.settings_tab {
             SettingsTab::General => {
-                if widgets::button(
-                    ui,
-                    None,
-                    tr("welcome.reopen"),
-                    Kind::Secondary,
-                    Size::Regular,
-                )
-                .clicked()
-                {
-                    self.show_settings = false;
-                    self.welcome_step = Some(0);
-                }
-                ui.add_space(GROUP_GAP);
                 let mut theme_changed = false;
                 pref_group(ui, Some((tr("settings.group_appearance"), "")), |ui| {
                     widgets::pref_row(ui, tr("settings.language"), "", |ui| {
