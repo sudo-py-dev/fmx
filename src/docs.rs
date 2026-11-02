@@ -225,7 +225,7 @@ mod tests {
         }
         for valid in [
             "https://example.com/watch?v=1&list=2",
-            "http://127.0.0.1:8080/video",
+            "http://127.0.0.1:8080/video", // DevSkim: ignore DS162092 because this validator test makes no network requests.
             "https://[::1]/v",
             "https://example.com/a%20b",
         ] {
