@@ -39,6 +39,7 @@ mod sheet;
 mod shell;
 mod shortcut;
 mod sound;
+mod tagging;
 mod theme;
 mod update;
 mod widgets;

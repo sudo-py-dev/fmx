@@ -14,16 +14,179 @@ pub struct MediaInfo {
     pub has_subtitles: bool,
     /// Frame rate of the first video stream.
     pub fps: Option<f64>,
+    /// None means this probe could not read tags (for example the banner fallback).
+    pub tags: Option<AudioTags>,
+    pub format: Option<String>,
+    pub bitrate_bps: Option<u64>,
+    pub streams: Vec<StreamInfo>,
+    pub stream_count: usize,
+}
+
+/// Structured stream details for the read-only inspector, bounded before rendering.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StreamInfo {
+    pub index: u32,
+    pub kind: String,
+    pub codec: Option<String>,
+    pub bitrate_bps: Option<u64>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+    pub language: Option<String>,
+    pub attached_picture: bool,
+}
+
+const MAX_INFO_STREAMS: usize = 128;
+
+fn detail_text(value: Option<&serde_json::Value>) -> Option<String> {
+    value?
+        .as_str()
+        .map(|s| display_tag(s).chars().take(128).collect())
+}
+
+fn positive_u64(value: Option<&serde_json::Value>) -> Option<u64> {
+    let value = value?;
+    let number = value.as_u64().or_else(|| value.as_str()?.parse().ok())?;
+    (number > 0).then_some(number)
+}
+
+/// Display values from untrusted metadata. Never interpret these as paths or markup.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AudioTags {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub has_cover: bool,
+    pub primary_scopes: [crate::tagging::TagScope; 3],
+    pub extra: Vec<crate::tagging::TagField>,
+}
+
+pub const MAX_TAG_CHARS: usize = 1024;
+
+pub fn display_tag(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c,
+        '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}')
+        })
+        .take(MAX_TAG_CHARS)
+        .collect()
+}
+
+fn find_tag<'a>(tags: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    tags.as_object()?
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))?
+        .1
+        .as_str()
+}
+
+fn audio_tags(value: &serde_json::Value) -> AudioTags {
+    use crate::tagging::{MAX_EXTRA_TAGS, TagField, TagScope};
+    let audio = value["streams"]
+        .as_array()
+        .and_then(|streams| streams.iter().find(|s| s["codec_type"] == "audio"));
+    let mut primary_scopes = [TagScope::File; 3];
+    let mut values = Vec::new();
+    for (index, key) in ["title", "artist", "album"].into_iter().enumerate() {
+        let file = value
+            .pointer("/format/tags")
+            .and_then(|tags| find_tag(tags, key));
+        let stream = audio.and_then(|s| find_tag(&s["tags"], key));
+        if file.is_none() && stream.is_some() {
+            primary_scopes[index] = TagScope::Audio;
+        }
+        values.push(file.or(stream).map(display_tag).unwrap_or_default());
+    }
+    let mut extra = Vec::new();
+    let mut add = |tags: &serde_json::Value, scope: TagScope| {
+        if let Some(tags) = tags.as_object() {
+            for (key, value) in tags {
+                if extra.len() >= MAX_EXTRA_TAGS {
+                    break;
+                }
+                let primary =
+                    ["title", "artist", "album"]
+                        .iter()
+                        .enumerate()
+                        .any(|(index, name)| {
+                            key.eq_ignore_ascii_case(name) && primary_scopes[index] == scope
+                        });
+                if primary || !crate::tagging::valid_key(key) {
+                    continue;
+                }
+                if let Some(value) = value.as_str() {
+                    extra.push(TagField {
+                        scope,
+                        key: key.clone(),
+                        value: crate::tagging::display_value(value),
+                        write: false,
+                    });
+                }
+            }
+        }
+    };
+    add(&value["format"]["tags"], TagScope::File);
+    if let Some(audio) = audio {
+        add(&audio["tags"], TagScope::Audio);
+    }
+    let mut covers = 0;
+    if let Some(streams) = value["streams"].as_array() {
+        for stream in streams.iter().filter(|s| {
+            s["codec_type"] == "video" && json_flag(s.pointer("/disposition/attached_pic"))
+        }) {
+            add(&stream["tags"], TagScope::Cover(covers));
+            covers += 1;
+            if covers >= 128 {
+                break;
+            }
+        }
+    }
+    AudioTags {
+        title: values.remove(0),
+        artist: values.remove(0),
+        album: values.remove(0),
+        has_cover: covers > 0,
+        primary_scopes,
+        extra,
+    }
 }
 
 /// Parses `ffprobe -print_format json -show_format -show_streams -show_chapters`.
 pub fn parse_ffprobe_json(text: &str) -> Option<MediaInfo> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value.as_object()?;
     let mut info = MediaInfo {
         duration_s: json_duration(value.pointer("/format/duration")),
+        tags: Some(audio_tags(&value)),
+        format: detail_text(value.pointer("/format/format_name")),
+        bitrate_bps: positive_u64(value.pointer("/format/bit_rate")),
         ..MediaInfo::default()
     };
     if let Some(streams) = value.get("streams").and_then(|s| s.as_array()) {
+        info.stream_count = streams.len();
+        for (index, stream) in streams.iter().take(MAX_INFO_STREAMS).enumerate() {
+            info.streams.push(StreamInfo {
+                index: stream
+                    .get("index")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .unwrap_or(index as u32),
+                kind: detail_text(stream.get("codec_type")).unwrap_or_else(|| "unknown".into()),
+                codec: detail_text(stream.get("codec_name")),
+                bitrate_bps: positive_u64(stream.get("bit_rate")),
+                width: json_u32(stream.get("width")),
+                height: json_u32(stream.get("height")),
+                sample_rate: positive_u64(stream.get("sample_rate"))
+                    .and_then(|n| u32::try_from(n).ok()),
+                channels: json_u32(stream.get("channels")),
+                language: detail_text(stream.pointer("/tags/language")),
+                attached_picture: json_flag(stream.pointer("/disposition/attached_pic")),
+            });
+        }
         for stream in streams {
             match stream.get("codec_type").and_then(|t| t.as_str()) {
                 Some("audio") => info.has_audio = true,
@@ -92,10 +255,15 @@ fn json_rate(value: Option<&serde_json::Value>) -> Option<f64> {
 pub fn parse_ffmpeg_info(stderr: &str) -> MediaInfo {
     let mut info = MediaInfo::default();
     for line in stderr.lines().map(str::trim) {
-        if let Some(rest) = line.strip_prefix("Duration:") {
+        if let Some(rest) = line.strip_prefix("Input #0, ") {
+            info.format = rest
+                .split_once(", from ")
+                .map(|(name, _)| display_tag(name));
+        } else if let Some(rest) = line.strip_prefix("Duration:") {
             if info.duration_s.is_none() {
                 info.duration_s = rest.split(',').next().and_then(parse_clock);
             }
+            info.bitrate_bps = bitrate_from_banner(rest);
         } else if line.starts_with("Stream #") {
             parse_stream_line(line, &mut info);
         } else if line.starts_with("Chapter #") {
@@ -105,7 +273,72 @@ pub fn parse_ffmpeg_info(stderr: &str) -> MediaInfo {
     info
 }
 
+fn bitrate_from_banner(line: &str) -> Option<u64> {
+    let part = line.split(',').find(|part| part.contains("kb/s"))?;
+    let value = part
+        .trim()
+        .trim_start_matches("bitrate:")
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()?;
+    (value.is_finite() && value > 0.0 && value < u64::MAX as f64 / 1000.0)
+        .then_some((value * 1000.0) as u64)
+}
+
 fn parse_stream_line(line: &str, info: &mut MediaInfo) {
+    info.stream_count += 1;
+    if info.streams.len() < MAX_INFO_STREAMS {
+        let (kind, rest) = [
+            ("audio", ": Audio:"),
+            ("video", ": Video:"),
+            ("subtitle", ": Subtitle:"),
+            ("data", ": Data:"),
+            ("attachment", ": Attachment:"),
+        ]
+        .into_iter()
+        .find_map(|(kind, marker)| line.split_once(marker).map(|(_, rest)| (kind, rest)))
+        .unwrap_or(("unknown", ""));
+        let index = line
+            .split('#')
+            .nth(1)
+            .and_then(|s| s.split(':').nth(1))
+            .map(|s| {
+                s.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+            })
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(info.streams.len() as u32);
+        let codec = rest
+            .split_whitespace()
+            .next()
+            .map(|s| display_tag(s.trim_end_matches(',')));
+        let sample_rate = rest
+            .split(',')
+            .find_map(|part| part.trim().strip_suffix(" Hz").and_then(|n| n.parse().ok()));
+        let channels = if rest.split(',').any(|s| s.trim() == "stereo") {
+            Some(2)
+        } else if rest.split(',').any(|s| s.trim() == "mono") {
+            Some(1)
+        } else {
+            None
+        };
+        let dimensions = rest.split([',', ' ']).find_map(parse_frame_size);
+        info.streams.push(StreamInfo {
+            index,
+            kind: kind.into(),
+            codec,
+            sample_rate,
+            channels,
+            bitrate_bps: bitrate_from_banner(rest),
+            width: dimensions.map(|s| s.0),
+            height: dimensions.map(|s| s.1),
+            attached_picture: line.contains("(attached pic)"),
+            ..Default::default()
+        });
+    }
+
     if line.contains(": Audio:") {
         info.has_audio = true;
     } else if line.contains(": Subtitle:") {
@@ -246,5 +479,108 @@ At least one output file must be specified";
     #[test]
     fn rejects_garbage_ffprobe_json() {
         assert!(parse_ffprobe_json("not json").is_none());
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+    #[test]
+    fn tags_use_case_insensitive_names_stream_fallback_and_actual_artwork() {
+        let info = parse_ffprobe_json(r#"{"format":{"tags":{"TITLE":"שלום café"}},"streams":[{"codec_type":"audio","tags":{"ARTIST":"Artist","album":"Album"}},{"codec_type":"video","disposition":{"attached_pic":1}}]}"#).unwrap();
+        assert_eq!(
+            info.tags,
+            Some(AudioTags {
+                title: "שלום café".into(),
+                artist: "Artist".into(),
+                album: "Album".into(),
+                has_cover: true,
+                primary_scopes: [
+                    crate::tagging::TagScope::File,
+                    crate::tagging::TagScope::Audio,
+                    crate::tagging::TagScope::Audio
+                ],
+                extra: Vec::new(),
+            })
+        );
+        assert!(parse_ffmpeg_info("").tags.is_none());
+    }
+    #[test]
+    fn untrusted_display_values_are_bounded_and_cannot_inject_direction_controls() {
+        let value = format!("Title\n\0\u{202e}{}", "x".repeat(10_000));
+        let info =
+            parse_ffprobe_json(&serde_json::json!({"format":{"tags":{"title":value}}}).to_string())
+                .unwrap();
+        let title = info.tags.unwrap().title;
+        assert_eq!(title.chars().count(), MAX_TAG_CHARS);
+        assert!(title.starts_with("Title"));
+        assert!(!title.chars().any(|c| c.is_control() || c == '\u{202e}'));
+    }
+}
+
+#[cfg(test)]
+mod inspector_tests {
+    use super::*;
+    #[test]
+    fn structured_inspector_reads_codecs_bitrates_audio_and_language() {
+        let info = parse_ffprobe_json(r#"{"format":{"format_name":"mov,mp4","bit_rate":"1234567"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"bit_rate":"1000000"},{"index":3,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":2,"bit_rate":"192000","tags":{"language":"heb"}}]}"#).unwrap();
+        assert_eq!(info.format.as_deref(), Some("mov,mp4"));
+        assert_eq!(info.bitrate_bps, Some(1_234_567));
+        assert_eq!(info.stream_count, 2);
+        assert_eq!(info.streams[0].codec.as_deref(), Some("h264"));
+        assert_eq!(info.streams[1].index, 3);
+        assert_eq!(info.streams[1].sample_rate, Some(48_000));
+        assert_eq!(info.streams[1].channels, Some(2));
+        assert_eq!(info.streams[1].language.as_deref(), Some("heb"));
+        assert_eq!(info.streams[1].bitrate_bps, Some(192_000));
+    }
+    #[test]
+    fn inspector_bounds_streams_and_untrusted_strings_and_rejects_bad_numbers() {
+        let text = serde_json::json!({"format":{"bit_rate":"-1"},"streams":vec![serde_json::json!({"codec_type":"audio","codec_name":format!("aac\n\u{202e}{}", "x".repeat(1000)),"sample_rate":"NaN"}); 200]}).to_string();
+        let info = parse_ffprobe_json(&text).unwrap();
+        assert_eq!(info.stream_count, 200);
+        assert_eq!(info.streams.len(), MAX_INFO_STREAMS);
+        assert_eq!(info.bitrate_bps, None);
+        assert_eq!(info.streams[0].sample_rate, None);
+        let codec = info.streams[0].codec.as_ref().unwrap();
+        assert_eq!(codec.chars().count(), 128);
+        assert!(!codec.contains('\n') && !codec.contains('\u{202e}'));
+    }
+    #[test]
+    fn banner_fallback_reads_codec_bitrate_and_audio_details() {
+        let info = parse_ffmpeg_info(
+            "Input #0, matroska,webm, from 'clip.mkv':\nDuration: 00:00:03.00, bitrate: 1205 kb/s\nStream #0:0: Video: h264, yuv420p, 640x360, 30 fps\nStream #0:1: Audio: aac, 48000 Hz, stereo, 192 kb/s",
+        );
+        assert_eq!(info.format.as_deref(), Some("matroska,webm"));
+        assert_eq!(info.bitrate_bps, Some(1_205_000));
+        assert_eq!(info.streams[0].codec.as_deref(), Some("h264"));
+        assert_eq!(info.streams[1].sample_rate, Some(48_000));
+        assert_eq!(info.streams[1].channels, Some(2));
+    }
+}
+
+#[cfg(test)]
+mod expanded_tag_tests {
+    use super::*;
+    use crate::tagging::TagScope;
+    #[test]
+    fn file_audio_and_cover_metadata_are_loaded_separately() {
+        let info = parse_ffprobe_json(r#"{"format":{"tags":{"purl":"https://www.youtube.com/watch?v=zIbT9_TKZKo","comment":"source URL","date":"2026","artist":"EyalGolanOfficial"}},"streams":[{"codec_type":"audio","tags":{"encoder":"Lavc62.28"}},{"codec_type":"video","disposition":{"attached_pic":1},"tags":{"title":"Album cover","comment":"Cover (front)"}}]}"#).unwrap();
+        let tags = info.tags.unwrap();
+        assert!(tags.title.is_empty());
+        assert_eq!(tags.artist, "EyalGolanOfficial");
+        for (scope, key, value) in [
+            (TagScope::File, "date", "2026"),
+            (TagScope::File, "comment", "source URL"),
+            (TagScope::Audio, "encoder", "Lavc62.28"),
+            (TagScope::Cover(0), "title", "Album cover"),
+            (TagScope::Cover(0), "comment", "Cover (front)"),
+        ] {
+            assert!(
+                tags.extra
+                    .iter()
+                    .any(|field| field.scope == scope && field.key == key && field.value == value)
+            );
+        }
     }
 }

@@ -47,6 +47,19 @@ pub fn expand_sections() -> bool {
 pub fn wants_tool() -> Option<crate::catalog::Tool> {
     use crate::catalog::Tool;
     match std::env::var("FMX_SCREENSHOT_TOOL").ok()?.as_str() {
+        "reverse" => Some(Tool::Reverse),
+        "fade" => Some(Tool::Fade),
+        "stabilize" => Some(Tool::Stabilize),
+        "denoise" => Some(Tool::Denoise),
+        "sharpen" => Some(Tool::Sharpen),
+        "audio_denoise" => Some(Tool::AudioDenoise),
+        "trim_silence" => Some(Tool::TrimSilence),
+        "karaoke" => Some(Tool::Karaoke),
+        "thumbnail_sheet" => Some(Tool::ThumbnailSheet),
+        "waveform_video" => Some(Tool::WaveformVideo),
+        "edit_tags" => Some(Tool::EditTags),
+        "privacy" => Some(Tool::RemoveImageMetadata),
+        "info" => Some(Tool::MediaInfo),
         "record" => Some(Tool::Record),
         "screenshot" => Some(Tool::Screenshot),
         "frames" => Some(Tool::ExtractFrames),

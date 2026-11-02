@@ -70,6 +70,7 @@ pub mod glyph {
     pub const MUSIC_NOTES: &str = "\u{E340}";
     pub const PACKAGE: &str = "\u{E390}";
     pub const PIP: &str = "\u{E64C}";
+    pub const REWIND: &str = "\u{E6A8}";
     pub const RECORD: &str = "\u{E3EE}";
     pub const CAMERA: &str = "\u{E10E}";
     pub const SCISSORS: &str = "\u{EAE0}";
@@ -90,7 +91,7 @@ pub mod glyph {
 
     /// Every glyph above, for the font-coverage test.
     #[cfg(test)]
-    pub const ALL: [&str; 54] = [
+    pub const ALL: [&str; 55] = [
         ANDROID,
         APPLE,
         ARROW_CLOCKWISE,
@@ -130,6 +131,7 @@ pub mod glyph {
         PACKAGE,
         PIP,
         RECORD,
+        REWIND,
         SCISSORS,
         SLIDERS,
         SPARKLE,
@@ -157,6 +159,7 @@ pub fn category(c: Category) -> Art {
         Category::Video => art(glyph::FILM_STRIP, hue::BLUE),
         Category::Devices => art(glyph::MOBILE, hue::TEAL),
         Category::Audio => art(glyph::MUSIC_NOTES, hue::PINK),
+        Category::Capture => art(glyph::RECORD, hue::RED),
         Category::Image => art(glyph::IMAGE, hue::GREEN),
         Category::Document => art(glyph::FILE_TEXT, hue::ORANGE),
         Category::Rom => art(glyph::DISC, hue::VIOLET),
@@ -265,6 +268,8 @@ pub fn tool(t: Tool) -> Art {
         Tool::ToImage(f) => image(f),
         Tool::ToDevice(d) => device(d),
         Tool::JoinImages => art(glyph::STACK, hue::GREEN),
+        Tool::RemoveImageMetadata => art(glyph::ERASER, hue::GREEN),
+        Tool::MediaInfo => art(glyph::INFO, hue::SKY),
         Tool::ImagesToPdf => art(glyph::FILE_PDF, hue::RED),
         Tool::PdfToImages => art(glyph::IMAGES, hue::GREEN),
         Tool::PdfToText => art(glyph::FILE_TXT, hue::SLATE),
@@ -301,6 +306,17 @@ pub fn tool(t: Tool) -> Art {
         Tool::Speed => art(glyph::GAUGE, hue::ORANGE),
         Tool::Volume => art(glyph::SPEAKER, hue::PINK),
         Tool::Normalize => art(glyph::WAVEFORM, hue::VIOLET),
+        Tool::Reverse => art(glyph::REWIND, hue::VIOLET),
+        Tool::Fade => art(glyph::SLIDERS, hue::VIOLET),
+        Tool::Stabilize => art(glyph::FILM_STRIP, hue::VIOLET),
+        Tool::Denoise => art(glyph::SLIDERS, hue::VIOLET),
+        Tool::Sharpen => art(glyph::SLIDERS, hue::VIOLET),
+        Tool::AudioDenoise => art(glyph::WAVEFORM, hue::VIOLET),
+        Tool::TrimSilence => art(glyph::SCISSORS, hue::VIOLET),
+        Tool::Karaoke => art(glyph::MUSIC_NOTES, hue::VIOLET),
+        Tool::ThumbnailSheet => art(glyph::IMAGES, hue::VIOLET),
+        Tool::WaveformVideo => art(glyph::WAVEFORM, hue::VIOLET),
+        Tool::EditTags => art(glyph::FILE_TEXT, hue::VIOLET),
         Tool::Repair => art(glyph::FIRST_AID, hue::RED),
         Tool::Download => art(glyph::DOWNLOAD, hue::BLUE),
         Tool::Record | Tool::RecordAudio => art(glyph::RECORD, hue::RED),

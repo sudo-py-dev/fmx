@@ -43,6 +43,9 @@ pub fn execute_with_detail(
     mut on_progress: impl FnMut(f32),
     mut on_detail: impl FnMut(String),
 ) -> Result<(), JobError> {
+    if spec.tool == Tool::MediaInfo {
+        return Err(PlanError::UnsupportedTool.into());
+    }
     if let Some(missing) = toolbox.missing(spec.tool.requires()) {
         return Err(JobError::Missing(missing));
     }
@@ -401,6 +404,9 @@ fn run_tool(
             imaging::convert(first_input(spec)?, out, format, opts, ffmpeg_path)
                 .map_err(JobError::Image)
         }
+        Tool::RemoveImageMetadata => {
+            imaging::remove_metadata(first_input(spec)?, out).map_err(JobError::Image)
+        }
         Tool::JoinImages => imaging::join(
             &spec.inputs,
             out,
@@ -558,6 +564,11 @@ fn run_tool(
         }
         Tool::CdToAudio => rip_cd(spec, need(toolbox, External::Ffmpeg)?, cancel, on_progress),
         tool => {
+            if tool == Tool::EditTags
+                && let Some(cover) = &opts.media_tools.cover
+            {
+                crate::tagging::validate_cover(cover)?;
+            }
             let ffmpeg = need(toolbox, External::Ffmpeg)?;
             let demuxer = match tool {
                 Tool::DvdToVideo => Some(DVD_DEMUXER),
@@ -585,7 +596,12 @@ fn run_tool(
             if matches!(tool, Tool::ExtractFrames | Tool::Split) {
                 std::fs::create_dir_all(out).map_err(JobError::Io)?;
             }
-            ffmpeg::run(ffmpeg, &plan, cancel, on_progress).map_err(JobError::Run)
+            ffmpeg::run(ffmpeg, &plan, cancel, on_progress).map_err(JobError::Run)?;
+            if tool == Tool::EditTags && ffmpeg::sibling_ffprobe(ffmpeg).is_some() {
+                let saved = ffmpeg::probe(ffmpeg, out, None).map_err(JobError::Run)?;
+                crate::tagging::verify_saved(&inputs[0].info, &saved, &opts.media_tools)?;
+            }
+            Ok(())
         }
     }
 }
@@ -758,10 +774,664 @@ mod e2e {
     use crate::catalog::{AudioFormat, ImageFormat, VideoFormat};
     use crate::jobs::{Selection, plan_jobs};
     use crate::options::{Corner, FrameMode, Options, RecordAudio, Rect, ShotFormat};
+    use image::GenericImageView;
     use std::collections::HashSet;
     use std::process::Command;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn media_tools_execute_with_valid_streams_and_metadata() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let fx = fixture(ffmpeg);
+        let out = fx.root.join("media-tools");
+        std::fs::create_dir(&out).unwrap();
+        let mut claimed = HashSet::new();
+        let opts = Options::default();
+        for (tool, source, video, audio) in [
+            (Tool::Reverse, &fx.video, true, true),
+            (Tool::Reverse, &fx.audio, false, true),
+            (Tool::Fade, &fx.video, true, true),
+            (Tool::Fade, &fx.audio, false, true),
+            (Tool::Stabilize, &fx.video, true, true),
+            (Tool::Denoise, &fx.video, true, true),
+            (Tool::Sharpen, &fx.video, true, true),
+            (Tool::AudioDenoise, &fx.video, false, true),
+            (Tool::TrimSilence, &fx.audio, false, true),
+            (Tool::Karaoke, &fx.video, false, true),
+            (Tool::ThumbnailSheet, &fx.video, true, false),
+            (Tool::WaveformVideo, &fx.audio, true, true),
+        ] {
+            let paths = run(
+                &tb,
+                tool,
+                std::slice::from_ref(source),
+                &opts,
+                &out,
+                &mut claimed,
+            )
+            .unwrap_or_else(|e| panic!("{tool:?}: {e}"));
+            let info = ffmpeg::probe(ffmpeg, &paths[0], None).unwrap();
+            assert_eq!((info.has_video, info.has_audio), (video, audio), "{tool:?}");
+            if tool == Tool::ThumbnailSheet {
+                let sheet = image::open(&paths[0]).unwrap();
+                assert_eq!(sheet.width(), (240 + 4) * 4 + 4);
+                assert_eq!(sheet.height(), (135 + 4) * 3 + 4);
+                let pixels = sheet.to_rgb8();
+                for row in 0..3 {
+                    for col in 0..4 {
+                        let tile = image::imageops::crop_imm(
+                            &pixels,
+                            4 + col * 244,
+                            4 + row * 139,
+                            240,
+                            135,
+                        );
+                        assert!(
+                            tile.pixels()
+                                .any(|(_, _, pixel)| pixel.0.iter().any(|v| *v > 80)),
+                            "empty tile {col}, {row}"
+                        );
+                    }
+                }
+            }
+        }
+        let silent_video = fx.root.join("silent.mp4");
+        generate(
+            ffmpeg,
+            &silent_video,
+            &["-i", fx.video.to_str().unwrap(), "-an", "-c:v", "copy"],
+        );
+        for tool in [Tool::Reverse, Tool::Fade] {
+            let paths = run(
+                &tb,
+                tool,
+                std::slice::from_ref(&silent_video),
+                &opts,
+                &out,
+                &mut claimed,
+            )
+            .unwrap();
+            let info = ffmpeg::probe(ffmpeg, &paths[0], None).unwrap();
+            assert!(info.has_video && !info.has_audio);
+        }
+        let mut spectrum = opts.clone();
+        spectrum.media_tools.spectrum = true;
+        run(
+            &tb,
+            Tool::WaveformVideo,
+            std::slice::from_ref(&fx.audio),
+            &spectrum,
+            &out,
+            &mut claimed,
+        )
+        .unwrap();
+        // Artwork survives an edit, is replaced on request, and is removable
+        // in each supported container. Tags must round-trip Unicode and punctuation.
+        let ffprobe = ffmpeg.with_file_name(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        for format in [AudioFormat::Mp3, AudioFormat::M4a, AudioFormat::Flac] {
+            let mut tags = opts.clone();
+            tags.media_tools.tag_format = format;
+            tags.media_tools.title = "Title: שלום, café [1]".into();
+            tags.media_tools.artist = "Artist".into();
+            tags.media_tools.album = "Album".into();
+            tags.media_tools.cover = Some(fx.logo.clone());
+            let added = run(
+                &tb,
+                Tool::EditTags,
+                std::slice::from_ref(&fx.audio),
+                &tags,
+                &out,
+                &mut claimed,
+            )
+            .unwrap();
+            let inspect = |path: &Path| {
+                let r = Command::new(&ffprobe)
+                    .args([
+                        "-v",
+                        "error",
+                        "-show_format",
+                        "-show_streams",
+                        "-of",
+                        "json",
+                    ])
+                    .arg(path)
+                    .output()
+                    .unwrap();
+                assert!(r.status.success());
+                serde_json::from_slice::<serde_json::Value>(&r.stdout).unwrap()
+            };
+            let has_cover = |v: &serde_json::Value| {
+                v["streams"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s["disposition"]["attached_pic"] == 1)
+            };
+            let first = inspect(&added[0]);
+            let loaded = ffmpeg::probe(ffmpeg, &added[0], None)
+                .unwrap()
+                .tags
+                .expect("ffprobe must load tags");
+            assert_eq!(loaded.title, tags.media_tools.title);
+            assert_eq!(loaded.artist, "Artist");
+            assert_eq!(loaded.album, "Album");
+            assert!(loaded.has_cover);
+            assert_eq!(first["format"]["tags"]["title"], tags.media_tools.title);
+            assert!(has_cover(&first), "{format:?}: no artwork");
+            tags.media_tools.cover = None;
+            tags.media_tools.title.clear();
+            tags.media_tools.artist = "Edited artist".into();
+            let kept = run(&tb, Tool::EditTags, &added, &tags, &out, &mut claimed).unwrap();
+            let kept_info = inspect(&kept[0]);
+            assert!(has_cover(&kept_info));
+            assert_eq!(
+                kept_info["format"]["tags"]["title"],
+                "Title: שלום, café [1]"
+            );
+            assert_eq!(kept_info["format"]["tags"]["artist"], "Edited artist");
+            let mut cleared_options = tags.clone();
+            cleared_options.media_tools.tag_explicit = true;
+            cleared_options.media_tools.tag_write = [true, false, false];
+            let cleared = run(
+                &tb,
+                Tool::EditTags,
+                &kept,
+                &cleared_options,
+                &out,
+                &mut claimed,
+            )
+            .unwrap();
+            let cleared_info = inspect(&cleared[0]);
+            assert!(cleared_info["format"]["tags"].get("title").is_none());
+            assert_eq!(cleared_info["format"]["tags"]["artist"], "Edited artist");
+            assert_eq!(cleared_info["format"]["tags"]["album"], "Album");
+            assert!(has_cover(&cleared_info));
+            let audio_hashes = |path: &Path| {
+                let r = Command::new(&ffprobe)
+                    .args([
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "a:0",
+                        "-show_packets",
+                        "-show_data_hash",
+                        "sha256",
+                        "-of",
+                        "json",
+                    ])
+                    .arg(path)
+                    .output()
+                    .unwrap();
+                assert!(r.status.success());
+                let json: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+                json["packets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|packet| packet["data_hash"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                audio_hashes(&kept[0]),
+                audio_hashes(&cleared[0]),
+                "{format:?}: audio was re-encoded"
+            );
+            tags.media_tools.remove_cover = true;
+            let removed = run(&tb, Tool::EditTags, &kept, &tags, &out, &mut claimed).unwrap();
+            assert!(!has_cover(&inspect(&removed[0])));
+        }
+    }
+
+    #[test]
+    fn audio_reverse_fade_and_silence_have_expected_content() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("tone.wav");
+        generate(
+            ffmpeg,
+            &source,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=3",
+                "-c:a",
+                "pcm_s16le",
+            ],
+        );
+        let pcm = |path: &Path| {
+            let r = Command::new(ffmpeg)
+                .args(["-v", "error", "-i"])
+                .arg(path)
+                .args(["-map", "0:a:0", "-f", "s16le", "-c:a", "pcm_s16le", "-"])
+                .output()
+                .unwrap();
+            assert!(r.status.success());
+            r.stdout
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                .collect::<Vec<_>>()
+        };
+        let mut claimed = HashSet::new();
+        let opts = Options::default();
+        let reversed = run(
+            &tb,
+            Tool::Reverse,
+            std::slice::from_ref(&source),
+            &opts,
+            dir.path(),
+            &mut claimed,
+        )
+        .unwrap();
+        let original = pcm(&source);
+        let mut expected = original.clone();
+        expected.reverse();
+        assert_eq!(pcm(&reversed[0]), expected);
+        let faded = run(
+            &tb,
+            Tool::Fade,
+            std::slice::from_ref(&source),
+            &opts,
+            dir.path(),
+            &mut claimed,
+        )
+        .unwrap();
+        let samples = pcm(&faded[0]);
+        let rms = |slice: &[i16]| {
+            (slice.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / slice.len() as f64).sqrt()
+        };
+        assert!(rms(&samples[..4410]) < rms(&samples[60000..64410]) * 0.15);
+        assert!(rms(&samples[samples.len() - 4410..]) < rms(&samples[60000..64410]) * 0.15);
+        let silence = dir.path().join("silence.wav");
+        generate(
+            ffmpeg,
+            &silence,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=if(between(t\\,0.4\\,0.9)+between(t\\,1.2\\,1.7)\\,0.3*sin(2*PI*440*t)\\,0):s=44100:d=2.1",
+                "-c:a",
+                "pcm_s16le",
+            ],
+        );
+        let mut trim = opts.clone();
+        trim.media_tools.silence_duration_s = 0.05;
+        let trimmed = run(
+            &tb,
+            Tool::TrimSilence,
+            &[silence],
+            &trim,
+            dir.path(),
+            &mut claimed,
+        )
+        .unwrap();
+        let audio = pcm(&trimmed[0]);
+        let seconds = audio.len() as f64 / 44100.0;
+        assert!((1.25..1.4).contains(&seconds), "{seconds}");
+        // The 0.3-second pause in the middle must survive trimming.
+        assert!(rms(&audio[25000..32000]) < 1.0);
+    }
+
+    #[test]
+    fn vocal_reduction_scales_center_without_removing_stereo_detail() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("stereo.wav");
+        generate(
+            ffmpeg,
+            &source,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=0.1*sin(2*PI*440*t)+0.05*sin(2*PI*880*t)|0.1*sin(2*PI*440*t)-0.05*sin(2*PI*880*t):s=44100:d=0.3",
+                "-c:a",
+                "pcm_s16le",
+            ],
+        );
+        let pcm = |path: &Path| {
+            let r = Command::new(ffmpeg)
+                .args(["-v", "error", "-i"])
+                .arg(path)
+                .args(["-map", "0:a:0", "-f", "s16le", "-c:a", "pcm_s16le", "-"])
+                .output()
+                .unwrap();
+            assert!(r.status.success());
+            r.stdout
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b))
+                .collect::<Vec<_>>()
+        };
+        let levels = |samples: &[i16]| {
+            let frames = samples.as_chunks::<2>().0;
+            let rms = |side: bool| {
+                (frames
+                    .iter()
+                    .map(|[l, r]| {
+                        let l = f64::from(*l);
+                        let r = f64::from(*r);
+                        if side {
+                            (l - r).powi(2)
+                        } else {
+                            (l + r).powi(2)
+                        }
+                    })
+                    .sum::<f64>()
+                    / frames.len() as f64)
+                    .sqrt()
+            };
+            (rms(false), rms(true))
+        };
+        let original = pcm(&source);
+        let (center, side) = levels(&original);
+        let mut claimed = HashSet::new();
+        for amount in [0.0, 25.0, 50.0, 75.0, 100.0] {
+            let mut opts = Options::default();
+            opts.media_tools.vocal_reduction_percent = amount;
+            let output = run(
+                &tb,
+                Tool::Karaoke,
+                std::slice::from_ref(&source),
+                &opts,
+                dir.path(),
+                &mut claimed,
+            )
+            .unwrap();
+            let samples = pcm(&output[0]);
+            assert_eq!(samples.len(), original.len());
+            if amount == 0.0 {
+                assert_eq!(samples, original);
+            }
+            let (new_center, new_side) = levels(&samples);
+            assert!(
+                (new_center / center - (1.0 - f64::from(amount) / 100.0)).abs() < 0.002,
+                "{amount}: {new_center}"
+            );
+            assert!(
+                (new_side / side - 1.0).abs() < 0.002,
+                "{amount}: stereo detail changed"
+            );
+        }
+        // Zero also keeps a mono recording's samples and channel layout intact.
+        let mono = dir.path().join("mono.wav");
+        generate(
+            ffmpeg,
+            &mono,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.1",
+                "-c:a",
+                "pcm_s16le",
+            ],
+        );
+        let mut opts = Options::default();
+        opts.media_tools.vocal_reduction_percent = 0.0;
+        let output = run(
+            &tb,
+            Tool::Karaoke,
+            std::slice::from_ref(&mono),
+            &opts,
+            dir.path(),
+            &mut claimed,
+        )
+        .unwrap();
+        assert_eq!(pcm(&output[0]), pcm(&mono));
+    }
+
+    #[test]
+    fn structured_media_inspection_reads_real_streams_without_creating_files() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let fx = fixture(ffmpeg);
+        let list = || {
+            let mut names = std::fs::read_dir(&fx.root)
+                .unwrap()
+                .map(|f| f.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let before = list();
+        let info = ffmpeg::probe(ffmpeg, &fx.video, None).unwrap();
+        assert!(info.has_video && info.has_audio);
+        assert!(info.bitrate_bps.is_some());
+        assert!(info.format.is_some());
+        let video = info.streams.iter().find(|s| s.kind == "video").unwrap();
+        assert!(video.codec.is_some());
+        assert_eq!((video.width, video.height), (Some(640), Some(360)));
+        let audio = info.streams.iter().find(|s| s.kind == "audio").unwrap();
+        assert!(audio.codec.is_some() && audio.sample_rate.is_some() && audio.channels.is_some());
+        assert_eq!(before, list());
+    }
+
+    #[test]
+    fn photo_privacy_rejects_real_animated_png_and_webp() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for (ext, encoder) in [("png", "apng"), ("webp", "libwebp_anim")] {
+            if !tb.has_encoder(encoder) {
+                continue;
+            }
+            let source = dir.path().join(format!("animation.{ext}"));
+            generate(
+                ffmpeg,
+                &source,
+                &[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=32x32:rate=2:duration=1",
+                    "-c:v",
+                    encoder,
+                    "-f",
+                    if ext == "png" { "apng" } else { "webp" },
+                ],
+            );
+            let original = std::fs::read(&source).unwrap();
+            let output = dir.path().join("clean.png");
+            assert!(
+                imaging::remove_metadata(&source, &output).is_err(),
+                "{ext}: animation must not be flattened"
+            );
+            assert!(!output.exists());
+            assert_eq!(std::fs::read(&source).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn expanded_tags_round_trip_urls_dates_comments_and_custom_values() {
+        use crate::tagging::{TagField, TagScope};
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let fx = fixture(ffmpeg);
+        let out = fx.root.join("expanded-tags");
+        std::fs::create_dir(&out).unwrap();
+        let mut claimed = HashSet::new();
+        let url = "https://www.youtube.com/watch?v=zIbT9_TKZKo";
+        for format in [AudioFormat::Mp3, AudioFormat::M4a, AudioFormat::Flac] {
+            let mut options = Options::default();
+            options.media_tools.tag_format = format;
+            options.media_tools.artist = "EyalGolanOfficial".into();
+            options.media_tools.extra_tags = [
+                ("date", "2026"),
+                ("purl", url),
+                ("comment", "Comment line 1\nComment line 2"),
+                ("grouping", "Custom group"),
+            ]
+            .into_iter()
+            .map(|(key, value)| TagField {
+                scope: TagScope::File,
+                key: key.into(),
+                value: value.into(),
+                write: true,
+            })
+            .collect();
+            let saved = run(
+                &tb,
+                Tool::EditTags,
+                std::slice::from_ref(&fx.audio),
+                &options,
+                &out,
+                &mut claimed,
+            )
+            .unwrap();
+            let tags = ffmpeg::probe(ffmpeg, &saved[0], None)
+                .unwrap()
+                .tags
+                .unwrap();
+            assert_eq!(tags.artist, "EyalGolanOfficial");
+            for (key, value) in [
+                ("date", "2026"),
+                ("purl", url),
+                ("comment", "Comment line 1\nComment line 2"),
+                ("grouping", "Custom group"),
+            ] {
+                assert!(
+                    tags.extra.iter().any(|f| f.scope == TagScope::File
+                        && f.key.eq_ignore_ascii_case(key)
+                        && f.value == value),
+                    "{format:?}: {key}"
+                );
+            }
+            // Clearing comment must preserve the URL, date and unedited custom tag.
+            options.media_tools.extra_tags = vec![TagField {
+                scope: TagScope::File,
+                key: "comment".into(),
+                value: String::new(),
+                write: true,
+            }];
+            options.media_tools.artist.clear();
+            let cleared = run(&tb, Tool::EditTags, &saved, &options, &out, &mut claimed).unwrap();
+            let tags = ffmpeg::probe(ffmpeg, &cleared[0], None)
+                .unwrap()
+                .tags
+                .unwrap();
+            assert!(
+                !tags
+                    .extra
+                    .iter()
+                    .any(|f| f.scope == TagScope::File && f.key.eq_ignore_ascii_case("comment"))
+            );
+            assert!(
+                tags.extra
+                    .iter()
+                    .any(|f| f.key.eq_ignore_ascii_case("purl") && f.value == url)
+            );
+            assert!(
+                tags.extra
+                    .iter()
+                    .any(|f| f.key.eq_ignore_ascii_case("grouping") && f.value == "Custom group")
+            );
+        }
+        // Artwork labels and global comments are independent, even when they share keys.
+        let mut options = Options::default();
+        options.media_tools.cover = Some(fx.logo.clone());
+        options.media_tools.extra_tags = vec![
+            TagField {
+                scope: TagScope::File,
+                key: "comment".into(),
+                value: url.into(),
+                write: true,
+            },
+            TagField {
+                scope: TagScope::Cover(0),
+                key: "title".into(),
+                value: "Album cover".into(),
+                write: true,
+            },
+            TagField {
+                scope: TagScope::Cover(0),
+                key: "comment".into(),
+                value: "Cover (front)".into(),
+                write: true,
+            },
+        ];
+        let saved = run(
+            &tb,
+            Tool::EditTags,
+            std::slice::from_ref(&fx.audio),
+            &options,
+            &out,
+            &mut claimed,
+        )
+        .unwrap();
+        let tags = ffmpeg::probe(ffmpeg, &saved[0], None)
+            .unwrap()
+            .tags
+            .unwrap();
+        assert!(tags.title.is_empty());
+        assert!(
+            tags.extra
+                .iter()
+                .any(|f| f.scope == TagScope::File && f.key == "comment" && f.value == url)
+        );
+        assert!(tags.extra.iter().any(|f| f.scope == TagScope::Cover(0)
+            && f.key == "title"
+            && f.value == "Album cover"));
+        options.media_tools.cover = None;
+        options.media_tools.extra_tags = vec![TagField {
+            scope: TagScope::File,
+            key: "comment".into(),
+            write: true,
+            ..Default::default()
+        }];
+        let cleared = run(&tb, Tool::EditTags, &saved, &options, &out, &mut claimed).unwrap();
+        let tags = ffmpeg::probe(ffmpeg, &cleared[0], None)
+            .unwrap()
+            .tags
+            .unwrap();
+        assert!(tags.extra.iter().any(|f| f.scope == TagScope::Cover(0)
+            && f.key == "comment"
+            && f.value == "Cover (front)"));
+    }
+
+    #[test]
+    fn unsupported_m4a_tags_with_cover_never_publish_a_damaged_output() {
+        use crate::tagging::{TagField, TagScope};
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let fx = fixture(ffmpeg);
+        let out = fx.root.join("unsupported.m4a");
+        let mut options = Options::default();
+        options.media_tools.tag_format = AudioFormat::M4a;
+        options.media_tools.cover = Some(fx.logo.clone());
+        options.media_tools.extra_tags = vec![TagField {
+            scope: TagScope::File,
+            key: "purl".into(),
+            value: "https://example.invalid/never-open".into(),
+            write: true,
+        }];
+        let original = std::fs::read(&fx.audio).unwrap();
+        let spec = JobSpec {
+            tool: Tool::EditTags,
+            inputs: vec![fx.audio.clone()],
+            output: out.clone(),
+            url: None,
+            options,
+        };
+        assert!(matches!(
+            execute(&spec, &tb, &AtomicBool::new(false), |_| {}),
+            Err(JobError::Plan(PlanError::MetadataNotSaved(_)))
+        ));
+        assert!(!out.exists());
+        assert_eq!(std::fs::read(&fx.audio).unwrap(), original);
+    }
 
     fn toolbox() -> Option<Toolbox> {
         std::env::var_os("FMX_FFMPEG").map(|p| Toolbox::detect(Some(Path::new(&p))))
@@ -1728,5 +2398,48 @@ mod security_tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+}
+
+#[cfg(test)]
+mod native_privacy_tests {
+    use super::*;
+    #[test]
+    fn native_photo_privacy_runs_without_ffmpeg_and_ignores_unrelated_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("photo.png");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([40, 50, 60, 120]))
+            .save(&source)
+            .unwrap();
+        let output = dir.path().join("private.png");
+        let original = std::fs::read(&source).unwrap();
+        let tb = Toolbox::detect(Some(Path::new("/missing/fmx-test/ffmpeg")));
+        assert!(tb.get(External::Ffmpeg).is_none());
+        let mut options = crate::options::Options::default();
+        options.edit.trim_start = "invalid unrelated edit".into();
+        assert!(options.validate(Tool::RemoveImageMetadata).is_ok());
+        let spec = JobSpec {
+            tool: Tool::RemoveImageMetadata,
+            inputs: vec![source.clone()],
+            output: output.clone(),
+            url: None,
+            options,
+        };
+        execute(&spec, &tb, &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(
+            image::open(&output).unwrap().to_rgba8(),
+            image::open(&source).unwrap().to_rgba8()
+        );
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        let inspector = JobSpec {
+            tool: Tool::MediaInfo,
+            output: dir.path().join("must-not-exist"),
+            ..spec
+        };
+        assert!(matches!(
+            execute(&inspector, &tb, &AtomicBool::new(false), |_| {}),
+            Err(JobError::Plan(PlanError::UnsupportedTool))
+        ));
+        assert!(!inspector.output.exists());
     }
 }

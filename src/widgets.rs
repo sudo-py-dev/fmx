@@ -359,7 +359,7 @@ pub fn nav_item(
     let width = ui.available_width();
     let reserved =
         12.0 + if art.is_some() { 30.0 } else { 0.0 } + if badge.is_some() { 44.0 } else { 12.0 };
-    let galley = elided(ui, text, font, color, width - reserved);
+    let galley = elided(ui, text, font, color, width - reserved, 1);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     response.widget_info(|| WidgetInfo::selected(egui::Role::Tab, true, selected, text));
     if ui.is_rect_visible(rect) {
@@ -517,6 +517,7 @@ fn elided(
     font: FontId,
     color: Color32,
     max_width: f32,
+    max_rows: usize,
 ) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(
         text.to_owned(),
@@ -524,8 +525,8 @@ fn elided(
     );
     job.wrap = egui::text::TextWrapping {
         max_width: max_width.max(20.0),
-        max_rows: 1,
-        break_anywhere: true,
+        max_rows,
+        break_anywhere: max_rows == 1,
         overflow_character: Some('…'),
     };
     ui.painter().layout_job(job)
@@ -569,6 +570,17 @@ pub fn paint_card(painter: &egui::Painter, rect: Rect, p: &Palette, dark: bool) 
 pub const CARD_SIZE: Vec2 = Vec2::new(172.0, 104.0);
 /// The widest a tool card grows.
 pub const CARD_MAX_WIDTH: f32 = 260.0;
+
+/// Reserve space before entering a card's ID scope. In a wrapping row, a bare
+/// scope would paint at the current cursor before the parent can wrap it.
+pub fn tool_card_cell<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let layout = (*ui.layout()).with_main_wrap(false);
+    ui.allocate_ui_with_layout(Vec2::new(width, CARD_SIZE.y), layout, content)
+}
 
 /// A tool card for the tool grid, flat like a libadwaita card: hovering and
 /// pressing only darken it a little.
@@ -627,6 +639,7 @@ pub fn tool_card(
             FontId::proportional(15.0),
             p.text,
             card.width() - 28.0,
+            if subtitle.is_empty() { 2 } else { 1 },
         );
         let title_x = dir::mirror_x(card, text_x, title_g.size().x);
         // Alone, the name sits centered below the icon.
@@ -643,6 +656,7 @@ pub fn tool_card(
                 FontId::proportional(12.0),
                 p.text_weak,
                 card.width() - 28.0,
+                1,
             );
             let sub_x = dir::mirror_x(card, text_x, sub.size().x);
             painter.galley(Pos2::new(sub_x, tile.max.y + 29.0), sub, p.text_weak);
@@ -1294,6 +1308,7 @@ pub fn drop_zone(
                 FontId::proportional(12.0),
                 p.text_weak,
                 rect.width() - 40.0,
+                1,
             );
             painter.galley(
                 c + Vec2::new(-galley.size().x / 2.0, 52.0),
@@ -1643,5 +1658,81 @@ mod tests {
         })
         .textures_delta
         .clear();
+    }
+}
+
+#[cfg(test)]
+mod card_title_tests {
+    use super::*;
+    #[test]
+    fn long_tool_names_fit_in_two_lines_without_growing_cards() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        for width in [CARD_SIZE.x, CARD_MAX_WIDTH] {
+            for title in [
+                "ניגון מהסוף להתחלה",
+                "Remove photo metadata",
+                "Hintergrundgeräusche reduzieren",
+                "Verylongunbrokenwordwithmanycharacters",
+            ] {
+                ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let available = width - 34.0;
+                    let galley = elided(
+                        ui,
+                        title,
+                        FontId::proportional(15.0),
+                        Color32::WHITE,
+                        available,
+                        2,
+                    );
+                    assert!(
+                        galley.size().x <= available + 0.5,
+                        "{title}: {:?}",
+                        galley.size()
+                    );
+                    assert!(galley.rows.len() <= 2);
+                    assert!(galley.size().y <= 42.0);
+                })
+                .textures_delta
+                .clear();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tool_grid_bounds_tests {
+    use super::*;
+    #[test]
+    fn scoped_cards_wrap_inside_both_window_edges_in_ltr_and_rtl() {
+        for width in [180.0, 360.0, 520.0, 780.0, 1240.0, 1615.0] {
+            for align in [egui::Align::Min, egui::Align::Max] {
+                let ctx = egui::Context::default();
+                crate::icons::install(&ctx);
+                for _ in 0..3 {
+                    ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 600.0))), ..Default::default() }, |ui| {
+                        ui.with_layout(egui::Layout::top_down(align), |ui| {
+                            egui::ScrollArea::vertical().max_height(500.0).show(ui, |ui| {
+                                let bounds = ui.available_rect_before_wrap();
+                                let gap = 12.0;
+                                let available = ui.available_width();
+                                let columns = ((available + gap) / (CARD_SIZE.x + gap)).floor().max(1.0);
+                                let card_width = ((available - gap * (columns - 1.0)) / columns).min(CARD_MAX_WIDTH).floor();
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+                                    for (index, format) in crate::catalog::ImageFormat::ALL.into_iter().enumerate() {
+                                        let card = tool_card_cell(ui, card_width, |ui| ui.push_id(index, |ui| {
+                                            tool_card(ui, card_width, crate::art::tool(crate::catalog::Tool::ToImage(format)), format.label(), "", false)
+                                        }).inner).inner;
+                                        assert!(card.rect.left() >= bounds.left() - 0.5 && card.rect.right() <= bounds.right() + 0.5,
+                                            "width={width}, align={align:?}, card={:?}, bounds={bounds:?}", card.rect);
+                                    }
+                                });
+                            });
+                        });
+                    }).textures_delta.clear();
+                }
+            }
+        }
     }
 }

@@ -14,6 +14,9 @@ use crate::options::{
 use crate::probe::MediaInfo;
 use crate::process::StopMode;
 
+#[path = "media_tools.rs"]
+mod media_tools;
+
 /// One input together with what probing found out about it.
 #[derive(Clone, Debug)]
 pub struct Input {
@@ -48,6 +51,8 @@ pub enum PlanError {
     NoSubtitleFile,
     NoSubtitleStream,
     UnsupportedTool,
+    MetadataNotSaved(String),
+    MetadataVerification,
     InvalidWatermark,
     InvalidValue(String),
     /// Extract Frames at chosen moments, but none are chosen (or inside the video).
@@ -75,6 +80,8 @@ impl fmt::Display for PlanError {
             Self::NoSubtitleFile => f.write_str(tr("error.no_subtitle_file")),
             Self::NoSubtitleStream => f.write_str(tr("error.no_subtitle_stream")),
             Self::UnsupportedTool => f.write_str(tr("error.unsupported_tool")),
+            Self::MetadataNotSaved(key) => f.write_str(&trf("tags.not_saved", &[("tag", key)])),
+            Self::MetadataVerification => f.write_str(tr("tags.verify_failed")),
             Self::InvalidWatermark => f.write_str(tr("error.invalid_watermark")),
             Self::InvalidValue(name) => f.write_str(&trf("error.invalid_value", &[("name", name)])),
             Self::NoFrameTimes => f.write_str(tr("error.no_frame_times")),
@@ -729,7 +736,11 @@ pub fn validate_edit(edit: &Edit, duration: Option<f64>) -> Result<(), PlanError
 /// Returns a [`PlanError`] for invalid values. Audio recording requires a sound
 /// source selection and an MP3, WAV, FLAC, OGG, Opus, or M4A output format.
 pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
+    if matches!(tool, Tool::RemoveImageMetadata | Tool::MediaInfo) {
+        return Ok(());
+    }
     opts.edit.validate(None)?;
+    media_tools::validate(tool, &opts.media_tools)?;
     match tool {
         Tool::Crop => {
             let rect = opts.edit.crop.ok_or(PlanError::NoCropArea)?;
@@ -1022,6 +1033,9 @@ pub fn build(
     output: &Path,
     opts: &Options,
 ) -> Result<Plan, PlanError> {
+    if let Some(plan) = media_tools::build(tool, inputs, output, opts) {
+        return plan;
+    }
     let none = Edit::default();
     match tool {
         Tool::ToVideo(format) => {
@@ -1923,6 +1937,8 @@ mod tests {
             chapters: Vec::new(),
             has_subtitles: false,
             fps: Some(60.0),
+            tags: None,
+            ..Default::default()
         }
     }
 

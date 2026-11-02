@@ -720,3 +720,164 @@ mod security_tests {
         assert!(decode_png(encoded.get_ref(), MAX_DECODE_BYTES).is_ok());
     }
 }
+
+/// Create a PNG from decoded pixels only: no EXIF/GPS, XMP, comments or source
+/// profiles are passed to the encoder. Apply EXIF orientation before discarding it.
+/// Only still JPEG, PNG, WebP and BMP files are accepted; no external fallback.
+pub fn remove_metadata(input: &Path, output: &Path) -> Result<(), ImageError> {
+    use image::ImageDecoder;
+    use std::io::BufReader;
+    let unsupported = || ImageError::Encode(crate::i18n::tr("photo.static_only").into());
+    let metadata = std::fs::metadata(input)?;
+    if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
+        return Err(unsupported());
+    }
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    let mut reader = ImageReader::open(input)?.with_guessed_format()?;
+    let format = reader.format().ok_or_else(unsupported)?;
+    match format {
+        image::ImageFormat::Png => {
+            let decoder = image::codecs::png::PngDecoder::with_limits(
+                BufReader::new(std::fs::File::open(input)?),
+                limits.clone(),
+            )?;
+            if decoder.is_apng()? {
+                return Err(unsupported());
+            }
+        }
+        image::ImageFormat::WebP => {
+            let decoder =
+                image::codecs::webp::WebPDecoder::new(BufReader::new(std::fs::File::open(input)?))?;
+            if decoder.has_animation() {
+                return Err(unsupported());
+            }
+        }
+        image::ImageFormat::Jpeg | image::ImageFormat::Bmp => {}
+        _ => return Err(unsupported()),
+    }
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+    write_image(&image, output, ImageFormat::Png, &Options::default(), None)
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    use super::*;
+    use image::{ImageDecoder, ImageEncoder};
+
+    /// TIFF EXIF with orientation 6 and a real GPS latitude IFD.
+    fn private_exif() -> Vec<u8> {
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend(2u16.to_le_bytes());
+        for (tag, kind, count, value) in [(0x0112u16, 3u16, 1u32, 6u32), (0x8825, 4, 1, 38)] {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(2u16.to_le_bytes());
+        for (tag, kind, count, value) in [
+            (1u16, 2u16, 2u32, u32::from_le_bytes(*b"N\0\0\0")),
+            (2, 5, 3, 68),
+        ] {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(0u32.to_le_bytes());
+        for n in [31u32, 42, 30] {
+            bytes.extend(n.to_le_bytes());
+            bytes.extend(1u32.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn privacy_copies_remove_gps_exif_preserve_pixels_and_apply_orientation() {
+        let dir = tempfile::tempdir().unwrap();
+        let pixels =
+            image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([x as u8 * 60, y as u8 * 90, 120]));
+        for format in [ImageFormat::Jpeg, ImageFormat::Png, ImageFormat::Webp] {
+            let source = dir.path().join(format!("private.{}", format.ext()));
+            let out = std::fs::File::create(&source).unwrap();
+            match format {
+                ImageFormat::Jpeg => {
+                    let mut encoder = JpegEncoder::new_with_quality(out, 92);
+                    encoder.set_exif_metadata(private_exif()).unwrap();
+                    encoder
+                        .encode_image(&DynamicImage::ImageRgb8(pixels.clone()))
+                        .unwrap();
+                }
+                ImageFormat::Png => {
+                    let mut encoder = image::codecs::png::PngEncoder::new(out);
+                    encoder.set_exif_metadata(private_exif()).unwrap();
+                    encoder
+                        .write_image(pixels.as_raw(), 3, 2, image::ExtendedColorType::Rgb8)
+                        .unwrap();
+                }
+                ImageFormat::Webp => {
+                    let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(out);
+                    encoder.set_exif_metadata(private_exif()).unwrap();
+                    encoder
+                        .write_image(pixels.as_raw(), 3, 2, image::ExtendedColorType::Rgb8)
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let original = std::fs::read(&source).unwrap();
+            let mut decoder = ImageReader::open(&source)
+                .unwrap()
+                .with_guessed_format()
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            assert!(decoder.exif_metadata().unwrap().is_some());
+            let orientation = decoder.orientation().unwrap();
+            assert_eq!(orientation, image::metadata::Orientation::Rotate90);
+            let mut expected = open(&source, None).unwrap();
+            expected.apply_orientation(orientation);
+            let output = dir.path().join(format!("clean-{}.png", format.ext()));
+            remove_metadata(&source, &output).unwrap();
+            assert_eq!(image::open(&output).unwrap().to_rgb8(), expected.to_rgb8());
+            assert_eq!(std::fs::read(&source).unwrap(), original);
+            let mut clean = ImageReader::open(&output)
+                .unwrap()
+                .with_guessed_format()
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            assert!(clean.exif_metadata().unwrap().is_none());
+            assert!(clean.icc_profile().unwrap().is_none());
+            // Fresh PNG contains image data only, rather than copied metadata chunks.
+            let png = std::fs::read(&output).unwrap();
+            let mut at = 8;
+            while at < png.len() {
+                let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+                assert!([b"IHDR".as_slice(), b"IDAT", b"IEND"].contains(&&png[at + 4..at + 8]));
+                at += len + 12;
+            }
+        }
+    }
+
+    #[test]
+    fn privacy_rejects_unsupported_or_oversized_images_without_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.gif");
+        image::RgbImage::new(1, 1).save(&source).unwrap();
+        let output = dir.path().join("clean.png");
+        assert!(remove_metadata(&source, &output).is_err());
+        assert!(!output.exists());
+        let source = dir.path().join("wide.png");
+        image::RgbImage::new(16_385, 1).save(&source).unwrap();
+        assert!(remove_metadata(&source, &output).is_err());
+        assert!(!output.exists());
+    }
+}

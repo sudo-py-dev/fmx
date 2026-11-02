@@ -44,6 +44,7 @@ use crate::widgets::{self, Kind, Size, ToastKind, Toasts};
 
 const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const ENQUEUE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
+const FIND_TOOLS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::F);
 /// FMX's GitHub page, for the links in Settings → About.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const SIDEBAR_WIDTH: f32 = 230.0;
@@ -211,6 +212,8 @@ pub struct FmxApp {
     show_settings: bool,
     settings_tab: SettingsTab,
     media_info: Option<MediaInfoDialog>,
+    media_inspector: Option<MediaInfoDialog>,
+    inspected_path: Option<PathBuf>,
     preview: Option<Preview>,
     /// The category shown in the tool grid.
     category: Category,
@@ -218,6 +221,7 @@ pub struct FmxApp {
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
+    reset_tool_scroll: bool,
     /// Put the keyboard in the web-address box on the next frame.
     focus_url: bool,
     /// When the web address last changed, to wait for typing to pause.
@@ -240,8 +244,10 @@ pub struct FmxApp {
     preview_index: usize,
     /// Size and length of added files, for the file list.
     details: HashMap<PathBuf, FileDetails>,
-    probe_tx: mpsc::Sender<(PathBuf, Option<f64>)>,
-    probe_rx: mpsc::Receiver<(PathBuf, Option<f64>)>,
+    probe_tx: mpsc::Sender<(u64, PathBuf, Option<crate::probe::MediaInfo>)>,
+    probe_rx: mpsc::Receiver<(u64, PathBuf, Option<crate::probe::MediaInfo>)>,
+    probe_generation: u64,
+    tag_editor: tag_editor::TagEditor,
     after_done: AfterDone,
     /// The theme last given to the window frame.
     window_theme: Option<egui::Theme>,
@@ -293,6 +299,15 @@ impl FmxApp {
         theme::watch_desktop_theme(&cc.egui_ctx);
         // Clip/crop/subtitle edits belong to one batch, not to the next session.
         settings.options.edit = Edit::default();
+        settings.options.media_tools.title.clear();
+        settings.options.media_tools.artist.clear();
+        settings.options.media_tools.album.clear();
+        settings.options.media_tools.cover = None;
+        settings.options.media_tools.remove_cover = false;
+        settings.options.media_tools.tag_write = [false; 3];
+        settings.options.media_tools.extra_tags.clear();
+        settings.options.media_tools.tag_scopes = [crate::tagging::TagScope::File; 3];
+        settings.options.media_tools.tag_explicit = false;
         // FMX_LANG (applied in main) wins unless a language was chosen in Settings.
         if settings.language.is_some() || std::env::var_os("FMX_LANG").is_none() {
             i18n::set_language(settings.language.as_deref());
@@ -314,11 +329,14 @@ impl FmxApp {
             show_settings: false,
             settings_tab: SettingsTab::General,
             media_info: None,
+            media_inspector: None,
+            inspected_path: None,
             preview: None,
             category: settings.last_tool.category(),
             show_favorites: !settings.favorite_tools.is_empty(),
             in_editor: false,
             search: String::new(),
+            reset_tool_scroll: false,
             focus_url: false,
             url_edited: None,
             link: None,
@@ -331,6 +349,8 @@ impl FmxApp {
             frame_times_error: None,
             preview_index: 0,
             details: HashMap::new(),
+            probe_generation: 0,
+            tag_editor: tag_editor::TagEditor::default(),
             probe_tx,
             probe_rx,
             after_done: AfterDone::Nothing,
@@ -646,19 +666,37 @@ impl FmxApp {
 
     /// Records the size of new files and finds media lengths in the background.
     fn probe_details(&mut self, added: Vec<PathBuf>) {
+        self.probe_generation = self.probe_generation.wrapping_add(1);
+        let generation = self.probe_generation;
         for path in &added {
             let bytes = std::fs::metadata(path)
                 .ok()
                 .filter(|m| m.is_file())
                 .map(|m| m.len());
-            self.details.entry(path.clone()).or_insert(FileDetails {
-                bytes,
-                duration: None,
-            });
+            self.details.insert(
+                path.clone(),
+                FileDetails {
+                    bytes,
+                    duration: None,
+                    info: None,
+                    probed: false,
+                    generation,
+                },
+            );
         }
         let Some(ffmpeg) = self.toolbox.get(External::Ffmpeg) else {
+            for path in &added {
+                if let Some(detail) = self.details.get_mut(path) {
+                    detail.probed = true;
+                }
+            }
             return;
         };
+        for path in added.iter().skip(MAX_PROBED_FILES) {
+            if let Some(detail) = self.details.get_mut(path) {
+                detail.probed = true;
+            }
+        }
         if self.tool.input_kind() != InputKind::Media || added.is_empty() {
             return;
         }
@@ -666,10 +704,8 @@ impl FmxApp {
         let (tx, notify) = (self.probe_tx.clone(), Arc::clone(&self.notifier));
         std::thread::spawn(move || {
             for path in added.into_iter().take(MAX_PROBED_FILES) {
-                let duration = ffmpeg::probe(&ffmpeg, &path, None)
-                    .ok()
-                    .and_then(|i| i.duration_s);
-                if tx.send((path, duration)).is_err() {
+                let info = ffmpeg::probe(&ffmpeg, &path, None).ok();
+                if tx.send((generation, path, info)).is_err() {
                     return;
                 }
                 notify();
@@ -678,10 +714,19 @@ impl FmxApp {
     }
 
     fn poll_details(&mut self) {
-        while let Ok((path, duration)) = self.probe_rx.try_recv() {
-            if let Some(d) = self.details.get_mut(&path) {
-                d.duration = duration;
+        while let Ok((generation, path, info)) = self.probe_rx.try_recv() {
+            if let Some(d) = self.details.get_mut(&path)
+                && d.generation == generation
+            {
+                d.duration = info.as_ref().and_then(|i| i.duration_s);
+                d.info = info;
+                d.probed = true;
             }
+        }
+        let visible: HashSet<_> = self.files.iter().collect();
+        self.details.retain(|path, _| visible.contains(path));
+        if self.tool == Tool::EditTags {
+            self.tag_editor.sync(&self.files, &self.details);
         }
     }
 
@@ -733,6 +778,9 @@ impl FmxApp {
     }
 
     fn enqueue(&mut self) {
+        if self.tool == Tool::MediaInfo {
+            return;
+        }
         let mut claimed: HashSet<PathBuf> = self.queue.claimed_outputs().cloned().collect();
         let device = [PathBuf::from(self.settings.cd_device.trim())];
         let files: &[PathBuf] = if self.tool.input_kind() == InputKind::Device {
@@ -747,7 +795,13 @@ impl FmxApp {
             output_dir: self.settings.output_dir.as_deref(),
             options: &self.settings.options,
         };
-        match plan_jobs(&selection, &mut claimed) {
+        let planned = if self.tool == Tool::EditTags {
+            self.tag_editor.sync(&self.files, &self.details);
+            self.tag_editor.plan(&selection, &mut claimed)
+        } else {
+            plan_jobs(&selection, &mut claimed)
+        };
+        match planned {
             Ok(specs) => {
                 // Downloads are listed under the video's title once it is known.
                 let title = match self.link.as_ref().map(|l| (&l.url, &l.state)) {
@@ -762,6 +816,7 @@ impl FmxApp {
                     .into_iter()
                     .for_each(|s| self.queue.push_titled(s, title.clone()));
                 self.files.clear();
+                self.tag_editor = tag_editor::TagEditor::default();
                 self.url.clear();
                 self.settings.options.edit = Edit::default();
                 // Back to the tools, where the queue shows the new jobs.
@@ -781,7 +836,7 @@ impl FmxApp {
     }
 
     fn can_enqueue(&self) -> bool {
-        self.blocker().is_none()
+        self.tool != Tool::MediaInfo && self.blocker().is_none()
     }
 
     /// What is still missing before the tool can run, in plain words.
@@ -792,6 +847,9 @@ impl FmxApp {
     }
 
     fn options_error(&self) -> Option<String> {
+        if self.tool == Tool::EditTags {
+            return self.tag_editor.validation_error();
+        }
         self.settings
             .options
             .validate(self.tool)
@@ -885,6 +943,15 @@ impl FmxApp {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&ENQUEUE)) && self.can_enqueue() {
             self.enqueue();
+        }
+        if !self.show_settings
+            && self.preview.is_none()
+            && self.media_info.is_none()
+            && !egui::Popup::is_any_open(ctx)
+            && ctx.input_mut(|input| input.consume_shortcut(&FIND_TOOLS))
+        {
+            self.in_editor = false;
+            ctx.memory_mut(|memory| memory.request_focus(Id::unique("tool_search")));
         }
         // Escape leaves a tool, unless it is closing something else first.
         if self.in_editor
@@ -1302,6 +1369,7 @@ impl FmxApp {
                     let search_width = (ui.available_width() - clear_width).max(80.0);
                     let search = ui.add(
                         TextEdit::singleline(&mut self.search)
+                            .id(Id::unique("tool_search"))
                             .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
                             .align(egui::Align2([dir::start(), Align::Center]))
                             .background_color(p.surface)
@@ -1323,6 +1391,10 @@ impl FmxApp {
                 .inner
             })
             .inner;
+        let search = search.on_hover_text(ui.ctx().format_shortcut(&FIND_TOOLS));
+        if search.changed() {
+            self.reset_tool_scroll = true;
+        }
         clear_search |= search.has_focus() && ui.input(|input| input.key_pressed(Key::Escape));
         if clear_search {
             self.search.clear();
@@ -1372,7 +1444,7 @@ impl FmxApp {
                             category.label(),
                             selected,
                             false,
-                            Some(category.tools().len()),
+                            None,
                         );
                         if selected {
                             chosen = Some((i, item.rect));
@@ -1411,30 +1483,26 @@ impl FmxApp {
                 ui.label(RichText::new(self.category.label()).heading().strong());
             }
         });
-        ui.add_space(12.0);
+        if !searching && !self.show_favorites {
+            ui.add_space(6.0);
+            ui.add(
+                Label::new(
+                    RichText::new(self.category.description()).color(theme::palette(ui).text_weak),
+                )
+                .wrap(),
+            );
+        }
+        ui.add_space(16.0);
     }
 
     fn tool_grid(&mut self, ui: &mut egui::Ui) {
-        let p = theme::palette(ui);
         let searching = !self.search.trim().is_empty();
-        if self.toolbox.get(External::Ffmpeg).is_none() {
-            widgets::chip(
-                ui,
-                icons::WARNING,
-                &trf(
-                    "availability.missing",
-                    &[("program", &External::Ffmpeg.name())],
-                ),
-                p.warning,
-            );
-            ui.add_space(12.0);
-        }
-        let terms: Vec<String> = self
+        let terms: Vec<_> = self
             .search
             .split_whitespace()
             .map(str::to_lowercase)
             .collect();
-        let tools: Vec<Tool> = if searching {
+        let tools: Vec<_> = if searching {
             Category::ALL
                 .into_iter()
                 .flat_map(Category::tools)
@@ -1446,15 +1514,85 @@ impl FmxApp {
             self.category.tools()
         };
         if tools.is_empty() {
-            if self.show_favorites && !searching {
-                widgets::empty_state(ui, icons::STAR, tr("favorites.empty"), 160.0);
-            } else {
-                widgets::empty_state(ui, icons::MAGNIFYING_GLASS, tr("grid.no_results"), 160.0);
-            }
+            widgets::empty_state(
+                ui,
+                if self.show_favorites && !searching {
+                    icons::STAR
+                } else {
+                    icons::MAGNIFYING_GLASS
+                },
+                tr(if self.show_favorites && !searching {
+                    "favorites.empty"
+                } else {
+                    "grid.no_results"
+                }),
+                160.0,
+            );
             return;
         }
-        let mut picked = None;
-        // As many columns as fit, the cards stretched to fill the row exactly.
+        if self.toolbox.get(External::Ffmpeg).is_none()
+            && tools
+                .iter()
+                .any(|tool| tool.requires().contains(&External::Ffmpeg))
+        {
+            widgets::chip(
+                ui,
+                icons::WARNING,
+                &trf(
+                    "availability.missing",
+                    &[("program", &External::Ffmpeg.name())],
+                ),
+                theme::palette(ui).warning,
+            );
+            ui.add_space(12.0);
+        }
+        if searching {
+            // Category headings make results from the whole app easy to distinguish.
+            for category in Category::ALL {
+                let matches: Vec<_> = tools
+                    .iter()
+                    .copied()
+                    .filter(|tool| tool.category() == category)
+                    .collect();
+                if matches.is_empty() {
+                    continue;
+                }
+                ui.push_id(("search_category", category), |ui| {
+                    group_title(ui, category.label());
+                    ui.add_space(8.0);
+                    self.tool_cards(ui, &matches, false);
+                });
+                ui.add_space(20.0);
+            }
+        } else if self.show_favorites {
+            self.tool_cards(ui, &tools, true);
+        } else {
+            for group in self.category.groups() {
+                ui.push_id((self.category, group.key), |ui| {
+                    if group.secondary {
+                        widgets::collapsible_section(
+                            ui,
+                            "more_formats",
+                            None,
+                            group.label(),
+                            None,
+                            |ui| {
+                                ui.add_space(8.0);
+                                self.tool_cards(ui, &group.tools, false);
+                            },
+                        );
+                    } else {
+                        group_title(ui, group.label());
+                        ui.add_space(8.0);
+                        self.tool_cards(ui, &group.tools, false);
+                    }
+                });
+                ui.add_space(20.0);
+            }
+        }
+    }
+
+    fn tool_cards(&mut self, ui: &mut egui::Ui, tools: &[Tool], show_category: bool) {
         let gap = 12.0;
         let available = ui.available_width();
         let columns = ((available + gap) / (widgets::CARD_SIZE.x + gap))
@@ -1463,52 +1601,65 @@ impl FmxApp {
         let card_width = ((available - gap * (columns - 1.0)) / columns)
             .min(widgets::CARD_MAX_WIDTH)
             .floor();
+        let mut picked = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
-            for tool in tools {
-                let reason = self.unavailable_reason(tool);
-                let subtitle = if searching || self.show_favorites {
-                    tool.category().label().to_owned()
-                } else {
-                    card_detail(tool)
-                };
-                let hover = match &reason {
-                    Some(r) => format!("{}\n\n{} {r}", tool.description(), icons::WARNING),
-                    None => tool.description().to_owned(),
-                };
-                let card = widgets::tool_card(
-                    ui,
-                    card_width,
-                    art::tool(tool),
-                    tool.label(),
-                    &subtitle,
-                    reason.is_some(),
-                )
-                .on_hover_text(hover);
-                let menu_rect = egui::Rect::from_min_size(
-                    egui::pos2(
-                        dir::mirror_x(card.rect, card.rect.right() - 38.0, 28.0),
-                        card.rect.top() + 10.0,
-                    ),
-                    egui::Vec2::splat(28.0),
-                );
-                let mut actions = ui.new_child(
-                    egui::UiBuilder::new()
-                        .id_salt(("tool_actions", tool))
-                        .max_rect(menu_rect)
-                        .layout(dir::leading(Align::Center)),
-                );
-                let menu_clicked = self.tool_menu(&mut actions, tool);
-                if card.clicked() && !menu_clicked {
-                    picked = Some(tool);
-                }
+            for &tool in tools {
+                widgets::tool_card_cell(ui, card_width, |ui| {
+                    ui.push_id(tool, |ui| {
+                        let reason = self.unavailable_reason(tool);
+                        let subtitle = if show_category {
+                            tool.category().label().to_owned()
+                        } else {
+                            card_detail(tool)
+                        };
+                        let hover = match &reason {
+                            Some(r) => format!("{}\n\n{} {r}", tool.description(), icons::WARNING),
+                            None => tool.description().to_owned(),
+                        };
+                        let card = widgets::tool_card(
+                            ui,
+                            card_width,
+                            art::tool(tool),
+                            tool.label(),
+                            &subtitle,
+                            reason.is_some(),
+                        )
+                        .on_hover_text(hover);
+                        let menu_rect = egui::Rect::from_min_size(
+                            egui::pos2(
+                                dir::mirror_x(card.rect, card.rect.right() - 38.0, 28.0),
+                                card.rect.top() + 10.0,
+                            ),
+                            egui::Vec2::splat(28.0),
+                        );
+                        let mut actions = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("tool_actions")
+                                .max_rect(menu_rect)
+                                .layout(dir::leading(Align::Center)),
+                        );
+                        let menu_clicked = self.tool_menu(&mut actions, tool);
+                        if card.clicked() && !menu_clicked {
+                            picked = Some(tool);
+                        }
+                    })
+                });
             }
         });
         if let Some(tool) = picked {
             self.select_tool(tool);
         }
-        ui.add_space(8.0);
-        ui.label(RichText::new(tr("grid.hint")).color(p.text_weak));
+    }
+
+    fn browse_label(&self) -> &'static str {
+        if !self.search.trim().is_empty() {
+            tr("grid.results")
+        } else if self.show_favorites {
+            tr("favorites.title")
+        } else {
+            self.category.label()
+        }
     }
 
     // ── Task editor ─────────────────────────────────────────────────────
@@ -1518,6 +1669,10 @@ impl FmxApp {
     fn task_editor(&mut self, ui: &mut egui::Ui) {
         self.editor_header(ui);
         ui.add_space(12.0);
+        if self.tool == Tool::MediaInfo {
+            self.media_info_page(ui);
+            return;
+        }
         let (title, help) = self.input_heading();
         let input_done = self.input_missing().is_none();
         let size = ui.available_size();
@@ -1612,31 +1767,11 @@ impl FmxApp {
         if widgets::icon_button(
             &mut start,
             back,
-            trf(
-                "hint.back_to",
-                &[(
-                    "category",
-                    &if self.show_favorites {
-                        tr("favorites.title")
-                    } else {
-                        self.tool.category().label()
-                    },
-                )],
-            ),
+            trf("hint.back_to", &[("category", &self.browse_label())]),
             Kind::Ghost,
             Size::Regular,
         )
-        .on_hover_text(trf(
-            "hint.back_to",
-            &[(
-                "category",
-                &if self.show_favorites {
-                    tr("favorites.title")
-                } else {
-                    self.tool.category().label()
-                },
-            )],
-        ))
+        .on_hover_text(trf("hint.back_to", &[("category", &self.browse_label())]))
         .clicked()
         {
             self.in_editor = false;
@@ -1810,6 +1945,9 @@ impl FmxApp {
     /// The first step's title and a sentence on what to add.
     fn input_heading(&self) -> (&'static str, String) {
         let kind = self.tool.input_kind();
+        if self.tool == Tool::RemoveImageMetadata {
+            return (tr("step.files"), tr("photo.privacy_hint").into());
+        }
         match kind {
             InputKind::Url => (tr("step.url"), tr("hint.download_rights").to_owned()),
             InputKind::Device => (tr("step.device"), tr("help.device").to_owned()),
@@ -1852,6 +1990,11 @@ impl FmxApp {
         if let Some(mode) = self.preview_mode() {
             self.inline_preview(ui, mode, preview_height);
             ui.add_space(12.0);
+        }
+        if self.tool == Tool::EditTags {
+            self.tag_editor.sync(&self.files, &self.details);
+            self.tag_editor.show(ui);
+            return;
         }
         if self.tool == Tool::Trim {
             trim_settings(ui, &mut self.settings.options);
@@ -1970,6 +2113,10 @@ impl FmxApp {
     /// The editor's sticky footer: what will happen, or what is still missing,
     /// next to the main action.
     fn action_bar(&mut self, ui: &mut egui::Ui) {
+        if self.tool == Tool::MediaInfo {
+            ui.label(tr("info.read_only"));
+            return;
+        }
         let p = theme::palette(ui);
         let blocker = self.blocker();
         ui.horizontal(|ui| {
@@ -2600,36 +2747,70 @@ impl FmxApp {
     }
 
     fn show_media_info(&mut self, index: usize, ctx: &egui::Context) {
-        let (Some(ffmpeg), Some(path)) =
+        if let (Some(ffmpeg), Some(path)) =
             (self.toolbox.get(External::Ffmpeg), self.files.get(index))
-        else {
+        {
+            self.media_info = Some(start_media_info(ffmpeg, path, ctx));
+        }
+    }
+
+    fn media_info_page(&mut self, ui: &mut egui::Ui) {
+        self.add_buttons(ui);
+        if self.files.is_empty() {
+            self.media_inspector = None;
+            self.inspected_path = None;
+            ui.add_space(12.0);
+            ui.label(tr("info.choose_file"));
             return;
-        };
-        let (tx, rx) = mpsc::channel();
-        self.media_info = Some(MediaInfoDialog {
-            name: file_name(path),
-            bytes: std::fs::metadata(path).ok().map(|m| m.len()),
-            result: None,
-            rx,
+        }
+        ui.add_space(12.0);
+        self.preview_index = self.preview_index.min(self.files.len() - 1);
+        let mut rescan = false;
+        ui.horizontal_wrapped(|ui| {
+            ComboBox::from_id_salt("inspected_file")
+                .selected_text(crate::probe::display_tag(&file_name(
+                    &self.files[self.preview_index],
+                )))
+                .width(ui.available_width().min(440.0))
+                .show_ui(ui, |ui| {
+                    for (index, path) in self.files.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.preview_index,
+                            index,
+                            crate::probe::display_tag(&file_name(path)),
+                        );
+                    }
+                });
+            rescan = widgets::button(
+                ui,
+                Some(icons::ARROW_CLOCKWISE),
+                tr("action.rescan"),
+                Kind::Secondary,
+                Size::Small,
+            )
+            .clicked();
         });
-        let (ffmpeg, path, ctx) = (ffmpeg.to_path_buf(), path.clone(), ctx.clone());
-        // Opening the dialog must not freeze the UI while a file is inspected.
-        std::thread::spawn(move || {
-            let result = ffmpeg::describe(&ffmpeg, &path, None)
-                .map(|text| MediaInfoDetails {
-                    info: crate::probe::parse_ffmpeg_info(&text),
-                    text: text
-                        .lines()
-                        .filter(|l| {
-                            !l.contains("At least one output file") && !l.starts_with("Exiting")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(result);
-            ctx.request_repaint();
-        });
+        let path = self.files[self.preview_index].clone();
+        if rescan || self.inspected_path.as_ref() != Some(&path) {
+            self.media_inspector = self
+                .toolbox
+                .get(External::Ffmpeg)
+                .map(|ffmpeg| start_media_info(ffmpeg, &path, ui.ctx()));
+            self.inspected_path = Some(path);
+        }
+        if let Some(dialog) = self.media_inspector.as_mut() {
+            if let Ok(result) = dialog.rx.try_recv() {
+                dialog.result = Some(result);
+            }
+            ui.add_space(12.0);
+            theme::page_scroll()
+                .id_salt("inspector_body")
+                .show(ui, |ui| {
+                    media_info_contents(ui, dialog);
+                });
+        } else {
+            ui.label(tr("info.failed"));
+        }
     }
 
     /// Starts finding the recorder's devices, or picks up what was found.
@@ -2822,6 +3003,7 @@ impl FmxApp {
                     );
                 });
             }
+            tool if tool_options::supports(tool) => tool_options::show(ui, tool, opts),
             Tool::Volume => volume_row(ui, &mut opts.audio.volume_db),
             Tool::PdfToImages => {
                 row(ui, tr("option.dpi"), |ui| {
@@ -4068,6 +4250,40 @@ enum FileAction {
     Add,
 }
 
+fn start_media_info(ffmpeg: &Path, path: &Path, ctx: &egui::Context) -> MediaInfoDialog {
+    let (tx, rx) = mpsc::channel();
+    let dialog = MediaInfoDialog {
+        name: crate::probe::display_tag(&file_name(path)),
+        bytes: std::fs::metadata(path)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len()),
+        result: None,
+        rx,
+    };
+    let (ffmpeg, path, ctx) = (ffmpeg.to_path_buf(), path.to_path_buf(), ctx.clone());
+    std::thread::spawn(move || {
+        let result = ffmpeg::probe(&ffmpeg, &path, None)
+            .map(|info| {
+                let text = ffmpeg::describe(&ffmpeg, &path, None)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|line| {
+                        !line.contains("At least one output file") && !line.starts_with("Exiting")
+                    })
+                    .take(500)
+                    .map(crate::probe::display_tag)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                MediaInfoDetails { info, text }
+            })
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+        ctx.request_repaint();
+    });
+    dialog
+}
+
 struct MediaInfoDetails {
     info: crate::probe::MediaInfo,
     text: String,
@@ -4282,6 +4498,16 @@ fn media_info_contents(ui: &mut egui::Ui, dialog: &MediaInfoDialog) {
         }
         Some(Ok(details)) => {
             let info = &details.info;
+            if let Some(format) = &info.format {
+                row(ui, tr("info.container"), |ui| {
+                    ui.add(Label::new(format).wrap());
+                });
+            }
+            if let Some(bitrate) = info.bitrate_bps {
+                row(ui, tr("info.bitrate"), |ui| {
+                    ui.label(format!("{:.1} kb/s", bitrate as f64 / 1000.0));
+                });
+            }
             if let Some(duration) = info.duration_s {
                 row(ui, tr("info.duration"), |ui| {
                     ui.label(options::display_time(duration));
@@ -4309,6 +4535,59 @@ fn media_info_contents(ui: &mut egui::Ui, dialog: &MediaInfoDialog) {
                         "info.absent"
                     }));
                 });
+            }
+            for (position, stream) in info.streams.iter().enumerate() {
+                ui.add_space(GROUP_GAP);
+                ui.push_id(("stream", position), |ui| {
+                    let kind = if stream.attached_picture {
+                        tr("info.cover")
+                    } else {
+                        match stream.kind.as_str() {
+                            "video" => tr("info.video"),
+                            "audio" => tr("info.audio"),
+                            "subtitle" => tr("info.subtitles"),
+                            "data" => tr("info.data"),
+                            "attachment" => tr("info.attachment"),
+                            _ => tr("info.other"),
+                        }
+                    };
+                    let title = format!("{} · {}", stream.index, kind);
+                    pref_group(ui, Some((&title, "")), |ui| {
+                        if let Some(codec) = &stream.codec {
+                            row(ui, tr("info.codec"), |ui| {
+                                ui.add(Label::new(codec).wrap());
+                            });
+                        }
+                        if let Some(bitrate) = stream.bitrate_bps {
+                            row(ui, tr("info.bitrate"), |ui| {
+                                ui.label(format!("{:.1} kb/s", bitrate as f64 / 1000.0));
+                            });
+                        }
+                        if let (Some(w), Some(h)) = (stream.width, stream.height) {
+                            row(ui, tr("info.dimensions"), |ui| {
+                                ui.label(format!("{w} × {h}"));
+                            });
+                        }
+                        if let Some(rate) = stream.sample_rate {
+                            row(ui, tr("info.sample_rate"), |ui| {
+                                ui.label(format!("{rate} Hz"));
+                            });
+                        }
+                        if let Some(channels) = stream.channels {
+                            row(ui, tr("info.channels"), |ui| {
+                                ui.label(channels.to_string());
+                            });
+                        }
+                        if let Some(language) = &stream.language {
+                            row(ui, tr("info.language"), |ui| {
+                                ui.add(Label::new(language).wrap());
+                            });
+                        }
+                    });
+                });
+            }
+            if info.stream_count > info.streams.len() {
+                ui.label(tr("info.stream_limit"));
             }
             ui.add_space(8.0);
             widgets::collapsible_section(
@@ -4343,6 +4622,9 @@ struct FileDetails {
     bytes: Option<u64>,
     /// Length in seconds, once probed.
     duration: Option<f64>,
+    info: Option<crate::probe::MediaInfo>,
+    probed: bool,
+    generation: u64,
 }
 
 /// What every row of one file list shows.
@@ -4372,11 +4654,18 @@ fn inline_preview_mode(tool: Tool) -> Option<PreviewMode> {
     }
 }
 
+#[path = "tag_editor.rs"]
+mod tag_editor;
 /// Whether the tool has any settings to show.
+#[path = "tool_options.rs"]
+mod tool_options;
+
 fn has_options(tool: Tool) -> bool {
     !matches!(
         tool,
         Tool::Mux
+            | Tool::MediaInfo
+            | Tool::RemoveImageMetadata
             | Tool::RemoveAudio
             | Tool::Normalize
             | Tool::Repair
@@ -4800,13 +5089,25 @@ fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
+/// Each category retains its position. Search and Favorites keep the same
+/// position even when an opened tool belongs to a different category.
+fn browse_scroll_id(category: Category, favorites: bool, searching: bool) -> Id {
+    Id::unique((
+        "tool_cards",
+        (!searching && !favorites).then_some(category),
+        !searching && favorites,
+        searching,
+    ))
+}
+
 /// Matches every query word anywhere in the tool's searchable details.
 fn tool_matches_search(tool: Tool, terms: &[String]) -> bool {
     let searchable = format!(
-        "{} {} {} {}",
+        "{} {} {} {} {}",
         tool.label(),
         tool.description(),
         tool.category().label(),
+        tool.group_label(),
         card_detail(tool)
     )
     .to_lowercase();
@@ -6058,10 +6359,19 @@ impl eframe::App for FmxApp {
                                 centered(ui, EDITOR_MAX_WIDTH, |ui| self.task_editor(ui));
                             } else {
                                 self.tool_grid_header(ui);
-                                theme::page_scroll()
-                                    .id_salt("tool_cards")
-                                    .auto_shrink([false; 2])
-                                    .show(ui, |ui| self.tool_grid(ui));
+                                let searching = !self.search.trim().is_empty();
+                                let mut scroll = theme::page_scroll()
+                                    .id_salt(browse_scroll_id(
+                                        self.category,
+                                        self.show_favorites,
+                                        searching,
+                                    ))
+                                    .auto_shrink([false; 2]);
+                                if self.reset_tool_scroll {
+                                    scroll = scroll.vertical_scroll_offset(0.0);
+                                    self.reset_tool_scroll = false;
+                                }
+                                scroll.show(ui, |ui| self.tool_grid(ui));
                             }
                         });
                     });
@@ -6143,6 +6453,18 @@ mod tests {
                         width: Some(640),
                         height: Some(360),
                         fps: Some(29.97),
+                        streams: vec![
+                            crate::probe::StreamInfo {
+                                kind: "audio".into(),
+                                codec: Some("Very long codec name ".repeat(8)),
+                                sample_rate: Some(48000),
+                                channels: Some(2),
+                                ..Default::default()
+                            };
+                            5
+                        ],
+                        stream_count: 5,
+                        bitrate_bps: Some(1_000_000),
                         has_video: true,
                         has_audio: true,
                         ..Default::default()
@@ -6243,6 +6565,53 @@ mod tests {
         assert_eq!(
             inline_preview_mode(Tool::Rotate),
             Some(PreviewMode::ROTATION)
+        );
+    }
+}
+
+#[cfg(test)]
+mod browsing_tests {
+    use super::*;
+    #[test]
+    fn collapsed_formats_and_task_groups_remain_searchable() {
+        assert!(tool_matches_search(
+            Tool::ToVideo(VideoFormat::Swf),
+            &["swf".into(), "video".into()]
+        ));
+        assert!(tool_matches_search(
+            Tool::ToAudio(AudioFormat::Ape),
+            &["ape".into(), "audio".into()]
+        ));
+        assert!(tool_matches_search(
+            Tool::AudioDenoise,
+            &["audio".into(), "clean".into()]
+        ));
+        assert!(!tool_matches_search(
+            Tool::ToAudio(AudioFormat::Mp3),
+            &["clean".into()]
+        ));
+        assert!(tool_matches_search(
+            Tool::Trim,
+            &["trim".into(), "audio".into()]
+        ));
+    }
+    #[test]
+    fn back_navigation_restores_the_same_browsing_scroll_state() {
+        assert_ne!(
+            browse_scroll_id(Category::Video, false, false),
+            browse_scroll_id(Category::Audio, false, false)
+        );
+        assert_eq!(
+            browse_scroll_id(Category::Video, false, true),
+            browse_scroll_id(Category::Audio, false, true)
+        );
+        assert_eq!(
+            browse_scroll_id(Category::Video, true, false),
+            browse_scroll_id(Category::Audio, true, false)
+        );
+        assert_ne!(
+            browse_scroll_id(Category::Video, true, false),
+            browse_scroll_id(Category::Video, false, true)
         );
     }
 }

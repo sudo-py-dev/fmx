@@ -128,6 +128,8 @@ impl From<PlanError> for JobError {
 /// Whether a tool writes one file (with this extension) or a folder of files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputKind {
+    /// Inspection has no destination and cannot be queued.
+    None,
     File(&'static str),
     Dir,
     /// The tool names its own files inside the output folder (downloads).
@@ -140,8 +142,28 @@ pub fn output_kind(tool: Tool, first_input: Option<&Path>, opts: &Options) -> Ou
     let first = first_input.unwrap_or(Path::new(""));
     OutputKind::File(match tool {
         Tool::ToVideo(f) => f.ext(),
+        Tool::Reverse | Tool::Fade => {
+            let ext = first
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            if crate::catalog::AUDIO_EXTENSIONS
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(ext))
+            {
+                "flac"
+            } else {
+                "mkv"
+            }
+        }
+        Tool::Stabilize | Tool::Denoise | Tool::Sharpen | Tool::WaveformVideo => "mp4",
+        Tool::AudioDenoise | Tool::TrimSilence | Tool::Karaoke => "flac",
+        Tool::ThumbnailSheet => "png",
+        Tool::EditTags => opts.media_tools.tag_format.ext(),
         Tool::ToDevice(_) => "mp4",
         Tool::ToAudio(f) => f.ext(),
+        Tool::RemoveImageMetadata => "png",
+        Tool::MediaInfo => return OutputKind::None,
         Tool::JoinImages => "png",
         Tool::PdfToExcel => "xlsx",
         Tool::BluRayToVideo => opts.disc_video_format.ext(),
@@ -200,6 +222,18 @@ fn suffix(tool: Tool) -> &'static str {
         Tool::Speed => "_speed",
         Tool::Volume => "_volume",
         Tool::Normalize => "_normalized",
+        Tool::Reverse => "_reverse",
+        Tool::Fade => "_fade",
+        Tool::Stabilize => "_stabilize",
+        Tool::Denoise => "_denoise",
+        Tool::Sharpen => "_sharpen",
+        Tool::AudioDenoise => "_audio_denoise",
+        Tool::TrimSilence => "_trim_silence",
+        Tool::Karaoke => "_karaoke",
+        Tool::ThumbnailSheet => "_thumbnail_sheet",
+        Tool::WaveformVideo => "_waveform_video",
+        Tool::EditTags => "_edit_tags",
+        Tool::RemoveImageMetadata => "_private",
         Tool::Repair => "_fixed",
         _ => "",
     }
@@ -269,6 +303,9 @@ pub fn plan_jobs(
     sel: &Selection<'_>,
     claimed: &mut HashSet<PathBuf>,
 ) -> Result<Vec<JobSpec>, JobError> {
+    if sel.tool == Tool::MediaInfo {
+        return Err(PlanError::UnsupportedTool.into());
+    }
     sel.options.validate(sel.tool)?;
     let tool = sel.tool;
     let spec = |inputs: Vec<PathBuf>, url: Option<String>, output: PathBuf| JobSpec {
@@ -364,6 +401,7 @@ pub fn plan_jobs(
             let ext = match output_kind(tool, Some(first), sel.options) {
                 OutputKind::File(ext) => Some(ext),
                 OutputKind::Dir | OutputKind::Into => None,
+                OutputKind::None => return None,
             };
             let tag = format!(
                 "{}{}",
@@ -658,5 +696,38 @@ mod tests {
 
         spec.url = Some("https://example.com/video.mp4".into());
         assert!(spec.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+    #[test]
+    fn inspection_has_no_output_and_cannot_allocate_a_job() {
+        let opts = Options::default();
+        assert_eq!(output_kind(Tool::MediaInfo, None, &opts), OutputKind::None);
+        let paths = [PathBuf::from("clip.mp4")];
+        let selection = Selection {
+            tool: Tool::MediaInfo,
+            files: &paths,
+            url: "",
+            output_dir: None,
+            options: &opts,
+        };
+        let mut claimed = HashSet::new();
+        assert!(matches!(
+            plan_jobs(&selection, &mut claimed),
+            Err(JobError::Plan(PlanError::UnsupportedTool))
+        ));
+        assert!(claimed.is_empty());
+        assert_eq!(
+            output_kind(
+                Tool::RemoveImageMetadata,
+                Some(Path::new("photo.jpg")),
+                &opts
+            ),
+            OutputKind::File("png")
+        );
+        assert!(Tool::RemoveImageMetadata.requires().is_empty());
     }
 }

@@ -8,95 +8,318 @@ use crate::i18n::tr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
     Video,
-    Devices,
     Audio,
+    Utilities,
     Image,
     Document,
+    Capture,
+    Devices,
     Rom,
-    Utilities,
+}
+
+/// One task group on a category page. Secondary groups stay searchable even
+/// while collapsed, so older formats remain available without crowding the page.
+pub struct ToolGroup {
+    pub key: &'static str,
+    pub tools: Vec<Tool>,
+    pub secondary: bool,
+}
+
+impl ToolGroup {
+    pub fn label(&self) -> &'static str {
+        tr(self.key)
+    }
 }
 
 impl Category {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Video,
-        Self::Devices,
         Self::Audio,
+        Self::Utilities,
         Self::Image,
         Self::Document,
+        Self::Capture,
+        Self::Devices,
         Self::Rom,
-        Self::Utilities,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Video => tr("category.video"),
-            Self::Devices => tr("category.devices"),
             Self::Audio => tr("category.audio"),
+            Self::Utilities => tr("category.utilities"),
             Self::Image => tr("category.image"),
             Self::Document => tr("category.document"),
+            Self::Capture => tr("category.capture"),
+            Self::Devices => tr("category.devices"),
             Self::Rom => tr("category.rom"),
-            Self::Utilities => tr("category.utilities"),
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Video => tr("browse.video"),
+            Self::Audio => tr("browse.audio"),
+            Self::Utilities => tr("browse.media"),
+            Self::Image => tr("browse.image"),
+            Self::Document => tr("browse.document"),
+            Self::Capture => tr("browse.capture"),
+            Self::Devices => tr("browse.devices"),
+            Self::Rom => tr("browse.discs"),
         }
     }
 
     pub fn tools(self) -> Vec<Tool> {
+        self.groups()
+            .iter()
+            .flat_map(|group| group.tools.iter().copied())
+            .collect()
+    }
+
+    pub fn groups(self) -> &'static [ToolGroup] {
+        static GROUPS: std::sync::OnceLock<std::collections::HashMap<Category, Vec<ToolGroup>>> =
+            std::sync::OnceLock::new();
+        GROUPS
+            .get_or_init(|| {
+                Self::ALL
+                    .into_iter()
+                    .map(|category| (category, category.build_groups()))
+                    .collect()
+            })
+            .get(&self)
+            .expect("every category has a tool catalog")
+            .as_slice()
+    }
+
+    fn build_groups(self) -> Vec<ToolGroup> {
+        let group = |key, tools| ToolGroup {
+            key,
+            tools,
+            secondary: false,
+        };
+        let more = |key, tools| ToolGroup {
+            key,
+            tools,
+            secondary: true,
+        };
         match self {
-            Self::Video => VideoFormat::ALL.into_iter().map(Tool::ToVideo).collect(),
-            Self::Audio => AudioFormat::ALL.into_iter().map(Tool::ToAudio).collect(),
-            Self::Devices => Device::ALL.into_iter().map(Tool::ToDevice).collect(),
-            Self::Image => ImageFormat::ALL
-                .into_iter()
-                .map(Tool::ToImage)
-                .chain([Tool::JoinImages])
-                .collect(),
-            Self::Document => [
-                Tool::ImagesToPdf,
-                Tool::PdfToImages,
-                Tool::PdfToText,
-                Tool::PdfToHtml,
-                Tool::PdfToWord,
-                Tool::PdfToExcel,
-                Tool::OfficeToPdf,
-                Tool::PdfMerge,
-                Tool::PdfSplit,
-                Tool::PdfCompress,
-            ]
-            .into_iter()
-            .chain(EbookFormat::ALL.into_iter().map(Tool::ToEbook))
-            .collect(),
+            Self::Video => {
+                let common = [
+                    VideoFormat::Mp4,
+                    VideoFormat::Mkv,
+                    VideoFormat::Webm,
+                    VideoFormat::Mov,
+                    VideoFormat::Mp4Hevc,
+                    VideoFormat::Avi,
+                ];
+                vec![
+                    group(
+                        "tools.video_convert",
+                        common.into_iter().map(Tool::ToVideo).collect(),
+                    ),
+                    group(
+                        "tools.video_edit",
+                        vec![
+                            Tool::JoinVideo,
+                            Tool::VideoMix,
+                            Tool::Mux,
+                            Tool::Crop,
+                            Tool::Rotate,
+                            Tool::Compress,
+                            Tool::RemoveAudio,
+                        ],
+                    ),
+                    group(
+                        "tools.video_improve",
+                        vec![Tool::Stabilize, Tool::Denoise, Tool::Sharpen, Tool::Delogo],
+                    ),
+                    group(
+                        "tools.subtitles",
+                        vec![Tool::AddSubtitles, Tool::ExtractSubtitles],
+                    ),
+                    group(
+                        "tools.frames_animation",
+                        vec![
+                            Tool::ExtractFrames,
+                            Tool::ThumbnailSheet,
+                            Tool::ToVideo(VideoFormat::Gif),
+                            Tool::ToVideo(VideoFormat::Webp),
+                        ],
+                    ),
+                    more(
+                        "tools.video_more",
+                        VideoFormat::ALL
+                            .into_iter()
+                            .filter(|f| !common.contains(f) && !f.is_animation())
+                            .map(Tool::ToVideo)
+                            .collect(),
+                    ),
+                ]
+            }
+            Self::Audio => {
+                let common = [
+                    AudioFormat::Mp3,
+                    AudioFormat::M4a,
+                    AudioFormat::Aac,
+                    AudioFormat::Flac,
+                    AudioFormat::Wav,
+                    AudioFormat::Ogg,
+                    AudioFormat::Opus,
+                    AudioFormat::Alac,
+                ];
+                vec![
+                    group(
+                        "tools.audio_convert",
+                        common.into_iter().map(Tool::ToAudio).collect(),
+                    ),
+                    group(
+                        "tools.audio_edit",
+                        vec![
+                            Tool::JoinAudio,
+                            Tool::AudioMix,
+                            Tool::Volume,
+                            Tool::EditTags,
+                            Tool::WaveformVideo,
+                        ],
+                    ),
+                    group(
+                        "tools.audio_cleanup",
+                        vec![
+                            Tool::AudioDenoise,
+                            Tool::TrimSilence,
+                            Tool::Karaoke,
+                            Tool::Normalize,
+                        ],
+                    ),
+                    more(
+                        "tools.audio_more",
+                        AudioFormat::ALL
+                            .into_iter()
+                            .filter(|f| !common.contains(f))
+                            .map(Tool::ToAudio)
+                            .collect(),
+                    ),
+                ]
+            }
+            Self::Image => {
+                let common = [
+                    ImageFormat::Jpeg,
+                    ImageFormat::Png,
+                    ImageFormat::Webp,
+                    ImageFormat::Avif,
+                ];
+                vec![
+                    group(
+                        "tools.image_convert",
+                        common.into_iter().map(Tool::ToImage).collect(),
+                    ),
+                    group(
+                        "tools.image_utilities",
+                        vec![Tool::JoinImages, Tool::RemoveImageMetadata],
+                    ),
+                    more(
+                        "tools.image_more",
+                        ImageFormat::ALL
+                            .into_iter()
+                            .filter(|f| !common.contains(f))
+                            .map(Tool::ToImage)
+                            .collect(),
+                    ),
+                ]
+            }
+            Self::Document => vec![
+                group(
+                    "tools.pdf_create",
+                    vec![Tool::OfficeToPdf, Tool::ImagesToPdf],
+                ),
+                group(
+                    "tools.pdf_convert",
+                    vec![
+                        Tool::PdfToWord,
+                        Tool::PdfToExcel,
+                        Tool::PdfToText,
+                        Tool::PdfToHtml,
+                        Tool::PdfToImages,
+                    ],
+                ),
+                group(
+                    "tools.pdf_organize",
+                    vec![Tool::PdfMerge, Tool::PdfSplit, Tool::PdfCompress],
+                ),
+                group(
+                    "tools.ebooks",
+                    EbookFormat::ALL.into_iter().map(Tool::ToEbook).collect(),
+                ),
+            ],
+            Self::Capture => vec![
+                group("tools.download", vec![Tool::Download]),
+                group(
+                    "tools.record_capture",
+                    vec![Tool::Record, Tool::RecordAudio, Tool::Screenshot],
+                ),
+            ],
+            Self::Devices => {
+                let phones = [
+                    Device::Iphone,
+                    Device::Ipad,
+                    Device::AndroidPhone,
+                    Device::AndroidTablet,
+                ];
+                let sharing = [Device::Youtube, Device::Whatsapp];
+                vec![
+                    group(
+                        "tools.phones",
+                        Device::ALL
+                            .into_iter()
+                            .filter(|d| phones.contains(d))
+                            .map(Tool::ToDevice)
+                            .collect(),
+                    ),
+                    group(
+                        "tools.tv_games",
+                        Device::ALL
+                            .into_iter()
+                            .filter(|d| !phones.contains(d) && !sharing.contains(d))
+                            .map(Tool::ToDevice)
+                            .collect(),
+                    ),
+                    group(
+                        "tools.sharing",
+                        Device::ALL
+                            .into_iter()
+                            .filter(|d| sharing.contains(d))
+                            .map(Tool::ToDevice)
+                            .collect(),
+                    ),
+                ]
+            }
             Self::Rom => vec![
-                Tool::DvdToVideo,
-                Tool::BluRayToVideo,
-                Tool::CdToAudio,
-                Tool::DiscToIso,
-                Tool::FolderToIso,
-                Tool::IsoToCso,
-                Tool::CsoToIso,
+                group(
+                    "tools.read_discs",
+                    vec![
+                        Tool::DvdToVideo,
+                        Tool::BluRayToVideo,
+                        Tool::CdToAudio,
+                        Tool::DiscToIso,
+                    ],
+                ),
+                group(
+                    "tools.disc_images",
+                    vec![Tool::FolderToIso, Tool::IsoToCso, Tool::CsoToIso],
+                ),
             ],
             Self::Utilities => vec![
-                Tool::JoinVideo,
-                Tool::JoinAudio,
-                Tool::Mux,
-                Tool::AudioMix,
-                Tool::VideoMix,
-                Tool::Trim,
-                Tool::Split,
-                Tool::Crop,
-                Tool::Compress,
-                Tool::RemoveAudio,
-                Tool::Delogo,
-                Tool::AddSubtitles,
-                Tool::ExtractSubtitles,
-                Tool::ExtractFrames,
-                Tool::Rotate,
-                Tool::Speed,
-                Tool::Volume,
-                Tool::Normalize,
-                Tool::Repair,
-                Tool::Download,
-                Tool::Record,
-                Tool::RecordAudio,
-                Tool::Screenshot,
+                group(
+                    "tools.media_edit",
+                    vec![
+                        Tool::Trim,
+                        Tool::Split,
+                        Tool::Speed,
+                        Tool::Reverse,
+                        Tool::Fade,
+                    ],
+                ),
+                group("tools.inspect_repair", vec![Tool::MediaInfo, Tool::Repair]),
             ],
         }
     }
@@ -656,6 +879,8 @@ pub enum Tool {
     ToAudio(AudioFormat),
     ToImage(ImageFormat),
     JoinImages,
+    RemoveImageMetadata,
+    MediaInfo,
     ImagesToPdf,
     PdfToImages,
     PdfToText,
@@ -692,6 +917,17 @@ pub enum Tool {
     Speed,
     Volume,
     Normalize,
+    Reverse,
+    Fade,
+    Stabilize,
+    Denoise,
+    Sharpen,
+    AudioDenoise,
+    TrimSilence,
+    Karaoke,
+    ThumbnailSheet,
+    WaveformVideo,
+    EditTags,
     Repair,
     Download,
     Record,
@@ -723,6 +959,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 pub enum InputKind {
     Media,
     Images,
+    Photos,
     Pdf,
     Documents,
     Ebooks,
@@ -751,6 +988,7 @@ impl InputKind {
                 "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "ico", "tga", "qoi",
                 "pnm", "ppm", "pgm", "pbm", "pam", "heic", "heif", "avif", "jxl", "pcx",
             ],
+            Self::Photos => &["jpg", "jpeg", "png", "webp", "bmp"],
             Self::Pdf => &["pdf"],
             Self::Documents => &[
                 "docx", "odt", "rtf", "xlsx", "xlsm", "xls", "ods", "csv", "tsv", "pptx", "odp",
@@ -782,6 +1020,8 @@ impl Tool {
             Self::ToEbook(f) => f.label(),
             Self::ImagesToPdf => tr("tool.images_to_pdf"),
             Self::JoinImages => tr("tool.join_images"),
+            Self::RemoveImageMetadata => tr("tool.remove_image_metadata"),
+            Self::MediaInfo => tr("tool.media_info"),
             Self::PdfToExcel => tr("tool.pdf_to_excel"),
             Self::BluRayToVideo => tr("tool.bluray_to_video"),
             Self::DiscToIso => tr("tool.disc_to_iso"),
@@ -816,6 +1056,18 @@ impl Tool {
             Self::Speed => tr("tool.speed"),
             Self::Volume => tr("tool.volume"),
             Self::Normalize => tr("tool.normalize"),
+            Self::Reverse => tr("tool.reverse"),
+            Self::Fade => tr("tool.fade"),
+            Self::Stabilize => tr("tool.stabilize"),
+            Self::Denoise => tr("tool.denoise"),
+            Self::Sharpen => tr("tool.sharpen"),
+            Self::AudioDenoise => tr("tool.audio_denoise"),
+            Self::TrimSilence => tr("tool.trim_silence"),
+            Self::Karaoke => tr("tool.karaoke"),
+            Self::ThumbnailSheet => tr("tool.thumbnail_sheet"),
+            Self::WaveformVideo => tr("tool.waveform_video"),
+            Self::EditTags => tr("tool.edit_tags"),
+
             Self::Repair => tr("tool.repair"),
             Self::Download => tr("tool.download"),
             Self::Record => tr("tool.record"),
@@ -829,6 +1081,8 @@ impl Tool {
             Self::ToVideo(_) => tr("desc.to_video"),
             Self::ToDevice(_) => tr("desc.to_device"),
             Self::JoinImages => tr("desc.join_images"),
+            Self::RemoveImageMetadata => tr("desc.remove_image_metadata"),
+            Self::MediaInfo => tr("desc.media_info"),
             Self::PdfToExcel => tr("desc.pdf_to_excel"),
             Self::BluRayToVideo => tr("desc.bluray_to_video"),
             Self::DiscToIso => tr("desc.disc_to_iso"),
@@ -867,6 +1121,18 @@ impl Tool {
             Self::Speed => tr("desc.speed"),
             Self::Volume => tr("desc.volume"),
             Self::Normalize => tr("desc.normalize"),
+            Self::Reverse => tr("desc.reverse"),
+            Self::Fade => tr("desc.fade"),
+            Self::Stabilize => tr("desc.stabilize"),
+            Self::Denoise => tr("desc.denoise"),
+            Self::Sharpen => tr("desc.sharpen"),
+            Self::AudioDenoise => tr("desc.audio_denoise"),
+            Self::TrimSilence => tr("desc.trim_silence"),
+            Self::Karaoke => tr("desc.karaoke"),
+            Self::ThumbnailSheet => tr("desc.thumbnail_sheet"),
+            Self::WaveformVideo => tr("desc.waveform_video"),
+            Self::EditTags => tr("desc.edit_tags"),
+
             Self::Repair => tr("desc.repair"),
             Self::Download => tr("desc.download"),
             Self::Record => tr("desc.record"),
@@ -899,6 +1165,7 @@ impl Tool {
             | Self::PdfMerge
             | Self::PdfSplit
             | Self::PdfCompress => InputKind::Pdf,
+            Self::RemoveImageMetadata => InputKind::Photos,
             Self::OfficeToPdf => InputKind::Documents,
             Self::ToEbook(_) => InputKind::Ebooks,
             Self::DvdToVideo | Self::BluRayToVideo => InputKind::Disc,
@@ -916,8 +1183,18 @@ impl Tool {
     pub fn category(self) -> Category {
         Category::ALL
             .into_iter()
-            .find(|c| c.tools().contains(&self))
+            .find(|c| c.groups().iter().any(|group| group.tools.contains(&self)))
             .unwrap_or(Category::Utilities)
+    }
+
+    /// Task-group name is searchable even when the group is collapsed.
+    pub fn group_label(self) -> &'static str {
+        self.category()
+            .groups()
+            .iter()
+            .find(|group| group.tools.contains(&self))
+            .map(|group| group.label())
+            .unwrap_or("")
     }
 
     /// External programs the tool cannot run without.
@@ -927,6 +1204,7 @@ impl Tool {
             Self::ToImage(_)
             | Self::ImagesToPdf
             | Self::JoinImages
+            | Self::RemoveImageMetadata
             | Self::IsoToCso
             | Self::CsoToIso
             | Self::DiscToIso => &[],
@@ -1016,5 +1294,47 @@ mod tests {
             labels.dedup();
             assert_eq!(before, labels.len(), "{category:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod organization_tests {
+    use super::*;
+    use std::collections::HashSet;
+    #[test]
+    fn task_groups_keep_every_existing_tool_once() {
+        let mut tools = HashSet::new();
+        for category in Category::ALL {
+            let mut keys = HashSet::new();
+            for group in category.groups() {
+                assert!(!group.tools.is_empty(), "{}", group.key);
+                assert!(keys.insert(group.key));
+                for &tool in &group.tools {
+                    assert!(tools.insert(tool), "duplicate {tool:?}");
+                    assert_eq!(tool.category(), category);
+                }
+            }
+        }
+        // Inventory before this navigation change: 67 format/device presets
+        // and 54 task tools. Reorganization must not silently remove a tool.
+        assert_eq!(tools.len(), 121);
+        for format in VideoFormat::ALL {
+            assert!(tools.contains(&Tool::ToVideo(format)));
+        }
+        for format in AudioFormat::ALL {
+            assert!(tools.contains(&Tool::ToAudio(format)));
+        }
+        for format in ImageFormat::ALL {
+            assert!(tools.contains(&Tool::ToImage(format)));
+        }
+        for format in EbookFormat::ALL {
+            assert!(tools.contains(&Tool::ToEbook(format)));
+        }
+        for device in Device::ALL {
+            assert!(tools.contains(&Tool::ToDevice(device)));
+        }
+        assert_eq!(Tool::AudioDenoise.category(), Category::Audio);
+        assert_eq!(Tool::Crop.category(), Category::Video);
+        assert_eq!(Tool::Record.category(), Category::Capture);
     }
 }

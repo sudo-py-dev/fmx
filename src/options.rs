@@ -930,9 +930,70 @@ pub const MAX_RECORD_FPS: u32 = 120;
 pub const SAMPLE_RATES: [u32; 6] = [8_000, 22_050, 32_000, 44_100, 48_000, 96_000];
 pub const FRAME_RATES: [u32; 8] = [10, 15, 24, 25, 30, 50, 60, 120];
 
+/// Settings for media effects and audio utilities. Bounds are checked by the planner.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaToolOptions {
+    pub fade_in_s: f32,
+    pub fade_out_s: f32,
+    pub denoise_strength: f32,
+    pub sharpen_strength: f32,
+    pub noise_reduction_db: f32,
+    /// 0 keeps the original sound; 100 applies full stereo center cancellation.
+    pub vocal_reduction_percent: f32,
+    pub silence_threshold_db: f32,
+    pub silence_duration_s: f32,
+    pub sheet_columns: u32,
+    pub sheet_rows: u32,
+    pub thumbnail_width: u32,
+    pub spectrum: bool,
+    pub tag_format: AudioFormat,
+    /// Empty fields keep the source's tags.
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub cover: Option<PathBuf>,
+    pub remove_cover: bool,
+    /// Per-file editor writes only fields the user changed, including explicit clearing.
+    pub tag_explicit: bool,
+    pub tag_write: [bool; 3],
+    pub tag_scopes: [crate::tagging::TagScope; 3],
+    pub extra_tags: Vec<crate::tagging::TagField>,
+}
+
+impl Default for MediaToolOptions {
+    fn default() -> Self {
+        Self {
+            fade_in_s: 1.0,
+            fade_out_s: 1.0,
+            denoise_strength: 4.0,
+            sharpen_strength: 0.8,
+            noise_reduction_db: 12.0,
+            vocal_reduction_percent: 100.0,
+            silence_threshold_db: -45.0,
+            silence_duration_s: 0.3,
+            sheet_columns: 4,
+            sheet_rows: 3,
+            thumbnail_width: 240,
+            spectrum: false,
+            tag_format: AudioFormat::Mp3,
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            cover: None,
+            remove_cover: false,
+            tag_explicit: false,
+            tag_write: [false; 3],
+            tag_scopes: [crate::tagging::TagScope::File; 3],
+            extra_tags: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Options {
+    pub media_tools: MediaToolOptions,
     pub quality: Quality,
     pub resolution: Resolution,
     pub video: VideoSettings,
@@ -980,6 +1041,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            media_tools: MediaToolOptions::default(),
             quality: Quality::Medium,
             resolution: Resolution::Original,
             video: VideoSettings::default(),
