@@ -260,6 +260,8 @@ pub struct FmxApp {
     requests: Option<mpsc::Receiver<instance::Request>>,
     /// The right-click menu, as switched in Settings (see `shell`).
     shell_menu: bool,
+    /// Current page of the first-run guide; also opened from Settings.
+    welcome_step: Option<usize>,
 }
 
 /// How FMX was started.
@@ -341,6 +343,7 @@ impl FmxApp {
             self_test_frames: None,
             requests: None,
             shell_menu: shell::is_registered(),
+            welcome_step: (!settings.welcome_seen && !self_test).then_some(0),
             settings,
         };
         let due = now_secs().saturating_sub(app.settings.last_update_check)
@@ -358,6 +361,9 @@ impl FmxApp {
         }
         #[cfg(debug_assertions)]
         {
+            if let Ok(step) = std::env::var("FMX_SCREENSHOT_WELCOME") {
+                app.welcome_step = Some(step.parse::<usize>().unwrap_or(0).min(3));
+            }
             if let Some(downloaded) = crate::devshot::wants_update() {
                 let release = update::Release::sample();
                 app.update = match downloaded {
@@ -3329,12 +3335,43 @@ impl FmxApp {
         });
     }
 
+    /// A short, dismissible introduction for first-time users.
+    fn welcome_window(&mut self, ctx: &egui::Context) {
+        let Some(step) = self.welcome_step else {
+            return;
+        };
+        let modal = welcome_dialog(ctx, step);
+        match modal.inner {
+            WelcomeAction::Back => self.welcome_step = Some(step.saturating_sub(1)),
+            WelcomeAction::Next => self.welcome_step = Some(step + 1),
+            _ => {}
+        }
+        if modal.inner == WelcomeAction::Finish || modal.should_close() {
+            self.welcome_step = None;
+            self.settings.welcome_seen = true;
+            ctx.data_mut(|data| data.remove::<usize>(Id::unique("welcome_focus")));
+        }
+    }
+
     /// The controls of the selected Settings section, as GNOME-style
     /// groups of rows: what a setting is on the start edge, its control on
     /// the end edge.
     fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         match self.settings_tab {
             SettingsTab::General => {
+                if widgets::button(
+                    ui,
+                    None,
+                    tr("welcome.reopen"),
+                    Kind::Secondary,
+                    Size::Regular,
+                )
+                .clicked()
+                {
+                    self.show_settings = false;
+                    self.welcome_step = Some(0);
+                }
+                ui.add_space(GROUP_GAP);
                 let mut theme_changed = false;
                 pref_group(ui, Some((tr("settings.group_appearance"), "")), |ui| {
                     widgets::pref_row(ui, tr("settings.language"), "", |ui| {
@@ -4071,6 +4108,151 @@ struct MediaInfoDialog {
     bytes: Option<u64>,
     result: Option<Result<MediaInfoDetails, String>>,
     rx: mpsc::Receiver<Result<MediaInfoDetails, String>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WelcomeAction {
+    None,
+    Back,
+    Next,
+    Finish,
+}
+
+/// A clamped welcome page with a scrollable body and persistent navigation.
+/// Uses standard modal/focus behavior and the app's direction-aware controls.
+fn welcome_dialog(ctx: &egui::Context, step: usize) -> egui::ModalResponse<WelcomeAction> {
+    let pages = [
+        (
+            "welcome.choose_title",
+            "welcome.choose_body",
+            icons::SLIDERS,
+        ),
+        (
+            "welcome.files_title",
+            "welcome.files_body",
+            icons::FILE_PLUS,
+        ),
+        ("welcome.start_title", "welcome.start_body", icons::PLAY),
+        (
+            "welcome.done_title",
+            "welcome.done_body",
+            icons::FOLDER_OPEN,
+        ),
+    ];
+    let step = step.min(pages.len() - 1);
+    let screen = ctx.content_rect();
+    let focus_id = Id::unique("welcome_focus");
+    let focus_next = ctx.data(|data| data.get_temp::<usize>(focus_id)) != Some(step);
+    let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(Margin::same(20));
+    let modal = egui::Modal::new(Id::unique("welcome_guide"))
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width((screen.width() - 64.0).clamp(1.0, 480.0));
+            let p = theme::palette(ui);
+            let mut action = WelcomeAction::None;
+            dir::vertical(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(tr("welcome.title")).strong());
+                    let width = widgets::button_width(ui, None, tr("welcome.skip"), Size::Regular);
+                    dir::at_end(ui, width, |ui| {
+                        if widgets::button(ui, None, tr("welcome.skip"), Kind::Ghost, Size::Regular)
+                            .clicked()
+                        {
+                            action = WelcomeAction::Finish;
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+                let body_height = (screen.height() - 260.0).clamp(60.0, 270.0);
+                ScrollArea::vertical()
+                    .id_salt(("welcome_body", step))
+                    .min_scrolled_height(body_height)
+                    .max_height(body_height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.vertical_centered(|ui| {
+                            // Symbolic artwork is supplementary; the heading names the task.
+                            ui.label(RichText::new(pages[step].2).size(48.0).color(p.text_weak));
+                            ui.add_space(12.0);
+                            ui.add(
+                                Label::new(RichText::new(tr(pages[step].0)).size(24.0).strong())
+                                    .wrap(),
+                            );
+                        });
+                        ui.add_space(16.0);
+                        for paragraph in tr(pages[step].1).split("\n\n") {
+                            ui.add(Label::new(paragraph).wrap());
+                            ui.add_space(8.0);
+                        }
+                        if step == pages.len() - 1 {
+                            ui.add_space(4.0);
+                            ui.add(
+                                Label::new(
+                                    RichText::new(tr("welcome.reassurance"))
+                                        .small()
+                                        .color(p.text_weak),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    });
+                ui.add_space(12.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(trf(
+                            "welcome.progress",
+                            &[("step", &(step + 1).to_string())],
+                        ))
+                        .color(p.text_weak),
+                    );
+                });
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    if step > 0 {
+                        let arrow = if dir::is_rtl() {
+                            icons::ARROW_RIGHT
+                        } else {
+                            icons::ARROW_LEFT
+                        };
+                        if widgets::button(
+                            ui,
+                            Some(arrow),
+                            tr("welcome.back"),
+                            Kind::Secondary,
+                            Size::Regular,
+                        )
+                        .clicked()
+                        {
+                            action = WelcomeAction::Back;
+                        }
+                    }
+                    let label = if step == pages.len() - 1 {
+                        "welcome.finish"
+                    } else {
+                        "welcome.next"
+                    };
+                    let width = widgets::button_width(ui, None, tr(label), Size::Regular);
+                    dir::at_end(ui, width, |ui| {
+                        let response =
+                            widgets::button(ui, None, tr(label), Kind::Primary, Size::Regular);
+                        if focus_next {
+                            response.request_focus();
+                        }
+                        if response.clicked() {
+                            action = if step == pages.len() - 1 {
+                                WelcomeAction::Finish
+                            } else {
+                                WelcomeAction::Next
+                            };
+                        }
+                    });
+                });
+            });
+            action
+        });
+    ctx.data_mut(|data| data.insert_temp(focus_id, step));
+    modal
 }
 
 fn media_info_dialog(ctx: &egui::Context, dialog: &MediaInfoDialog) -> egui::ModalResponse<()> {
@@ -5826,7 +6008,9 @@ impl eframe::App for FmxApp {
         for request in requests {
             self.handle_request(&ctx, request);
         }
-        self.handle_input(&ctx);
+        if self.welcome_step.is_none() {
+            self.handle_input(&ctx);
+        }
         if exec::take_minimize_request() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
@@ -5932,6 +6116,7 @@ impl eframe::App for FmxApp {
         self.settings_window(&ctx);
         self.media_info_window(&ctx);
         self.preview_window(&ctx);
+        self.welcome_window(&ctx);
         self.toasts.show(&ctx);
     }
 
@@ -5943,6 +6128,37 @@ impl eframe::App for FmxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn welcome_pages_fit_small_and_large_windows() {
+        for size in [[360.0, 480.0], [900.0, 700.0]] {
+            for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
+                let ctx = egui::Context::default();
+                icons::install(&ctx);
+                theme::apply(&ctx, theme, true);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+                for step in 0..4 {
+                    let mut bounds = egui::Rect::NOTHING;
+                    for _ in 0..4 {
+                        let input = egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        };
+                        ctx.run_ui(input, |ui| {
+                            bounds = welcome_dialog(ui.ctx(), step).response.rect;
+                        })
+                        .textures_delta
+                        .clear();
+                    }
+                    assert!(
+                        screen.contains_rect(bounds),
+                        "page {step}: {bounds:?} outside {screen:?}"
+                    );
+                    assert!(ctx.memory(|memory| memory.focused().is_some()));
+                }
+            }
+        }
+    }
 
     #[test]
     fn media_info_stays_centered_and_bounded_with_long_metadata() {

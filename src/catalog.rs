@@ -288,10 +288,13 @@ pub enum AudioFormat {
     Mmf,
     Amr,
     Ape,
+    Alac,
+    Caf,
+    Au,
 }
 
 impl AudioFormat {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::Mp3,
         Self::Aac,
         Self::M4a,
@@ -309,6 +312,9 @@ impl AudioFormat {
         Self::Mmf,
         Self::Amr,
         Self::Ape,
+        Self::Alac,
+        Self::Caf,
+        Self::Au,
     ];
 
     pub fn ext(self) -> &'static str {
@@ -330,6 +336,9 @@ impl AudioFormat {
             Self::Mmf => "mmf",
             Self::Amr => "amr",
             Self::Ape => "ape",
+            Self::Alac => "m4a",
+            Self::Caf => "caf",
+            Self::Au => "au",
         }
     }
 
@@ -352,6 +361,9 @@ impl AudioFormat {
             Self::Mmf => "MMF",
             Self::Amr => "AMR",
             Self::Ape => "APE (Monkey's Audio)",
+            Self::Alac => "ALAC (Apple Lossless)",
+            Self::Caf => "CAF",
+            Self::Au => "AU",
         }
     }
 
@@ -361,7 +373,8 @@ impl AudioFormat {
             Self::Aac | Self::M4a | Self::M4r | Self::Mka => "aac",
             Self::Flac => "flac",
             Self::Wav | Self::Ape => "pcm_s16le",
-            Self::Aiff => "pcm_s16be",
+            Self::Aiff | Self::Caf | Self::Au => "pcm_s16be",
+            Self::Alac => "alac",
             Self::Ogg => "libvorbis",
             Self::Opus => "libopus",
             Self::Wma => "wmav2",
@@ -377,7 +390,14 @@ impl AudioFormat {
     pub fn is_lossless(self) -> bool {
         matches!(
             self,
-            Self::Flac | Self::Wav | Self::Aiff | Self::Wv | Self::Ape
+            Self::Flac
+                | Self::Wav
+                | Self::Aiff
+                | Self::Wv
+                | Self::Ape
+                | Self::Alac
+                | Self::Caf
+                | Self::Au
         )
     }
 }
@@ -396,10 +416,13 @@ pub enum ImageFormat {
     Avif,
     Jxl,
     Pcx,
+    Ppm,
+    Pgm,
+    Pam,
 }
 
 impl ImageFormat {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 15] = [
         Self::Png,
         Self::Jpeg,
         Self::Webp,
@@ -412,6 +435,9 @@ impl ImageFormat {
         Self::Avif,
         Self::Jxl,
         Self::Pcx,
+        Self::Ppm,
+        Self::Pgm,
+        Self::Pam,
     ];
 
     pub fn ext(self) -> &'static str {
@@ -428,6 +454,9 @@ impl ImageFormat {
             Self::Avif => "avif",
             Self::Jxl => "jxl",
             Self::Pcx => "pcx",
+            Self::Ppm => "ppm",
+            Self::Pgm => "pgm",
+            Self::Pam => "pam",
         }
     }
 
@@ -445,6 +474,9 @@ impl ImageFormat {
             Self::Avif => "AVIF",
             Self::Jxl => "JPEG XL",
             Self::Pcx => "PCX",
+            Self::Ppm => "PPM",
+            Self::Pgm => "PGM (grayscale)",
+            Self::Pam => "PAM",
         }
     }
 
@@ -460,6 +492,7 @@ impl ImageFormat {
             Self::Ico => image::ImageFormat::Ico,
             Self::Tga => image::ImageFormat::Tga,
             Self::Qoi => image::ImageFormat::Qoi,
+            Self::Ppm | Self::Pgm | Self::Pam => image::ImageFormat::Pnm,
             Self::Avif | Self::Jxl | Self::Pcx => return None,
         })
     }
@@ -683,7 +716,7 @@ pub enum InputArity {
 /// Audio file extensions, a subset of [`InputKind::Media`]'s.
 pub const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "aac", "m4a", "flac", "wav", "ogg", "opus", "wma", "aiff", "aif", "ac3", "amr", "ape",
-    "mka", "wv", "mp2", "mmf", "m4r",
+    "mka", "wv", "mp2", "mmf", "m4r", "caf", "au", "snd",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -712,11 +745,11 @@ impl InputKind {
                 "mp4", "m4v", "mkv", "webm", "mov", "avi", "flv", "wmv", "mpg", "mpeg", "ts",
                 "mts", "m2ts", "ogv", "3gp", "gif", "vob", "rmvb", "rm", "asf", "swf", "mp3",
                 "aac", "m4a", "flac", "wav", "ogg", "opus", "wma", "aiff", "aif", "ac3", "amr",
-                "ape", "mka", "wv", "mp2", "mmf", "m4r",
+                "ape", "mka", "wv", "mp2", "mmf", "m4r", "caf", "au", "snd",
             ],
             Self::Images => &[
                 "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "ico", "tga", "qoi",
-                "pnm", "ppm", "pgm", "pbm", "heic", "heif", "avif", "jxl",
+                "pnm", "ppm", "pgm", "pbm", "pam", "heic", "heif", "avif", "jxl", "pcx",
             ],
             Self::Pdf => &["pdf"],
             Self::Documents => &[

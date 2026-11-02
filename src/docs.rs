@@ -157,13 +157,44 @@ pub fn is_web_url(text: &str) -> bool {
     {
         return false;
     }
-    let rest = text
-        .strip_prefix("https://")
-        .or_else(|| text.strip_prefix("http://"));
-    rest.is_some_and(|r| {
-        let host_end = r.find(['/', ':', '?', '#']).unwrap_or(r.len());
-        let host = &r[..host_end];
-        !host.is_empty() && !host.starts_with('.') && !host.ends_with('.') && !host.contains('/')
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
+        || authority.is_empty()
+        || authority.contains('@')
+        || text.contains('\\')
+    {
+        return false;
+    }
+    // Reject malformed percent escapes rather than relying on URL repair.
+    let bytes = text.as_bytes();
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte == b'%'
+            && (i + 2 >= bytes.len()
+                || !bytes[i + 1].is_ascii_hexdigit()
+                || !bytes[i + 2].is_ascii_hexdigit())
+        {
+            return false;
+        }
+    }
+    url::Url::parse(text).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host().is_some_and(|host| match host {
+                url::Host::Domain(domain) => domain.trim_end_matches('.').split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                        && label
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                }),
+                _ => true,
+            })
+            && url.username().is_empty()
+            && url.password().is_none()
     })
 }
 
@@ -176,6 +207,30 @@ mod tests {
             .map(|a| a.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[test]
+    fn web_addresses_reject_credentials_and_malformed_authorities() {
+        for invalid in [
+            "https://user:pass@example.com",
+            "https://example.com:bad/",
+            "https://example.com:99999/",
+            "https://[invalid]/",
+            "https://example.com\\evil",
+            "https://example.com/%zz",
+            "https://example.com/%",
+            "https://exa;mple.com/",
+        ] {
+            assert!(!is_web_url(invalid), "{invalid}");
+        }
+        for valid in [
+            "https://example.com/watch?v=1&list=2",
+            "http://127.0.0.1:8080/video",
+            "https://[::1]/v",
+            "https://example.com/a%20b",
+        ] {
+            assert!(is_web_url(valid), "{valid}");
+        }
     }
 
     #[test]

@@ -1353,6 +1353,7 @@ dependencies = [
  "tracing-subscriber",
  "ttf-parser",
  "ureq",
+ "url",
  "winit",
  "winreg",
  "winresource",

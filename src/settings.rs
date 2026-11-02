@@ -62,6 +62,8 @@ pub struct Settings {
     pub completion_sound: CompletionSound,
     /// The right-click menu was added once (first start); later the user decides.
     pub shell_menu_setup: bool,
+    /// The welcome guide was finished or skipped.
+    pub welcome_seen: bool,
 }
 
 /// ffmpeg already spreads one encode over several cores, so run about half as
@@ -129,6 +131,7 @@ impl Default for Settings {
             skipped_version: None,
             completion_sound: CompletionSound::Default,
             shell_menu_setup: false,
+            welcome_seen: false,
         }
     }
 }
@@ -136,6 +139,16 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn welcome_dismissal_survives_restart() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.welcome_seen);
+        settings.welcome_seen = true;
+        let saved = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&saved).unwrap();
+        assert!(restored.welcome_seen);
+    }
 
     #[test]
     fn missing_fields_fall_back_to_defaults() {

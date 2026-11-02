@@ -26,7 +26,7 @@
 - **Light and dark mode** - follows your system, or pick one yourself.
 - **Right-click to convert** - choose files in your file manager, right-click, and pick **Convert with FMX**.
 - **Many files at once** - add a whole folder; FMX works on several files side by side and shows the progress of each.
-- **Speaks your language** - English, Español, Français, Deutsch and עברית.
+- **Speaks your language** - English, Español, Français, Deutsch, עברית and Русский.
 - **Free, no ads, no account** - open source and free forever.
 
 ---
@@ -66,9 +66,9 @@ When everything is done, FMX can play a sound, show a notification, open the fol
 
 **Video:** MP4 (H.264 · H.265) · MKV · WebM · MOV · AVI · FLV · WMV · MPG · VOB · TS · OGV · 3GP · SWF · GIF · Animated WebP
 
-**Audio:** MP3 · AAC · M4A · M4R ringtone · FLAC · WAV · OGG · Opus · WMA · AIFF · AC3 · MP2 · WavPack · MKA · MMF · AMR · APE
+**Audio:** MP3 · AAC · M4A · M4R ringtone · FLAC · WAV · OGG · Opus · WMA · AIFF · AC3 · MP2 · WavPack · MKA · MMF · AMR · APE · ALAC (Apple Lossless) · CAF · AU
 
-**Image:** PNG · JPG · WebP · BMP · TIFF · GIF · ICO · TGA · QOI · AVIF · JPEG XL · PCX
+**Image:** PNG · JPG · WebP · BMP · TIFF · GIF · ICO · TGA · QOI · AVIF · JPEG XL · PCX · PPM · PGM · PAM
 
 **Documents:** PDF · Word · Excel · TXT · HTML · EPUB · FB2 · MOBI / AZW3 (with Calibre)
 
