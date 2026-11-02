@@ -146,7 +146,7 @@ Turn auto-check off, or hit **Check now**, in **Settings → Updates**.
 
 | Variable | Effect |
 |---|---|
-| `FMX_LANG=es\|fr\|de\|he\|en` | Override UI language (also changeable in Settings) |
+| `FMX_LANG=es\|fr\|de\|he\|ru\|en` | Override UI language (also changeable in Settings) |
 | `FMX_LOG=<filter>` | Log level filter, e.g. `debug` (overrides the Settings switch) |
 | `FMX_FFMPEG=<path>` | Force a specific ffmpeg binary |
 | `FMX_RENDERER=glow` | Windows: use OpenGL instead of Direct3D/Vulkan |

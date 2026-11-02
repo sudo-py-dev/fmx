@@ -466,7 +466,8 @@ fn audio_codec(format: AudioFormat, opts: &Options) -> Vec<OsString> {
         AudioFormat::Flac => strings(&["-c:a", "flac"]),
         // APE is encoded from this WAV by Monkey's Audio afterwards.
         AudioFormat::Wav | AudioFormat::Ape => strings(&["-c:a", "pcm_s16le"]),
-        AudioFormat::Aiff => strings(&["-c:a", "pcm_s16be"]),
+        AudioFormat::Aiff | AudioFormat::Caf | AudioFormat::Au => strings(&["-c:a", "pcm_s16be"]),
+        AudioFormat::Alac => strings(&["-c:a", "alac"]),
         AudioFormat::Wv => strings(&["-c:a", "wavpack"]),
         AudioFormat::Ogg => strings(&[
             "-c:a",

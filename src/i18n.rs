@@ -20,6 +20,7 @@ const LOCALES: &[(&str, &str)] = &[
     ("fr", include_str!("../locales/fr.json")),
     ("de", include_str!("../locales/de.json")),
     ("he", include_str!("../locales/he.json")),
+    ("ru", include_str!("../locales/ru.json")),
 ];
 /// Languages written right to left.
 const RTL_LANGUAGES: &[&str] = &["he"];
@@ -137,6 +138,20 @@ mod tests {
             let parsed: Result<HashMap<String, String>, _> = serde_json::from_str(src);
             assert!(parsed.is_ok(), "locale {code} is not valid JSON");
         }
+    }
+
+    #[test]
+    fn russian_translation_covers_every_english_key() {
+        let en = &catalogs()[FALLBACK];
+        let ru_index = LOCALES.iter().position(|(code, _)| *code == "ru").unwrap();
+        let ru = &catalogs()[ru_index];
+        let missing: Vec<_> = en.keys().filter(|key| !ru.contains_key(*key)).collect();
+        assert!(
+            missing.is_empty(),
+            "missing Russian translations: {missing:?}"
+        );
+        assert!(ru.values().all(|text| !text.trim().is_empty()));
+        assert_eq!(ru.get("language.name").map(String::as_str), Some("Русский"));
     }
 
     /// Translations may lag behind, but must not invent keys or drop placeholders.

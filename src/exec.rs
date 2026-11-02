@@ -440,8 +440,10 @@ fn run_tool(
                 .filter(|u| docs::is_web_url(u))
                 .ok_or(JobError::BadUrl)?;
             let ffmpeg = need(toolbox, External::Ffmpeg)?;
+            let args = download::args(url, out, ffmpeg, &opts.download).map_err(|key| {
+                JobError::Plan(crate::plan::PlanError::InvalidValue(tr(key).to_owned()))
+            })?;
             std::fs::create_dir_all(out).map_err(JobError::Io)?;
-            let args = download::args(url, out, ffmpeg, &opts.download);
             process::run(
                 need(toolbox, External::YtDlp)?,
                 &args,
@@ -875,6 +877,55 @@ mod e2e {
         let ffmpeg = toolbox.get(External::Ffmpeg).expect("ffmpeg");
         ffmpeg::probe(ffmpeg, path, None)
             .is_ok_and(|i| i.has_audio || i.has_video || i.has_subtitles)
+    }
+
+    #[test]
+    fn added_lossless_audio_formats_round_trip() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).expect("ffmpeg");
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.wav");
+        generate(
+            ffmpeg,
+            &source,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.1",
+                "-c:a",
+                "pcm_s16le",
+            ],
+        );
+        let pcm = |path: &Path| {
+            let result = Command::new(ffmpeg)
+                .args(["-v", "error", "-i"])
+                .arg(path)
+                .args(["-f", "s16le", "-c:a", "pcm_s16le", "-"])
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            result.stdout
+        };
+        let original = pcm(&source);
+        assert!(!original.is_empty());
+        let mut claimed = HashSet::new();
+        for format in [AudioFormat::Alac, AudioFormat::Caf, AudioFormat::Au] {
+            let outputs = run(
+                &tb,
+                Tool::ToAudio(format),
+                std::slice::from_ref(&source),
+                &Options::default(),
+                dir.path(),
+                &mut claimed,
+            )
+            .unwrap();
+            assert_eq!(pcm(&outputs[0]), original, "{format:?} changed samples");
+        }
     }
 
     #[test]

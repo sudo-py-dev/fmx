@@ -237,6 +237,9 @@ fn image(f: ImageFormat) -> Art {
             I::Avif => hue::VIOLET,
             I::Jxl => hue::ROSE,
             I::Pcx => hue::SKY,
+            I::Ppm => hue::ORANGE,
+            I::Pgm => hue::SLATE,
+            I::Pam => hue::TEAL,
         },
     )
 }
