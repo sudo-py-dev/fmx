@@ -22,7 +22,7 @@ Open http://localhost:8080.
 
 ## Deploy to Vercel
 
-Import the repository into Vercel. Set **Root Directory** to `locales/website` (or `website` if the locales directory itself is your repository root). Select **Other** as the framework. The included `vercel.json` serves `dist` without a build step. Deploy normally; no environment variables are needed. Alternatively, run `vercel` from this directory with the Vercel CLI.
+Import the repository into Vercel. Set **Root Directory** to `website`. Select **Other** as the framework. The included `vercel.json` serves `dist` without a build step. Deploy normally; no environment variables are needed. Alternatively, run `vercel` from this directory with the Vercel CLI.
 
 ## Release links
 
