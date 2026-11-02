@@ -207,6 +207,7 @@ pub struct FmxApp {
     files: Vec<PathBuf>,
     url: String,
     toasts: Toasts,
+    shortcut_result: Option<std::sync::mpsc::Receiver<std::io::Result<std::path::PathBuf>>>,
     show_settings: bool,
     settings_tab: SettingsTab,
     media_info: Option<MediaInfoDialog>,
@@ -309,6 +310,7 @@ impl FmxApp {
             files: Vec::new(),
             url: String::new(),
             toasts: Toasts::default(),
+            shortcut_result: None,
             show_settings: false,
             settings_tab: SettingsTab::General,
             media_info: None,
@@ -435,6 +437,10 @@ impl FmxApp {
         tracing::info!(?request, "request");
         match request {
             instance::Request::Focus => {}
+            instance::Request::Tool { tool, files } => {
+                self.select_tool(tool);
+                self.add_files(files);
+            }
             instance::Request::Open(files) => {
                 // Pick a tool for the files when the current one doesn't take them.
                 if let Some(tool) = files
@@ -543,68 +549,46 @@ impl FmxApp {
         self.focus_url = tool.input_kind() == InputKind::Url;
     }
 
-    /// Shows a star that toggles the tool's favorite status and returns whether it was clicked.
-    fn favorite_button(&mut self, ui: &mut egui::Ui, tool: Tool) -> bool {
-        let favorite = self.settings.favorite_tools.contains(&tool);
-        let label = tr(if favorite {
-            "favorites.remove"
-        } else {
-            "favorites.add"
+    /// Favorite and desktop shortcut actions shared by every tool card and editor.
+    fn tool_menu(&mut self, ui: &mut egui::Ui, tool: Tool) -> bool {
+        let more =
+            widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("shortcut.actions"));
+        let popup = egui::Popup::menu(&more).show(|ui| {
+            dir::menu(ui, |ui| {
+                let favorite = self.settings.favorite_tools.contains(&tool);
+                if ui
+                    .button(tr(if favorite {
+                        "favorites.remove"
+                    } else {
+                        "favorites.add"
+                    }))
+                    .clicked()
+                {
+                    self.settings.toggle_favorite(tool);
+                    if self.settings.favorite_tools.is_empty() {
+                        self.show_favorites = false;
+                    }
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.shortcut_result.is_none(),
+                        egui::Button::new(tr("shortcut.create")),
+                    )
+                    .clicked()
+                {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.shortcut_result = Some(rx);
+                    let ctx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(crate::shortcut::create(tool));
+                        ctx.request_repaint();
+                    });
+                    ui.close();
+                }
+            })
         });
-        let p = theme::palette(ui);
-        let (rect, response) =
-            ui.allocate_exact_size(egui::Vec2::splat(28.0), egui::Sense::click());
-        response
-            .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, favorite, label));
-        let response = response
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(label);
-        if ui.is_rect_visible(rect) {
-            let hover = ui.ctx().animate_bool_with_time(
-                response.id.with("hover"),
-                response.hovered(),
-                theme::MOTION,
-            );
-            let amber = art::hue::AMBER;
-            let fill = if favorite {
-                amber.gamma_multiply(0.16 + 0.08 * hover)
-            } else {
-                p.control_hover.gamma_multiply(hover)
-            };
-            if fill != egui::Color32::TRANSPARENT {
-                ui.painter().circle_filled(rect.center(), 13.0, fill);
-            }
-            if response.has_focus() {
-                ui.painter().circle_stroke(
-                    rect.center(),
-                    13.0,
-                    egui::Stroke::new(2.0, p.accent.gamma_multiply(0.55)),
-                );
-            }
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                icons::STAR,
-                if favorite {
-                    icons::fill(16.0)
-                } else {
-                    egui::FontId::proportional(16.0)
-                },
-                if favorite {
-                    amber
-                } else {
-                    p.text_weak.gamma_multiply(0.5 + 0.35 * hover)
-                },
-            );
-        }
-        let clicked = response.clicked();
-        if clicked {
-            self.settings.toggle_favorite(tool);
-            if self.settings.favorite_tools.is_empty() {
-                self.show_favorites = false;
-            }
-        }
-        clicked
+        more.clicked() || popup.is_some()
     }
 
     /// Opens a category, leaving the editor and favorites view and clearing the search.
@@ -1501,24 +1485,21 @@ impl FmxApp {
                     reason.is_some(),
                 )
                 .on_hover_text(hover);
-                // The star has its own click target and keyboard focus, separate
-                // from opening the tool. Mirror it into the card's end corner.
-                let star_size = 28.0;
-                let star = egui::Rect::from_min_size(
+                let menu_rect = egui::Rect::from_min_size(
                     egui::pos2(
-                        dir::mirror_x(card.rect, card.rect.right() - star_size - 10.0, star_size),
+                        dir::mirror_x(card.rect, card.rect.right() - 38.0, 28.0),
                         card.rect.top() + 10.0,
                     ),
-                    egui::Vec2::splat(star_size),
+                    egui::Vec2::splat(28.0),
                 );
                 let mut actions = ui.new_child(
                     egui::UiBuilder::new()
-                        .id_salt(("favorite", tool))
-                        .max_rect(star)
+                        .id_salt(("tool_actions", tool))
+                        .max_rect(menu_rect)
                         .layout(dir::leading(Align::Center)),
                 );
-                let toggled = self.favorite_button(&mut actions, tool);
-                if card.clicked() && !toggled {
+                let menu_clicked = self.tool_menu(&mut actions, tool);
+                if card.clicked() && !menu_clicked {
                     picked = Some(tool);
                 }
             }
@@ -1662,11 +1643,11 @@ impl FmxApp {
         }
         let mut end = ui.new_child(
             egui::UiBuilder::new()
-                .id_salt("editor_favorite")
+                .id_salt("editor_actions")
                 .max_rect(row)
                 .layout(dir::trailing(Align::Center)),
         );
-        self.favorite_button(&mut end, self.tool);
+        self.tool_menu(&mut end, self.tool);
         ui.vertical_centered(|ui| {
             ui.add(
                 egui::Label::new(RichText::new(self.tool.description()).color(p.text_weak)).wrap(),
@@ -2696,7 +2677,7 @@ impl FmxApp {
                 }
                 quality_row(ui, &mut opts.quality);
                 image_rows(ui, opts);
-                watermark_row(ui, &mut opts.edit);
+                watermark_row(ui, &mut opts.edit, "image_wm_corner");
             }
             Tool::ToDevice(device) => {
                 let p = device.profile();
@@ -3094,20 +3075,7 @@ impl FmxApp {
                     row(ui, tr("option.subtitles"), |ui| {
                         file_slot(ui, &mut edit.subtitle, &["srt", "ass", "ssa", "vtt"]);
                     });
-                    row(ui, tr("option.watermark"), |ui| {
-                        file_slot(
-                            ui,
-                            &mut edit.watermark,
-                            &["png", "jpg", "jpeg", "webp", "bmp"],
-                        );
-                        if edit.watermark.is_some() {
-                            let mut corner = edit.watermark_corner.unwrap_or(Corner::BottomRight);
-                            combo(ui, "wm_corner", &mut corner, &Corner::ALL, |c| {
-                                c.label().to_owned()
-                            });
-                            edit.watermark_corner = Some(corner);
-                        }
-                    });
+                    watermark_row(ui, edit, "wm_corner");
                 }
             },
         );
@@ -4751,18 +4719,7 @@ fn file_art(path: &Path, kind: InputKind) -> art::Art {
 
 /// A file size such as `12.4 MB` (decimal units, like file managers).
 fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
+    download::human_bytes(bytes as f64)
 }
 
 /// Shows release notes written in simple Markdown: headings, bullet lists
@@ -4934,12 +4891,7 @@ fn file_name(path: &Path) -> String {
 
 /// Formats a duration as `m:ss` or `h:mm:ss`.
 fn clock(d: Duration) -> String {
-    let s = d.as_secs();
-    if s >= 3600 {
-        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
-    } else {
-        format!("{}:{:02}", s / 60, s % 60)
-    }
+    options::clock_seconds(d.as_secs())
 }
 
 /// Estimated time left from elapsed time and progress.
@@ -5699,7 +5651,7 @@ fn rect_editor(ui: &mut egui::Ui, rect: &mut Rect) {
     }
 }
 
-fn watermark_row(ui: &mut egui::Ui, edit: &mut Edit) {
+fn watermark_row(ui: &mut egui::Ui, edit: &mut Edit, corner_id: &str) {
     row(ui, tr("option.watermark"), |ui| {
         file_slot(
             ui,
@@ -5708,7 +5660,7 @@ fn watermark_row(ui: &mut egui::Ui, edit: &mut Edit) {
         );
         if edit.watermark.is_some() {
             let mut corner = edit.watermark_corner.unwrap_or(Corner::BottomRight);
-            combo(ui, "image_wm_corner", &mut corner, &Corner::ALL, |c| {
+            combo(ui, corner_id, &mut corner, &Corner::ALL, |c| {
                 c.label().to_owned()
             });
             edit.watermark_corner = Some(corner);
@@ -6119,6 +6071,20 @@ impl eframe::App for FmxApp {
         self.media_info_window(&ctx);
         self.preview_window(&ctx);
         self.welcome_window(&ctx);
+        if let Some(result) = self
+            .shortcut_result
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.shortcut_result = None;
+            match result {
+                Ok(_) => self.toasts.push(ToastKind::Success, tr("shortcut.created")),
+                Err(error) => self.toasts.push(
+                    ToastKind::Error,
+                    trf("shortcut.failed", &[("error", &error.to_string())]),
+                ),
+            }
+        }
         self.toasts.show(&ctx);
     }
 

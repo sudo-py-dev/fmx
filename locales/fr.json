@@ -612,5 +612,9 @@
   "download.retries": "Nouvelles tentatives en cas d’erreur",
   "download.connection": "Paramètres de connexion",
   "download.cookies": "Fichier de cookies",
-  "download.cookies_hint": "Fichier facultatif de cookies Netscape pour un accès connecté. Videz le champ pour le désactiver."
+  "download.cookies_hint": "Fichier facultatif de cookies Netscape pour un accès connecté. Videz le champ pour le désactiver.",
+  "shortcut.create": "Créer un raccourci sur le bureau",
+  "shortcut.actions": "Actions de l’outil",
+  "shortcut.created": "Raccourci créé sur le bureau",
+  "shortcut.failed": "Impossible de créer le raccourci : {error}"
 }

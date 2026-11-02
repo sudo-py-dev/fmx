@@ -1417,19 +1417,36 @@ fn normalized_audio_inputs(inputs: &[Input]) -> Result<String, PlanError> {
         .collect())
 }
 
-fn join_audio(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {
-    require_count(inputs, 2, false)?;
-    let mut graph = normalized_audio_inputs(inputs)?;
-    let pads: String = (0..inputs.len()).map(|i| format!("[a{i}]")).collect();
-    graph.push_str(&format!("{pads}concat=n={}:v=0:a=1[a]", inputs.len()));
-    Ok(inputs
+/// Shared input, codec and output setup for concatenated or mixed audio.
+fn audio_graph(
+    inputs: &[Input],
+    output: &Path,
+    opts: &Options,
+    graph: String,
+    expected: Option<f64>,
+) -> Plan {
+    inputs
         .iter()
         .fold(base(), |args, i| args.input(&i.path))
         .flag("-filter_complex", graph)
         .flag("-map", "[a]")
         .extend(audio_codec(opts.join_audio_format, opts))
         .output(output)
-        .expect(total_duration(inputs)))
+        .expect(expected)
+}
+
+fn join_audio(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {
+    require_count(inputs, 2, false)?;
+    let mut graph = normalized_audio_inputs(inputs)?;
+    let pads: String = (0..inputs.len()).map(|i| format!("[a{i}]")).collect();
+    graph.push_str(&format!("{pads}concat=n={}:v=0:a=1[a]", inputs.len()));
+    Ok(audio_graph(
+        inputs,
+        output,
+        opts,
+        graph,
+        total_duration(inputs),
+    ))
 }
 
 fn audio_mix(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {
@@ -1440,14 +1457,7 @@ fn audio_mix(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, Pl
         "{pads}amix=inputs={}:duration=longest:normalize=0[a]",
         inputs.len()
     ));
-    Ok(inputs
-        .iter()
-        .fold(base(), |args, i| args.input(&i.path))
-        .flag("-filter_complex", graph)
-        .flag("-map", "[a]")
-        .extend(audio_codec(opts.join_audio_format, opts))
-        .output(output)
-        .expect(longest(inputs)))
+    Ok(audio_graph(inputs, output, opts, graph, longest(inputs)))
 }
 
 fn video_mix(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {

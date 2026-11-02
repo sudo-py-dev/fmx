@@ -612,5 +612,9 @@
   "welcome.back": "Назад",
   "welcome.next": "Далее",
   "welcome.finish": "Приступить",
-  "welcome.reopen": "Как пользоваться FMX"
+  "welcome.reopen": "Как пользоваться FMX",
+  "shortcut.create": "Создать ярлык на рабочем столе",
+  "shortcut.actions": "Действия инструмента",
+  "shortcut.created": "Ярлык создан на рабочем столе",
+  "shortcut.failed": "Не удалось создать ярлык: {error}"
 }

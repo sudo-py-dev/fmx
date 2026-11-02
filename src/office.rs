@@ -58,11 +58,7 @@ pub const NATIVE_EXTENSIONS: &[&str] = &[
 
 /// Reads a document into blocks, choosing the parser by extension.
 pub fn read_document(path: &Path) -> Result<Vec<Block>, OfficeError> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let ext = extension(path);
     match ext.as_str() {
         "docx" => docx_blocks(&zip_part(path, "word/document.xml")?),
         "odt" => odf_blocks(&zip_part(path, "content.xml")?),
@@ -79,20 +75,40 @@ pub fn read_document(path: &Path) -> Result<Vec<Block>, OfficeError> {
     }
 }
 
-fn read_text(path: &Path) -> Result<String, OfficeError> {
+/// Lowercase extension used by native document readers and conversion dispatch.
+pub(crate) fn extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// Reads at most `limit` bytes; callers retain their format's decoding rules.
+pub(crate) fn read_bytes(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    File::open(path)?
-        .take(MAX_TEXT_BYTES)
-        .read_to_end(&mut bytes)?;
+    reader.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn read_text(path: &Path) -> Result<String, OfficeError> {
+    let bytes = read_bytes(File::open(path)?, MAX_TEXT_BYTES)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Reads a size-limited XML entry from an Office or EPUB package.
+pub(crate) fn zip_bytes(
+    archive: &mut zip::ZipArchive<File>,
+    name: &str,
+) -> Result<Vec<u8>, OfficeError> {
+    Ok(read_bytes(
+        archive.by_name(name).map_err(corrupt)?,
+        MAX_PART_BYTES,
+    )?)
 }
 
 fn zip_part(path: &Path, name: &str) -> Result<String, OfficeError> {
     let mut archive = zip::ZipArchive::new(File::open(path)?).map_err(corrupt)?;
-    let part = archive.by_name(name).map_err(corrupt)?;
-    let mut bytes = Vec::new();
-    part.take(MAX_PART_BYTES).read_to_end(&mut bytes)?;
-    String::from_utf8(bytes).map_err(corrupt)
+    String::from_utf8(zip_bytes(&mut archive, name)?).map_err(corrupt)
 }
 
 pub(crate) fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {

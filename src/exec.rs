@@ -46,14 +46,61 @@ pub fn execute_with_detail(
     if let Some(missing) = toolbox.missing(spec.tool.requires()) {
         return Err(JobError::Missing(missing));
     }
-    let result = run_tool(spec, toolbox, cancel, &mut on_progress, &mut on_detail);
-    match &result {
-        Ok(()) => on_progress(1.0),
-        // Downloads write into a folder the user owns; never delete it.
-        Err(_) if spec.tool != Tool::Download => remove_partial(&spec.output),
-        Err(_) => {}
+    if spec.tool == Tool::Download {
+        // Downloads intentionally add files to an existing user-owned folder.
+        let result = run_tool(spec, toolbox, cancel, &mut on_progress, &mut on_detail);
+        if result.is_ok() {
+            on_progress(1.0);
+        }
+        return result;
     }
-    result
+    let parent = spec
+        .output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let staging = tempfile::Builder::new()
+        .prefix(".fmx-job-")
+        .tempdir_in(parent)
+        .map_err(JobError::Io)?;
+    let name = spec.output.file_name().ok_or(JobError::NoOutput)?;
+    let mut staged = spec.clone();
+    staged.output = staging.path().join(name);
+    // Only the private staging folder is removed on failure or cancellation.
+    run_tool(&staged, toolbox, cancel, &mut on_progress, &mut on_detail)?;
+    if !staged.output.exists() {
+        return Err(JobError::NoOutput);
+    }
+    // Include companion files produced by tools such as pdftohtml.
+    for entry in std::fs::read_dir(staging.path()).map_err(JobError::Io)? {
+        let entry = entry.map_err(JobError::Io)?;
+        publish_output(&entry.path(), &parent.join(entry.file_name())).map_err(JobError::Io)?;
+    }
+    on_progress(1.0);
+    Ok(())
+}
+
+/// Publishes without replacing an existing destination, including dangling links.
+/// A publish error can leave completed files, but never deletes destination data.
+fn publish_output(source: &Path, target: &Path) -> std::io::Result<()> {
+    let kind = std::fs::symlink_metadata(source)?.file_type();
+    if kind.is_file() {
+        // Staging is on the same filesystem. Linking is atomic and fails if the
+        // destination exists; unlike rename, it cannot overwrite another file.
+        std::fs::hard_link(source, target)
+    } else if kind.is_dir() {
+        std::fs::create_dir(target)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            publish_output(&entry.path(), &target.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "conversion produced a symlink or special file",
+        ))
+    }
 }
 
 fn need(toolbox: &Toolbox, ext: External) -> Result<&Path, JobError> {
@@ -348,6 +395,7 @@ fn run_tool(
     let opts = &spec.options;
     let out = spec.output.as_path();
     let ffmpeg_path = toolbox.get(External::Ffmpeg);
+    let run = |external, args: &[OsString]| run_plain(need(toolbox, external)?, args, cancel);
     match spec.tool {
         Tool::ToImage(format) => {
             imaging::convert(first_input(spec)?, out, format, opts, ffmpeg_path)
@@ -382,35 +430,27 @@ fn run_tool(
             std::fs::create_dir_all(out).map_err(JobError::Io)?;
             let args =
                 docs::pdf_to_images(first_input(spec)?, out, opts.pdf_dpi, opts.pdf_image_format);
-            run_plain(need(toolbox, External::Pdftoppm)?, &args, cancel)
+            run(External::Pdftoppm, &args)
         }
-        Tool::PdfToText => run_plain(
-            need(toolbox, External::Pdftotext)?,
+        Tool::PdfToText => run(
+            External::Pdftotext,
             &docs::pdf_to_text(first_input(spec)?, out),
-            cancel,
         ),
-        Tool::PdfToHtml => run_plain(
-            need(toolbox, External::Pdftohtml)?,
+        Tool::PdfToHtml => run(
+            External::Pdftohtml,
             &docs::pdf_to_html(first_input(spec)?, out),
-            cancel,
         ),
-        Tool::PdfMerge => run_plain(
-            need(toolbox, External::Pdfunite)?,
-            &docs::pdf_merge(&spec.inputs, out),
-            cancel,
-        ),
+        Tool::PdfMerge => run(External::Pdfunite, &docs::pdf_merge(&spec.inputs, out)),
         Tool::PdfSplit => {
             std::fs::create_dir_all(out).map_err(JobError::Io)?;
-            run_plain(
-                need(toolbox, External::Pdfseparate)?,
+            run(
+                External::Pdfseparate,
                 &docs::pdf_split(first_input(spec)?, out),
-                cancel,
             )
         }
-        Tool::PdfCompress => run_plain(
-            need(toolbox, External::Ghostscript)?,
+        Tool::PdfCompress => run(
+            External::Ghostscript,
             &docs::pdf_compress(first_input(spec)?, out, opts.quality),
-            cancel,
         ),
         Tool::OfficeToPdf => office_to_pdf(spec, toolbox, cancel),
         Tool::PdfToWord => pdf_to_word(spec, toolbox, cancel),
@@ -554,11 +594,7 @@ fn run_tool(
 /// LibreOffice, which is used only if it happens to be installed.
 fn office_to_pdf(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
     let input = first_input(spec)?;
-    let ext = input
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let ext = office::extension(input);
     if !office::NATIVE_EXTENSIONS.contains(&ext.as_str())
         && toolbox.get(External::Soffice).is_some()
     {
@@ -594,8 +630,8 @@ fn ebook_convert(
     )
 }
 
-/// Lays out the PDF's text with Poppler and writes it as a Word document.
-fn pdf_to_word(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
+/// Extracts laid-out PDF text for Word and Excel conversion.
+fn pdf_text(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<String, JobError> {
     let input = first_input(spec)?;
     let parent = spec.output.parent().unwrap_or(Path::new("."));
     let text_file = tempfile::Builder::new()
@@ -607,26 +643,19 @@ fn pdf_to_word(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result
         &docs::pdf_to_text(input, text_file.path()),
         cancel,
     )?;
-    let text = std::fs::read_to_string(text_file.path()).map_err(JobError::Io)?;
+    std::fs::read_to_string(text_file.path()).map_err(JobError::Io)
+}
+
+/// Lays out the PDF's text with Poppler and writes it as a Word document.
+fn pdf_to_word(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
+    let text = pdf_text(spec, toolbox, cancel)?;
     office::write_docx(&office::text_pages(&text), &spec.output).map_err(JobError::Office)
 }
 
-/// LibreOffice writes `<stem>.<ext>` into an output folder; convert into a
-/// private folder beside the destination, then move the result into place.
 /// Lays out the PDF's text with Poppler, then writes one sheet per page.
 fn pdf_to_excel(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), JobError> {
-    let input = first_input(spec)?;
+    let text = pdf_text(spec, toolbox, cancel)?;
     let parent = spec.output.parent().unwrap_or(Path::new("."));
-    let text_file = tempfile::Builder::new()
-        .suffix(".txt")
-        .tempfile_in(parent)
-        .map_err(JobError::Io)?;
-    run_plain(
-        need(toolbox, External::Pdftotext)?,
-        &docs::pdf_to_text(input, text_file.path()),
-        cancel,
-    )?;
-    let text = std::fs::read_to_string(text_file.path()).map_err(JobError::Io)?;
     let pages = sheet::parse_pages(&text);
     let staging = tempfile::Builder::new()
         .suffix(".xlsx")
@@ -718,20 +747,6 @@ fn rip_cd(
         done += length;
     }
     Ok(())
-}
-
-/// Deletes a half-written output so failed jobs leave nothing behind.
-fn remove_partial(output: &Path) {
-    let removed = if output.is_dir() {
-        std::fs::remove_dir_all(output)
-    } else {
-        std::fs::remove_file(output)
-    };
-    if let Err(e) = removed
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %output.display(), error = %e, "could not remove partial output");
-    }
 }
 
 /// End-to-end runs against real programs. Skipped unless `FMX_FFMPEG` points
@@ -1256,7 +1271,6 @@ mod e2e {
                 output: fx.root.join(name),
                 options: opts,
             };
-            std::fs::create_dir_all(&spec.output).expect("dir");
             let result = execute(&spec, &tb, &AtomicBool::new(false), |_| {});
             assert!(result.is_ok(), "{result:?}");
             let mut names: Vec<String> = std::fs::read_dir(&spec.output)
@@ -1622,5 +1636,97 @@ mod office_e2e {
             crate::office::read_document(&docx).expect("read docx")
         );
         assert!(text.contains("Round trip words"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn publishing_never_overwrites_existing_files_or_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        std::fs::write(&source, b"new").unwrap();
+        std::fs::write(&target, b"keep").unwrap();
+        assert!(publish_output(&source, &target).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("unrelated"), b"keep").unwrap();
+        assert!(publish_output(&source, &target).is_err());
+        assert_eq!(std::fs::read(target.join("unrelated")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn failed_conversion_preserves_destination_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.png");
+        std::fs::create_dir(&output).unwrap();
+        std::fs::write(output.join("unrelated"), b"keep").unwrap();
+        let spec = JobSpec {
+            tool: Tool::ToImage(crate::catalog::ImageFormat::Png),
+            inputs: vec![dir.path().join("missing.png")],
+            url: None,
+            output: output.clone(),
+            options: Default::default(),
+        };
+        assert!(execute(&spec, &Toolbox::default(), &AtomicBool::new(false), |_| {}).is_err());
+        assert_eq!(std::fs::read(output.join("unrelated")).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn conversion_publishes_image_and_refuses_late_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.png");
+        image::DynamicImage::new_rgb8(2, 2).save(&input).unwrap();
+        let output = dir.path().join("output.png");
+        let spec = JobSpec {
+            tool: Tool::ToImage(crate::catalog::ImageFormat::Png),
+            inputs: vec![input],
+            url: None,
+            output: output.clone(),
+            options: Default::default(),
+        };
+        execute(&spec, &Toolbox::default(), &AtomicBool::new(false), |_| {}).unwrap();
+        assert_eq!(image::open(&output).unwrap().width(), 2);
+        std::fs::write(&output, b"keep").unwrap();
+        assert!(execute(&spec, &Toolbox::default(), &AtomicBool::new(false), |_| {}).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn publishing_preserves_directory_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("page.png"), b"image").unwrap();
+        let target = dir.path().join("target");
+        publish_output(&source, &target).unwrap();
+        assert_eq!(std::fs::read(target.join("page.png")).unwrap(), b"image");
+        assert!(publish_output(&source, &target).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publishing_rejects_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        std::os::unix::fs::symlink("missing", &source).unwrap();
+        assert!(publish_output(&source, &target).is_err());
+        std::fs::remove_file(&source).unwrap();
+        std::fs::write(&source, b"new").unwrap();
+        std::os::unix::fs::symlink("other-missing", &target).unwrap();
+        assert!(publish_output(&source, &target).is_err());
+        assert!(
+            std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

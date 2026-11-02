@@ -114,6 +114,13 @@ pub fn icon_button(
     response.on_hover_text(label)
 }
 
+/// A small icon action with an inset highlight and the full click target.
+pub fn compact_icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> Response {
+    let response = button_tinted_inset(ui, Some(icon), None, "", Kind::Ghost, Size::Small, 4.0);
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    response.on_hover_text(label)
+}
+
 /// A button's laid-out icon and text, and its size.
 struct ButtonContent {
     icon: Option<std::sync::Arc<egui::Galley>>,
@@ -183,6 +190,18 @@ pub fn button_tinted(
     kind: Kind,
     size: Size,
 ) -> Response {
+    button_tinted_inset(ui, icon, tint, text, kind, size, 0.0)
+}
+
+fn button_tinted_inset(
+    ui: &mut egui::Ui,
+    icon: Option<&str>,
+    tint: Option<Color32>,
+    text: &str,
+    kind: Kind,
+    size: Size,
+    inset: f32,
+) -> Response {
     // Disabled through `ui.add_enabled_ui`, like egui's own widgets.
     let enabled = ui.is_enabled();
     let p = theme::palette(ui);
@@ -219,7 +238,7 @@ pub fn button_tinted(
             Stroke::new(1.0, c.gamma_multiply(opacity))
         });
         painter.rect(
-            rect,
+            rect.shrink(inset),
             CornerRadius::same(RADIUS),
             fill.gamma_multiply(opacity),
             stroke,

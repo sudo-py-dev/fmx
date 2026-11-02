@@ -460,12 +460,7 @@ pub fn human_bytes(bytes: f64) -> String {
 
 /// `1:05` or `1:02:05`.
 pub fn clock(secs: f64) -> String {
-    let s = secs.max(0.0).round() as u64;
-    if s >= 3600 {
-        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
-    } else {
-        format!("{}:{:02}", s / 60, s % 60)
-    }
+    crate::options::clock_seconds(secs.max(0.0).round() as u64)
 }
 
 /// Reads one line of yt-dlp output: a progress line from our template, or a

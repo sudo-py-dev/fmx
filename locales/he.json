@@ -612,5 +612,9 @@
   "download.retries": "ניסיונות חוזרים בעת שגיאה",
   "download.connection": "הגדרות חיבור להורדה",
   "download.cookies": "קובץ עוגיות",
-  "download.cookies_hint": "קובץ עוגיות אופציונלי בפורמט Netscape לגישה עם חשבון מחובר. יש לרוקן את השדה כדי להפסיק להשתמש בו."
+  "download.cookies_hint": "קובץ עוגיות אופציונלי בפורמט Netscape לגישה עם חשבון מחובר. יש לרוקן את השדה כדי להפסיק להשתמש בו.",
+  "shortcut.create": "יצירת קיצור דרך בשולחן העבודה",
+  "shortcut.actions": "פעולות כלי",
+  "shortcut.created": "קיצור הדרך נוצר בשולחן העבודה",
+  "shortcut.failed": "לא ניתן ליצור קיצור דרך: {error}"
 }

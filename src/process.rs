@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +18,9 @@ use crate::i18n::{tr, trf};
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Lines of stderr kept for the error message.
 const ERROR_TAIL_LINES: usize = 6;
+/// Bound both individual lines and queued output from untrusted tools.
+const MAX_LINE_BYTES: usize = 16 * 1024;
+const OUTPUT_QUEUE_LINES: usize = 64;
 /// How long a program asked to quit gracefully may take to finish its file.
 const QUIT_GRACE: Duration = Duration::from_secs(15);
 
@@ -104,24 +107,36 @@ impl Drop for KillOnDrop {
     }
 }
 
-fn spawn_line_reader<R: Read + Send + 'static>(source: R, tx: mpsc::Sender<String>) {
+fn spawn_line_reader<R: Read + Send + 'static>(mut source: R, tx: mpsc::SyncSender<String>) {
     thread::spawn(move || {
-        // Some tools redraw progress with `\r`; treat it as a line break too.
-        let mut reader = BufReader::new(source);
-        let mut buf = Vec::new();
+        let mut chunk = [0; 4096];
+        let mut line = Vec::with_capacity(MAX_LINE_BYTES);
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&buf);
-                    for line in text.split(['\r', '\n']).filter(|l| !l.is_empty()) {
-                        if tx.send(line.to_owned()).is_err() {
+            let count = match source.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            for &byte in &chunk[..count] {
+                if matches!(byte, b'\r' | b'\n') {
+                    if !line.is_empty() {
+                        if tx
+                            .send(String::from_utf8_lossy(&line).into_owned())
+                            .is_err()
+                        {
                             return;
                         }
+                        line.clear();
                     }
+                } else if line.len() < MAX_LINE_BYTES {
+                    line.push(byte);
                 }
+                // Discard the rest of an oversized line until its delimiter.
             }
+        }
+        if !line.is_empty() {
+            let _ = tx.send(String::from_utf8_lossy(&line).into_owned());
         }
     });
 }
@@ -241,8 +256,8 @@ fn supervise(
     mut quit: Option<impl FnMut()>,
     mut on_line: impl FnMut(&str),
 ) -> Result<(), RunError> {
-    let (out_tx, out_rx) = mpsc::channel();
-    let (log_tx, log_rx) = mpsc::channel();
+    let (out_tx, out_rx) = mpsc::sync_channel(OUTPUT_QUEUE_LINES);
+    let (log_tx, log_rx) = mpsc::sync_channel(OUTPUT_QUEUE_LINES);
     if let Some(out) = child.0.stdout.take() {
         spawn_line_reader(out, out_tx);
     }
@@ -295,7 +310,7 @@ fn supervise(
                 Ok(None) => thread::sleep(POLL_INTERVAL),
             },
         }
-        for line in other.try_iter() {
+        for line in other.try_iter().take(OUTPUT_QUEUE_LINES) {
             if watch == Watch::Stdout {
                 push_log(&mut tail, line);
             }
@@ -311,7 +326,7 @@ fn supervise(
     if let Ok(line) = log_rx.recv_timeout(POLL_INTERVAL) {
         push_log(&mut tail, line);
     }
-    for line in log_rx.try_iter() {
+    for line in log_rx.try_iter().take(OUTPUT_QUEUE_LINES) {
         push_log(&mut tail, line);
     }
     Err(RunError::Failed {
@@ -439,5 +454,57 @@ mod tests {
             |_| {},
         );
         assert!(result.is_ok(), "{result:?}");
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_lines_are_truncated_and_later_lines_survive() {
+        let mut data = vec![b'x'; MAX_LINE_BYTES * 4];
+        data.extend_from_slice(b"\rnext\nlast");
+        let (tx, rx) = mpsc::sync_channel(OUTPUT_QUEUE_LINES);
+        spawn_line_reader(std::io::Cursor::new(data), tx);
+        let lines: Vec<_> = rx.iter().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES);
+        assert_eq!(lines[1], "next");
+        assert_eq!(lines[2], "last");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_remains_responsive_under_output_flood() {
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let result = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(100));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            run(
+                Path::new("/bin/sh"),
+                &[
+                    "-c".into(),
+                    "while :; do printf 'progress=continue\\n'; printf 'log\\n' >&2; done".into(),
+                ],
+                StopMode::Kill,
+                &cancel,
+                |_| {},
+            )
+        });
+        assert!(matches!(result, Err(RunError::Cancelled)));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn bounded_output_reader_handles_a_slow_consumer() {
+        let data = b"progress=continue\n".repeat(OUTPUT_QUEUE_LINES * 4);
+        let (tx, rx) = mpsc::sync_channel(OUTPUT_QUEUE_LINES);
+        spawn_line_reader(std::io::Cursor::new(data), tx);
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(rx.iter().count(), OUTPUT_QUEUE_LINES * 4);
     }
 }

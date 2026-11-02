@@ -17,14 +17,19 @@ use crate::process::{self, KillOnDrop, RunError, command};
 /// Upper bound on how much probe output is read, so a broken binary can't flood memory.
 const MAX_PROBE_BYTES: u64 = 1 << 20;
 
-/// Returns ffmpeg's human-readable description of an input (its `-i` banner).
-/// `demuxer` forces an input format such as `dvdvideo` or `libcdio`.
-pub fn describe(ffmpeg: &Path, path: &Path, demuxer: Option<&str>) -> Result<String, RunError> {
-    let mut args: Vec<OsString> = vec!["-hide_banner".into(), "-nostdin".into()];
+/// Keeps file URLs and disc demuxer handling identical for both probes.
+fn add_input(args: &mut Vec<OsString>, path: &Path, demuxer: Option<&str>) {
     if let Some(format) = demuxer.filter(|d| *d != BLURAY_PROTOCOL) {
         args.extend(["-f".into(), format.into()]);
     }
     args.extend(["-i".into(), input_url(path, demuxer)]);
+}
+
+/// Returns ffmpeg's human-readable description of an input (its `-i` banner).
+/// `demuxer` forces an input format such as `dvdvideo` or `libcdio`.
+pub fn describe(ffmpeg: &Path, path: &Path, demuxer: Option<&str>) -> Result<String, RunError> {
+    let mut args: Vec<OsString> = vec!["-hide_banner".into(), "-nostdin".into()];
+    add_input(&mut args, path, demuxer);
     let spawn_err = |e| RunError::Spawn("ffmpeg".into(), e);
     let mut child = command(ffmpeg)
         .args(&args)
@@ -74,10 +79,7 @@ fn probe_with_ffprobe(
         "-show_streams".into(),
         "-show_chapters".into(),
     ];
-    if let Some(format) = demuxer.filter(|d| *d != BLURAY_PROTOCOL) {
-        args.extend(["-f".into(), format.into()]);
-    }
-    args.extend(["-i".into(), input_url(path, demuxer)]);
+    add_input(&mut args, path, demuxer);
     let spawn_err = |e| RunError::Spawn("ffprobe".into(), e);
     let mut child = command(ffprobe)
         .args(&args)

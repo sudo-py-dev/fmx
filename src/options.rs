@@ -1040,16 +1040,21 @@ pub fn sanitize_name_tag(tag: &str) -> String {
         .to_owned()
 }
 
+/// Formats whole seconds; each caller keeps its own rounding policy.
+pub fn clock_seconds(s: u64) -> String {
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
 /// A short exact time to type or edit, such as `3:41.6`, `0:10` or
 /// `1:02:05.25`: milliseconds kept, trailing zeros dropped.
 pub fn compact_timestamp(secs: f64) -> String {
     let millis = (secs.max(0.0) * 1000.0).round() as u64;
     let (s, ms) = (millis / 1000, millis % 1000);
-    let clock = if s >= 3600 {
-        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
-    } else {
-        format!("{}:{:02}", s / 60, s % 60)
-    };
+    let clock = clock_seconds(s);
     if ms == 0 {
         clock
     } else {
@@ -1062,11 +1067,7 @@ pub fn compact_timestamp(secs: f64) -> String {
 pub fn display_time(secs: f64) -> String {
     let tenths = (secs.max(0.0) * 10.0).round() as u64;
     let (s, t) = (tenths / 10, tenths % 10);
-    if s >= 3600 {
-        format!("{}:{:02}:{:02}.{t}", s / 3600, s / 60 % 60, s % 60)
-    } else {
-        format!("{}:{:02}.{t}", s / 60, s % 60)
-    }
+    format!("{}.{t}", clock_seconds(s))
 }
 
 /// Parses `ss[.f]`, `mm:ss[.f]` or `hh:mm:ss[.f]` into seconds.

@@ -35,6 +35,11 @@ static LOCK: OnceLock<File> = OnceLock::new();
 pub enum Request {
     /// Just bring the window forward.
     Focus,
+    /// Open a particular tool without starting a conversion.
+    Tool {
+        tool: crate::catalog::Tool,
+        files: Vec<PathBuf>,
+    },
     /// Add files to the editor.
     Open(Vec<PathBuf>),
     /// Queue files for a right-click conversion (see `shell::tool_for`) and start.
@@ -186,11 +191,13 @@ fn take(inbox: &Path) -> Vec<Request> {
 /// Joins requests that came together: all files to open, and the files of
 /// each conversion target, each set in name order.
 fn merge(requests: Vec<Request>) -> Vec<Request> {
+    let mut tools = Vec::new();
     let mut focus = false;
     let mut open: Vec<PathBuf> = Vec::new();
     let mut convert: Vec<(String, Vec<PathBuf>)> = Vec::new();
     for request in requests {
         match request {
+            request @ Request::Tool { .. } => tools.push(request),
             Request::Focus => focus = true,
             Request::Open(files) => open.extend(files),
             Request::Convert { target, files } => {
@@ -201,7 +208,7 @@ fn merge(requests: Vec<Request>) -> Vec<Request> {
             }
         }
     }
-    let mut merged = Vec::new();
+    let mut merged = tools;
     if !open.is_empty() {
         open.sort();
         open.dedup();
@@ -255,6 +262,17 @@ mod tests {
             merge(vec![Request::Focus, Request::Focus]),
             vec![Request::Focus]
         );
+    }
+
+    #[test]
+    fn tool_requests_survive_merging_and_serialization() {
+        let request = Request::Tool {
+            tool: crate::catalog::Tool::RecordAudio,
+            files: Vec::new(),
+        };
+        let decoded: Request =
+            serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(merge(vec![Request::Focus, decoded]), vec![request]);
     }
 
     #[test]

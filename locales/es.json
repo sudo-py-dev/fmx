@@ -612,5 +612,9 @@
   "download.retries": "Reintentos tras errores",
   "download.connection": "Configuración de conexión",
   "download.cookies": "Archivo de cookies",
-  "download.cookies_hint": "Archivo opcional de cookies Netscape para acceder con sesión iniciada. Vacía el campo para dejar de usarlo."
+  "download.cookies_hint": "Archivo opcional de cookies Netscape para acceder con sesión iniciada. Vacía el campo para dejar de usarlo.",
+  "shortcut.create": "Crear acceso directo en el escritorio",
+  "shortcut.actions": "Acciones de la herramienta",
+  "shortcut.created": "Acceso directo creado en el escritorio",
+  "shortcut.failed": "No se pudo crear el acceso directo: {error}"
 }

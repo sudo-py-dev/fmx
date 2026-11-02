@@ -37,6 +37,7 @@ mod screencast;
 mod settings;
 mod sheet;
 mod shell;
+mod shortcut;
 mod sound;
 mod theme;
 mod update;
@@ -104,6 +105,7 @@ fn main() {
     let self_test = take_flag(&mut args, SELF_TEST_FLAG);
     let register_shell = take_flag(&mut args, REGISTER_SHELL_FLAG);
     let unregister_shell = take_flag(&mut args, UNREGISTER_SHELL_FLAG);
+    let tool = take_value(&mut args, "--tool");
     let convert = take_value(&mut args, shell::CONVERT_FLAG);
     let shell_only = register_shell || unregister_shell;
     // Test and screenshot runs stay out of the way of a running FMX.
@@ -135,10 +137,17 @@ fn main() {
 
     // Files passed on the command line ("Open with", the right-click menu).
     let files: Vec<std::path::PathBuf> = args.iter().map(Into::into).collect();
-    let request = match convert {
-        Some(target) => instance::Request::Convert { target, files },
-        None if files.is_empty() => instance::Request::Focus,
-        None => instance::Request::Open(files),
+    let request = match (tool, convert) {
+        (Some(id), _) => match shortcut::parse_tool(&id) {
+            Some(tool) => instance::Request::Tool { tool, files },
+            None => {
+                tracing::error!("unknown tool shortcut");
+                std::process::exit(2);
+            }
+        },
+        (None, Some(target)) => instance::Request::Convert { target, files },
+        (None, None) if files.is_empty() => instance::Request::Focus,
+        (None, None) => instance::Request::Open(files),
     };
     if !primary {
         match instance::forward(&request) {

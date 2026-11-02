@@ -612,5 +612,9 @@
   "download.retries": "Retries on download errors",
   "download.connection": "Download connection settings",
   "download.cookies": "Cookies file",
-  "download.cookies_hint": "Optional Netscape cookies file for signed-in access. Clear the field to stop using it."
+  "download.cookies_hint": "Optional Netscape cookies file for signed-in access. Clear the field to stop using it.",
+  "shortcut.create": "Create desktop shortcut",
+  "shortcut.actions": "Tool actions",
+  "shortcut.created": "Desktop shortcut created",
+  "shortcut.failed": "Could not create shortcut: {error}"
 }

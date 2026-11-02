@@ -612,5 +612,9 @@
   "download.retries": "Wiederholungen bei Download-Fehlern",
   "download.connection": "Download-Verbindungseinstellungen",
   "download.cookies": "Cookies-Datei",
-  "download.cookies_hint": "Optionale Netscape-Cookies-Datei für angemeldeten Zugriff. Zum Deaktivieren das Feld leeren."
+  "download.cookies_hint": "Optionale Netscape-Cookies-Datei für angemeldeten Zugriff. Zum Deaktivieren das Feld leeren.",
+  "shortcut.create": "Desktop-Verknüpfung erstellen",
+  "shortcut.actions": "Werkzeugaktionen",
+  "shortcut.created": "Desktop-Verknüpfung erstellt",
+  "shortcut.failed": "Verknüpfung konnte nicht erstellt werden: {error}"
 }

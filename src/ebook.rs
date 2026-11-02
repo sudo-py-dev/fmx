@@ -7,7 +7,7 @@
 //! reading MOBI, AZW3, LIT, PDB or PDF, still go through Calibre.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,11 +16,9 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
 use crate::catalog::EbookFormat;
-use crate::office::{self, OfficeError, attr, corrupt, entity};
+use crate::office::{self, OfficeError, attr, corrupt, entity, extension};
 use crate::pdfgen::{self, Block, Span};
 
-/// Largest part read from an EPUB (guards against zip bombs).
-const MAX_PART_BYTES: u64 = 64 << 20;
 /// Largest FB2 file read.
 const MAX_FB2_BYTES: u64 = 128 << 20;
 /// Chapters read from one EPUB, at most.
@@ -39,13 +37,6 @@ pub struct Book {
 pub fn can_read(path: &Path) -> bool {
     let ext = extension(path);
     ext == "epub" || ext == "fb2" || office::NATIVE_EXTENSIONS.contains(&ext.as_str())
-}
-
-fn extension(path: &Path) -> String {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
 }
 
 /// Reads a book or document.
@@ -104,9 +95,7 @@ fn replace(output: &Path, bytes: &[u8]) -> io::Result<()> {
 // ── Reading EPUB ─────────────────────────────────────────────────────────
 
 fn zip_text(zip: &mut zip::ZipArchive<File>, name: &str) -> Result<String, OfficeError> {
-    let part = zip.by_name(name).map_err(corrupt)?;
-    let mut bytes = Vec::new();
-    part.take(MAX_PART_BYTES).read_to_end(&mut bytes)?;
+    let bytes = office::zip_bytes(zip, name)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -276,10 +265,7 @@ fn fb2_text(bytes: &[u8]) -> String {
 }
 
 fn read_fb2(path: &Path) -> Result<Book, OfficeError> {
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take(MAX_FB2_BYTES)
-        .read_to_end(&mut bytes)?;
+    let bytes = office::read_bytes(File::open(path)?, MAX_FB2_BYTES)?;
     parse_fb2(&fb2_text(&bytes))
 }
 
@@ -656,15 +642,7 @@ fn fb2(book: &Book, title: &str) -> String {
                     ));
                 }
                 Block::Table(rows) => {
-                    out.push_str("<table>\n");
-                    for row in rows {
-                        let cells: String = row
-                            .iter()
-                            .map(|cell| format!("<td>{}</td>", escape(cell)))
-                            .collect();
-                        out.push_str(&format!("<tr>{cells}</tr>\n"));
-                    }
-                    out.push_str("</table>\n");
+                    write_table(&mut out, rows);
                 }
                 Block::PageBreak => {}
             }
@@ -673,6 +651,19 @@ fn fb2(book: &Book, title: &str) -> String {
     }
     out.push_str("</body>\n</FictionBook>\n");
     out
+}
+
+/// FB2 and XHTML use the same escaped table markup.
+fn write_table(out: &mut String, rows: &[Vec<String>]) {
+    out.push_str("<table>\n");
+    for row in rows {
+        let cells: String = row
+            .iter()
+            .map(|cell| format!("<td>{}</td>", escape(cell)))
+            .collect();
+        out.push_str(&format!("<tr>{cells}</tr>\n"));
+    }
+    out.push_str("</table>\n");
 }
 
 fn xhtml_chapter(chapter: &[Block], title: &str) -> String {
@@ -698,15 +689,7 @@ fn xhtml_chapter(chapter: &[Block], title: &str) -> String {
                 body.push_str(&format!("<li>{}</li>\n", styled(spans, "b", "i")))
             }
             Block::Table(rows) => {
-                body.push_str("<table>\n");
-                for row in rows {
-                    let cells: String = row
-                        .iter()
-                        .map(|cell| format!("<td>{}</td>", escape(cell)))
-                        .collect();
-                    body.push_str(&format!("<tr>{cells}</tr>\n"));
-                }
-                body.push_str("</table>\n");
+                write_table(&mut body, rows);
             }
             Block::PageBreak => {}
         }

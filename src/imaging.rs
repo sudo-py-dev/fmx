@@ -81,13 +81,30 @@ fn decode_with_ffmpeg(ffmpeg: &Path, path: &Path) -> Result<DynamicImage, ImageE
     let mut png = Vec::new();
     if let Some(stdout) = child.0.stdout.take() {
         use std::io::Read;
-        stdout.take(MAX_FFMPEG_DECODE_BYTES).read_to_end(&mut png)?;
+        stdout
+            .take(MAX_FFMPEG_DECODE_BYTES + 1)
+            .read_to_end(&mut png)?;
+        if png.len() as u64 > MAX_FFMPEG_DECODE_BYTES {
+            return Err(ImageError::Encode(
+                "decoded image exceeds size limit".into(),
+            ));
+        }
     }
-    let _ = child.0.wait();
-    Ok(image::load_from_memory_with_format(
-        &png,
-        image::ImageFormat::Png,
-    )?)
+    let status = child.0.wait()?;
+    if !status.success() {
+        return Err(ImageError::Encode("ffmpeg image decoding failed".into()));
+    }
+    decode_png(&png, MAX_FFMPEG_DECODE_BYTES)
+}
+
+fn decode_png(png: &[u8], max_alloc: u64) -> Result<DynamicImage, ImageError> {
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(max_alloc);
+    limits.max_image_width = Some(32_768);
+    limits.max_image_height = Some(32_768);
+    reader.limits(limits);
+    Ok(reader.decode()?)
 }
 
 /// Applies resize/rotation/grayscale options. Never upscales.
@@ -672,5 +689,34 @@ mod tests {
                 n + 1
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn fallback_png_rejects_excessive_dimensions() {
+        let img = DynamicImage::new_luma8(32_769, 1);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        assert!(matches!(
+            decode_png(encoded.get_ref(), MAX_FFMPEG_DECODE_BYTES),
+            Err(ImageError::Codec(image::ImageError::Limits(_)))
+        ));
+    }
+
+    #[test]
+    fn fallback_png_obeys_decoded_memory_limit() {
+        let img = DynamicImage::new_rgba8(128, 128);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        assert!(encoded.get_ref().len() < 4096);
+        assert!(matches!(
+            decode_png(encoded.get_ref(), 4096),
+            Err(ImageError::Codec(image::ImageError::Limits(_)))
+        ));
+        assert!(decode_png(encoded.get_ref(), MAX_DECODE_BYTES).is_ok());
     }
 }
