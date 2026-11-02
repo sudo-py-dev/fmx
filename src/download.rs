@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,13 @@ const PROGRESS_TEMPLATE: &str = "download:FMX|%(progress.downloaded_bytes)s|%(pr
 const MAX_INFO_BYTES: u64 = 32 << 20;
 const INFO_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_THUMBNAIL_BYTES: u64 = 8 << 20;
+const MAX_COOKIES_BYTES: u64 = 4 << 20;
+// Keep both entry points isolated from local executable plugin/config content.
+const ISOLATION_ARGS: &[&str] = &[
+    "--ignore-config",
+    "--no-plugin-dirs",
+    "--no-remote-components",
+];
 
 fn os(items: &[&str]) -> Vec<OsString> {
     items.iter().map(OsString::from).collect()
@@ -28,20 +35,41 @@ fn os(items: &[&str]) -> Vec<OsString> {
 
 /// The yt-dlp arguments that download `url` into `out_dir` as `opts` asks,
 /// using our ffmpeg for merging and conversion.
-pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) -> Vec<OsString> {
+pub fn args(
+    url: &str,
+    out_dir: &Path,
+    ffmpeg: &Path,
+    opts: &DownloadOptions,
+) -> Result<Vec<OsString>, &'static str> {
+    if !crate::docs::is_web_url(url) {
+        return Err("error.bad_url");
+    }
+    validate_fields(opts)?;
+    let access = access_args(&opts.cookies_file)?;
+    let out_text = out_dir
+        .to_str()
+        .filter(|s| !s.is_empty() && !s.contains('$') && !s.chars().any(char::is_control))
+        .ok_or("section.output_settings")?;
+    // Output paths are data, even when a folder contains yt-dlp template syntax.
+    let out_dir =
+        std::path::absolute(Path::new(out_text)).map_err(|_| "section.output_settings")?;
+    let escaped_out = out_dir
+        .to_str()
+        .ok_or("section.output_settings")?
+        .replace('%', "%%");
     let name = if opts.playlist {
         "%(playlist_title,title).100B/%(playlist_index)03d - %(title).150B [%(id)s].%(ext)s"
     } else {
         "%(title).150B [%(id)s].%(ext)s"
     };
-    let mut template = out_dir.as_os_str().to_owned();
+    let mut template = OsString::from(&escaped_out);
     template.push(std::path::MAIN_SEPARATOR_STR);
     template.push(name);
 
-    let mut args = os(&[
+    let mut args = os(ISOLATION_ARGS);
+    args.extend(os(&[
         // User and working-directory configs may contain --exec or override
         // output paths. Only FMX's explicit options should control this child.
-        "--ignore-config",
         "--newline",
         "--no-mtime",
         // Titles keep their own letters but lose characters Windows forbids.
@@ -53,7 +81,7 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
         } else {
             "--no-playlist"
         },
-    ]);
+    ]));
     args.extend([
         "--ffmpeg-location".into(),
         ffmpeg.into(),
@@ -99,7 +127,13 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
         || (media && opts.save_subtitles)
         || opts.kind == DownloadKind::Subtitles;
     if wants_subs {
-        args.extend(os(&["--sub-langs", &clean_langs(&opts.subtitle_langs)]));
+        args.push(
+            format!(
+                "--sub-langs={}",
+                subtitle_langs(&opts.subtitle_langs).ok_or("download.subtitles_label")?
+            )
+            .into(),
+        );
         if video && opts.subtitles {
             args.extend(os(&["--embed-subs"]));
         }
@@ -120,7 +154,7 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
         args.extend(os(&["--write-description"]));
     }
     if opts.playlist && !opts.playlist_items.trim().is_empty() {
-        args.extend(os(&["--playlist-items", opts.playlist_items.trim()]));
+        args.push(format!("--playlist-items={}", opts.playlist_items.trim()).into());
     }
     if media {
         if opts.clip {
@@ -135,7 +169,7 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
         if opts.split_chapters {
             // Explicit absolute chapter output prevents yt-dlp's default from
             // writing split files into the application's working directory.
-            let chapter = out_dir.join(
+            let chapter = Path::new(&escaped_out).join(
                 "%(title).150B [%(id)s] - %(section_number)03d - %(section_title).100B.%(ext)s",
             );
             let mut template = OsString::from("chapter:");
@@ -192,7 +226,7 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
         "--fragment-retries",
         &opts.retries.min(100).to_string(),
     ]));
-    args.extend(access_args(&opts.cookies_file));
+    args.extend(access);
     if opts.embed_thumbnail && supports_cover(opts) {
         args.extend(os(&["--embed-thumbnail"]));
     }
@@ -208,16 +242,83 @@ pub fn args(url: &str, out_dir: &Path, ffmpeg: &Path, opts: &DownloadOptions) ->
     }
     // Options end here, so a link can never be read as one.
     args.extend(["--".into(), url.trim().into()]);
-    args
+    Ok(args)
 }
 
 /// Shared by link lookup and download, so authenticated links can be previewed.
-fn access_args(cookies_file: &str) -> Vec<OsString> {
-    if cookies_file.trim().is_empty() {
-        Vec::new()
-    } else {
-        vec!["--cookies".into(), cookies_file.trim().into()]
+fn access_args(cookies_file: &str) -> Result<Vec<OsString>, &'static str> {
+    match validated_cookies(cookies_file)? {
+        None => Ok(Vec::new()),
+        Some(path) => {
+            // Bind the value in one argv entry: even a filename beginning with
+            // a dash cannot become an option. Command::args never uses a shell.
+            let mut arg = OsString::from("--cookies=");
+            arg.push(path);
+            Ok(vec![arg])
+        }
     }
+}
+
+fn validated_cookies(text: &str) -> Result<Option<PathBuf>, &'static str> {
+    let invalid = "download.cookies";
+    if text.len() > 4096 || text.chars().any(char::is_control) {
+        return Err(invalid);
+    }
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(text.trim()).canonicalize().map_err(|_| invalid)?;
+    // yt-dlp expands environment variables in cookie filenames. Reject the
+    // expansion syntax so it opens exactly the file that was validated here.
+    let path_text = path.to_str().ok_or(invalid)?;
+    if path_text.contains('$') || (cfg!(windows) && path_text.contains('%')) {
+        return Err(invalid);
+    }
+    let meta = path.metadata().map_err(|_| invalid)?;
+    if !meta.is_file() || meta.len() > MAX_COOKIES_BYTES {
+        return Err(invalid);
+    }
+    let file = std::fs::File::open(&path).map_err(|_| invalid)?;
+    let meta = file.metadata().map_err(|_| invalid)?;
+    if !meta.is_file() || meta.len() > MAX_COOKIES_BYTES {
+        return Err(invalid);
+    }
+    let mut data = String::new();
+    file.take(MAX_COOKIES_BYTES + 1)
+        .read_to_string(&mut data)
+        .map_err(|_| invalid)?;
+    if data.len() as u64 > MAX_COOKIES_BYTES || !valid_cookie_data(&data) {
+        return Err(invalid);
+    }
+    Ok(Some(path))
+}
+
+/// Netscape's seven tab-separated fields; never treat this as configuration.
+fn valid_cookie_data(text: &str) -> bool {
+    let mut lines = text.lines();
+    if !matches!(
+        lines.next(),
+        Some("# Netscape HTTP Cookie File" | "# HTTP Cookie File")
+    ) {
+        return false;
+    }
+    lines.all(|line| {
+        if line.is_empty() { return true; }
+        if line.chars().any(|c| c.is_control() && c != '\t') { return false; }
+        let line = if let Some(cookie) = line.strip_prefix("#HttpOnly_") { cookie }
+            else if line.starts_with('#') { return true; } else { line };
+        let f: Vec<_> = line.split('\t').collect();
+        if f.len() != 7 { return false; }
+        let domain = f[0].strip_prefix('.').unwrap_or(f[0]);
+        let valid_domain = !domain.is_empty() && domain.len() <= 253 && domain.split('.').all(|part|
+            !part.is_empty() && part.len() <= 63 && !part.starts_with('-') && !part.ends_with('-') &&
+            part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'));
+        valid_domain && matches!(f[1], "TRUE" | "FALSE") && f[2].starts_with('/') &&
+            !f[2].chars().any(char::is_whitespace) && matches!(f[3], "TRUE" | "FALSE") &&
+            (f[4].is_empty() || (f[4].bytes().all(|c| c.is_ascii_digit()) && f[4].parse::<u64>().is_ok())) &&
+            // RFC cookie names are tokens; empty names are supported by Netscape.
+            f[5].bytes().all(|c| c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&c))
+    })
 }
 
 /// yt-dlp's comma-separated indices and START:STOP:STEP slices.
@@ -248,6 +349,27 @@ fn valid_playlist_items(text: &str) -> bool {
 
 /// Checks user-entered advanced values before a job is queued.
 pub fn validate(opts: &DownloadOptions) -> Result<(), &'static str> {
+    validate_fields(opts)?;
+    validated_cookies(&opts.cookies_file)?;
+    Ok(())
+}
+
+fn validate_fields(opts: &DownloadOptions) -> Result<(), &'static str> {
+    if subtitle_langs(&opts.subtitle_langs).is_none() {
+        return Err("download.subtitles_label");
+    }
+    if opts
+        .max_height
+        .is_some_and(|h| !crate::options::DOWNLOAD_HEIGHTS.contains(&h))
+    {
+        return Err("option.quality");
+    }
+    if opts
+        .rate_limit_kbps
+        .is_some_and(|n| n == 0 || n > crate::options::MAX_RATE_LIMIT_KBPS)
+    {
+        return Err("download.speed_label");
+    }
     let items = opts.playlist_items.trim();
     if opts.playlist && !valid_playlist_items(items) {
         return Err("download.playlist_items");
@@ -264,12 +386,6 @@ pub fn validate(opts: &DownloadOptions) -> Result<(), &'static str> {
     if !(1..=16).contains(&opts.concurrent_fragments) || opts.retries > 100 {
         return Err("download.connection");
     }
-    if opts.cookies_file.len() > 4096
-        || opts.cookies_file.chars().any(|c| c.is_control())
-        || (!opts.cookies_file.trim().is_empty() && !Path::new(opts.cookies_file.trim()).is_file())
-    {
-        return Err("download.cookies");
-    }
     Ok(())
 }
 
@@ -282,18 +398,32 @@ pub fn supports_cover(opts: &DownloadOptions) -> bool {
     }
 }
 
-/// Keeps only language codes, commas, dashes and `*` (yt-dlp's wildcard).
-fn clean_langs(text: &str) -> String {
-    let langs: String = text
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ',' | '-' | '*' | '.'))
-        .take(crate::options::MAX_SUBTITLE_LANGS_LEN)
-        .collect();
-    if langs.is_empty() {
-        "en".to_owned()
-    } else {
-        langs
+/// Accept language tags, optional exclusions, and a single trailing wildcard.
+/// Arbitrary regular expressions and command text are deliberately rejected.
+fn subtitle_langs(text: &str) -> Option<String> {
+    if text.len() > crate::options::MAX_SUBTITLE_LANGS_LEN || text.chars().any(char::is_control) {
+        return None;
     }
+    let mut result = Vec::new();
+    for tag in text.split(',').map(str::trim) {
+        if tag == "*" {
+            result.push("all");
+            continue;
+        }
+        let tag_value = tag.strip_prefix('-').unwrap_or(tag);
+        let prefix = tag_value.strip_suffix(".*").unwrap_or(tag_value);
+        if prefix.is_empty()
+            || !prefix.as_bytes()[0].is_ascii_alphabetic()
+            || !prefix
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            || prefix.ends_with(['-', '_'])
+        {
+            return None;
+        }
+        result.push(tag);
+    }
+    Some(result.join(","))
 }
 
 /// One progress report from yt-dlp, already turned into words.
@@ -471,9 +601,14 @@ pub fn fetch_info(
     playlist: bool,
     cookies_file: &str,
 ) -> Result<LinkInfo, String> {
+    if !crate::docs::is_web_url(url) {
+        return Err(tr("error.bad_url").to_owned());
+    }
+    let access = access_args(cookies_file)
+        .map_err(|key| trf("error.invalid_value", &[("name", &tr(key))]))?;
     let mut child = command(ytdlp)
+        .args(ISOLATION_ARGS)
         .args([
-            "--ignore-config",
             "-J",
             "--flat-playlist",
             "--no-warnings",
@@ -483,7 +618,7 @@ pub fn fetch_info(
                 "--no-playlist"
             },
         ])
-        .args(access_args(cookies_file))
+        .args(access)
         .args(["--", url.trim()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -572,6 +707,218 @@ pub fn fetch_thumbnail(url: &str) -> Result<image::RgbaImage, String> {
 mod tests {
     use super::*;
 
+    const VALID_COOKIES: &str =
+        "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tsession\tvalue\n";
+
+    fn cookie_fixture() -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), VALID_COOKIES).unwrap();
+        file
+    }
+
+    #[test]
+    fn reject_command_text_and_invalid_options_at_the_launch_boundary() {
+        let run = |opts: &DownloadOptions| {
+            args(
+                "https://example.com/v",
+                Path::new("/out"),
+                Path::new("/ffmpeg"),
+                opts,
+            )
+        };
+        for payload in [
+            "en --exec=touch",
+            "$(touch /tmp/sentinel)",
+            "en;id",
+            "en\n--exec=id",
+            "en,(a+)+$",
+            "",
+            "en,,es",
+            "--exec",
+        ] {
+            let opts = DownloadOptions {
+                subtitle_langs: payload.into(),
+                ..DownloadOptions::default()
+            };
+            assert_eq!(run(&opts), Err("download.subtitles_label"), "{payload}");
+        }
+        for valid in [
+            "en,es",
+            "en-US",
+            "en.*,ja",
+            "all,-live_chat",
+            "*",
+            " en, es ",
+        ] {
+            assert!(subtitle_langs(valid).is_some(), "{valid}");
+        }
+        for payload in ["--exec=id", "1;id", "1\n--exec=id", "1,,2", "1:2:0"] {
+            let opts = DownloadOptions {
+                playlist: true,
+                playlist_items: payload.into(),
+                ..DownloadOptions::default()
+            };
+            assert_eq!(run(&opts), Err("download.playlist_items"), "{payload}");
+        }
+        for opts in [
+            DownloadOptions {
+                max_height: Some(u32::MAX),
+                ..DownloadOptions::default()
+            },
+            DownloadOptions {
+                retries: 101,
+                ..DownloadOptions::default()
+            },
+            DownloadOptions {
+                concurrent_fragments: 0,
+                ..DownloadOptions::default()
+            },
+            DownloadOptions {
+                rate_limit_kbps: Some(0),
+                ..DownloadOptions::default()
+            },
+        ] {
+            assert!(run(&opts).is_err());
+        }
+    }
+
+    #[test]
+    fn cookie_files_must_be_bounded_regular_netscape_data() {
+        for invalid in [
+            "--exec=touch /tmp/sentinel",
+            "{}",
+            "# Netscape HTTP Cookie File\n--exec=id\n",
+            "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tname\n",
+            "# Netscape HTTP Cookie File\n.example.com\tMAYBE\t/\tTRUE\t0\tname\tvalue\n",
+            "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t$(id)\tname\tvalue\n",
+            "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tname\tvalue\0\n",
+        ] {
+            let file = cookie_fixture();
+            std::fs::write(file.path(), invalid).unwrap();
+            assert_eq!(
+                access_args(file.path().to_str().unwrap()),
+                Err("download.cookies")
+            );
+        }
+        let file = cookie_fixture();
+        assert!(access_args(file.path().to_str().unwrap()).is_ok());
+        // HTTP-only cookie rows and CRLF exports are valid.
+        assert!(valid_cookie_data(
+            &VALID_COOKIES
+                .replace(".example", "#HttpOnly_.example")
+                .replace('\n', "\r\n")
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            access_args(dir.path().to_str().unwrap()),
+            Err("download.cookies")
+        );
+        file.as_file().set_len(MAX_COOKIES_BYTES + 1).unwrap();
+        assert_eq!(
+            access_args(file.path().to_str().unwrap()),
+            Err("download.cookies")
+        );
+    }
+
+    #[test]
+    fn command_like_filenames_and_url_queries_remain_literal_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let cookie = dir.path().join("--exec=echo command; (id).txt");
+        std::fs::write(&cookie, VALID_COOKIES).unwrap();
+        let opts = DownloadOptions {
+            cookies_file: cookie.to_str().unwrap().into(),
+            ..DownloadOptions::default()
+        };
+        let url = "https://example.com/watch?value=$(id)&option=--exec=echo";
+        let a = args(
+            url,
+            &dir.path().join("%(title)s"),
+            Path::new("/ffmpeg"),
+            &opts,
+        )
+        .unwrap();
+        let cookie_arg = a
+            .iter()
+            .find(|s| s.to_string_lossy().starts_with("--cookies="))
+            .unwrap();
+        assert_eq!(
+            cookie_arg.to_string_lossy(),
+            format!("--cookies={}", cookie.canonicalize().unwrap().display())
+        );
+        assert_eq!(
+            &a[a.len() - 2..],
+            &[OsString::from("--"), OsString::from(url)]
+        );
+        assert!(a.windows(2).any(|pair| {
+            pair[0] == "-o"
+                && pair[1]
+                    .to_string_lossy()
+                    .contains(&format!("%%(title)s{}", std::path::MAIN_SEPARATOR))
+        }));
+        assert!(!a.iter().any(|s| s == "--exec" || s == "--config-locations"));
+        for flag in ISOLATION_ARGS {
+            assert!(a.iter().any(|s| s == flag));
+        }
+    }
+
+    #[test]
+    fn reject_cookie_paths_that_ytdlp_would_expand() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["$HOME-cookies.txt", "${FMX_TEST_COOKIE_PATH}.txt"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, VALID_COOKIES).unwrap();
+            assert_eq!(access_args(path.to_str().unwrap()), Err("download.cookies"));
+        }
+        assert_eq!(
+            args(
+                "https://example.com/v",
+                &dir.path().join("$HOME-output"),
+                Path::new("/ffmpeg"),
+                &DownloadOptions::default()
+            ),
+            Err("section.output_settings")
+        );
+    }
+
+    #[test]
+    fn previews_reject_invalid_values_before_starting_a_process() {
+        // An absent executable would produce a spawn error if validation ran too late.
+        let missing = Path::new("/nonexistent/fmx-test-ytdlp");
+        assert_eq!(
+            fetch_info(missing, "--exec=id", false, ""),
+            Err(tr("error.bad_url").to_owned())
+        );
+        let bad = cookie_fixture();
+        std::fs::write(bad.path(), "--exec=id").unwrap();
+        let error = fetch_info(
+            missing,
+            "https://example.com/v",
+            false,
+            bad.path().to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            trf("error.invalid_value", &[("name", &tr("download.cookies"))])
+        );
+        for url in [
+            "--exec=id",
+            "file:///etc/passwd",
+            "https://example.com/\n--exec=id",
+            "https://user:password@example.com/",
+        ] {
+            assert_eq!(
+                args(
+                    url,
+                    Path::new("/o"),
+                    Path::new("/ffmpeg"),
+                    &DownloadOptions::default()
+                ),
+                Err("error.bad_url")
+            );
+        }
+    }
+
     fn text(args: &[OsString]) -> String {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -580,12 +927,15 @@ mod tests {
     }
 
     fn build(opts: &DownloadOptions) -> String {
-        text(&args(
-            "https://e.com/v",
-            Path::new("/o"),
-            Path::new("/usr/bin/ffmpeg"),
-            opts,
-        ))
+        text(
+            &args(
+                "https://e.com/v",
+                Path::new("/o"),
+                Path::new("/usr/bin/ffmpeg"),
+                opts,
+            )
+            .expect("valid options"),
+        )
     }
 
     #[test]
@@ -608,7 +958,7 @@ mod tests {
             container: DownloadContainer::Mkv,
             playlist: true,
             subtitles: true,
-            subtitle_langs: "en,es; rm -rf /".to_owned(),
+            subtitle_langs: "en,es".to_owned(),
             rate_limit_kbps: Some(500),
             ..DownloadOptions::default()
         };
@@ -619,8 +969,7 @@ mod tests {
         );
         assert!(t.contains("--yes-playlist"));
         assert!(t.contains("%(playlist_index)03d"));
-        // Only language characters survive.
-        assert!(t.contains("--sub-langs en,esrm-rf --embed-subs"), "{t}");
+        assert!(t.contains("--sub-langs=en,es --embed-subs"), "{t}");
         assert!(t.contains("--limit-rate 500K"));
     }
 
@@ -683,6 +1032,7 @@ mod tests {
 
     #[test]
     fn advanced_download_options_and_paths_reach_ytdlp() {
+        let cookie_file = cookie_fixture();
         let opts = DownloadOptions {
             playlist: true,
             playlist_items: "1:5,8".into(),
@@ -700,7 +1050,7 @@ mod tests {
             save_description: true,
             concurrent_fragments: 4,
             retries: 3,
-            cookies_file: "/tmp/cookies with spaces.txt".into(),
+            cookies_file: cookie_file.path().to_string_lossy().into_owned(),
             ..DownloadOptions::default()
         };
         let a = args(
@@ -708,10 +1058,11 @@ mod tests {
             Path::new("/out dir"),
             Path::new("/ffmpeg"),
             &opts,
-        );
+        )
+        .unwrap();
         let t = text(&a);
         for flag in [
-            "--playlist-items 1:5,8",
+            "--playlist-items=1:5,8",
             "--download-sections *30-90",
             "--split-chapters",
             "--sponsorblock-remove sponsor",
@@ -727,27 +1078,43 @@ mod tests {
         ] {
             assert!(t.contains(flag), "{flag}: {t}");
         }
-        assert!(
-            a.windows(2)
-                .any(|a| a[0] == "--cookies" && a[1] == "/tmp/cookies with spaces.txt")
-        );
+        assert!(a.iter().any(|a| a.to_string_lossy()
+            == format!(
+                "--cookies={}",
+                cookie_file.path().canonicalize().unwrap().display()
+            )));
         let chapter = a
             .iter()
             .find(|s| s.to_string_lossy().starts_with("chapter:"))
             .unwrap()
             .to_string_lossy();
-        assert!(chapter.starts_with("chapter:/out dir/"));
+        let output = std::path::absolute(Path::new("/out dir")).unwrap();
+        assert!(chapter.starts_with(&format!(
+            "chapter:{}{}",
+            output.display(),
+            std::path::MAIN_SEPARATOR
+        )));
         let archive =
             a.windows(2).find(|a| a[0] == "--download-archive").unwrap()[1].to_string_lossy();
-        assert!(archive.starts_with("/out dir/.fmx-archive-"));
+        assert!(archive.starts_with(&format!(
+            "{}{}.fmx-archive-",
+            output.display(),
+            std::path::MAIN_SEPARATOR
+        )));
         let mut other = opts.clone();
         other.kind = DownloadKind::Audio;
         assert_ne!(
             archive.as_ref(),
-            args("u", Path::new("/out dir"), Path::new("/ffmpeg"), &other)
-                .windows(2)
-                .find(|a| a[0] == "--download-archive")
-                .unwrap()[1]
+            args(
+                "https://e.com/v",
+                Path::new("/out dir"),
+                Path::new("/ffmpeg"),
+                &other
+            )
+            .unwrap()
+            .windows(2)
+            .find(|a| a[0] == "--download-archive")
+            .unwrap()[1]
                 .to_string_lossy()
         );
     }

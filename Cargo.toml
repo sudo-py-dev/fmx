@@ -44,6 +44,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 ] }
 ttf-parser = "0.25"
 ureq = "3"
+url = "2"
 # GNOME-style (Adwaita) title bar with a title and real close/minimize/maximize
 # buttons on Wayland; without it winit draws a bare fallback frame.
 winit = { version = "0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
