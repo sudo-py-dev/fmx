@@ -159,7 +159,7 @@ jobs:
           merge-multiple: true
       - name: Cache release signer
         id: signer
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/rsign
           key: rsign2-0.6.7-${{ runner.os }}-${{ runner.arch }}-v1
