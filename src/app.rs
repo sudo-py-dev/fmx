@@ -6338,6 +6338,8 @@ impl eframe::App for FmxApp {
         self.poll_details();
         let p = theme::palette(ui);
 
+        widgets::window_bar(ui);
+
         let bar = |fill| {
             egui::Frame::new()
                 .fill(fill)

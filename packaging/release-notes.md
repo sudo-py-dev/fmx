@@ -1,10 +1,36 @@
 ## What's new
 
+### Custom window controls and navigation
+- Replace the system title bar with a compact, theme-aware bar with custom close, minimize, maximize and restore controls.
+- Mirror the controls for RTL/LTR languages, with translated tooltips, keyboard focus and hover feedback.
+- Drag the title bar to move the window, double-click to maximize or restore, and resize from the edges and corners.
+- Organize all 121 tools into task groups, improve search and Hebrew wording, and fix tool-card wrapping in both layout directions.
+- Fix sidebar search layout when typing and clearing; move the usage guide to the Settings sidebar footer.
+
+### Automatic language selection
+- Detect the system display language on Windows and macOS and the locale on Linux, with English fallback for unsupported languages.
+- Automatically localize the Windows installer in English, Spanish, French, German, Hebrew or Russian, falling back to English.
+- Preserve an explicit language chosen in FMX Settings.
+
 ### Live image collages
 - Create collages with two-column, three-column and spotlight templates.
-- See your photos in a live preview while changing spacing and photo fit.
-- Click two photos to swap their positions, then export a PNG at up to 4096 × 4096 pixels.
-- Cached photos keep preview edits responsive, and the canvas stays centered in Hebrew and other interface languages.
+- Preview photos live while changing spacing and photo fit.
+- Click two photos to swap positions, then export a PNG at up to 4096 × 4096 pixels.
+- Cache photo previews for responsive editing and keep the canvas centered in both layout directions.
+
+### Media tools and metadata
+- Add video reversal, fades, stabilization, denoising and sharpening.
+- Add audio denoising, silence trimming and configurable vocal reduction for karaoke.
+- Create video thumbnail sheets and waveform videos.
+- Inspect media information without modifying files and remove photo metadata with native processing.
+- Edit tags per file with scoped metadata and verify saved changes.
+
+### Safer conversions and shared actions
+- Stage conversion outputs privately and publish completed files without overwriting existing destinations.
+- Clean up private temporary outputs after failures or cancellation while preserving destination data.
+- Improve external-process handling and streamline shared tool actions and conversion helpers.
+- Add per-tool desktop shortcuts that open the selected tool in FMX.
+- Update the README for the expanded toolset and navigation, and switch repository branch references to main.
 
 ## Download
 

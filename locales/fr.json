@@ -1,4 +1,7 @@
 {
+  "window.minimize": "Réduire",
+  "window.maximize": "Agrandir",
+  "window.restore": "Restaurer",
   "app.name": "fmx",
   "language.name": "Français",
   "category.video": "Vidéo",

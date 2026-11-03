@@ -79,6 +79,7 @@ fn language_code(locale: &str) -> &str {
     locale.split(['_', '.', '@', '-']).next().unwrap_or("en")
 }
 
+#[cfg(not(any(windows, target_os = "macos")))]
 fn system_language() -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .iter()
@@ -86,6 +87,80 @@ fn system_language() -> String {
         .find(|v| !v.is_empty())
         .map(|v| language_code(&v).to_owned())
         .unwrap_or_else(|| "en".to_owned())
+}
+
+// Match the Windows display language, rather than its date/number locale.
+#[cfg(windows)]
+fn system_language() -> String {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetUserDefaultUILanguage() -> u16;
+    }
+    // SAFETY: this Windows API takes no pointers and is available on all supported versions.
+    let primary = unsafe { GetUserDefaultUILanguage() } & 0x03ff;
+    match primary {
+        0x07 => "de",
+        0x0a => "es",
+        0x0c => "fr",
+        0x0d => "he",
+        0x19 => "ru",
+        _ => "en",
+    }
+    .to_owned()
+}
+
+#[cfg(target_os = "macos")]
+fn system_language() -> String {
+    use std::ffi::{c_char, c_void};
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFLocaleCopyPreferredLanguages() -> *const c_void;
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFStringGetCString(
+            string: *const c_void,
+            buffer: *mut c_char,
+            size: isize,
+            encoding: u32,
+        ) -> u8;
+        fn CFRelease(value: *const c_void);
+    }
+    // SAFETY: the copied array is checked, indexed only when nonempty, and released
+    // once. Its first value is a CFString; the UTF-8 buffer remains valid for the call.
+    unsafe {
+        let languages = CFLocaleCopyPreferredLanguages();
+        if languages.is_null() {
+            return "en".into();
+        }
+        let mut buffer = [0_u8; 256];
+        let ok = CFArrayGetCount(languages) > 0
+            && CFStringGetCString(
+                CFArrayGetValueAtIndex(languages, 0),
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as isize,
+                0x08000100,
+            ) != 0;
+        CFRelease(languages);
+        if ok {
+            let end = buffer.iter().position(|b| *b == 0).unwrap_or(buffer.len());
+            return String::from_utf8_lossy(&buffer[..end]).into_owned();
+        }
+    }
+    "en".into()
+}
+
+/// Resolve regional variants and unknown languages without changing global state.
+fn language_index(locale: &str) -> usize {
+    let code = language_code(locale.trim());
+    let code = if code.eq_ignore_ascii_case("iw") {
+        "he"
+    } else {
+        code
+    };
+    LOCALES
+        .iter()
+        .position(|(c, _)| c.eq_ignore_ascii_case(code))
+        .unwrap_or(FALLBACK)
 }
 
 /// Available languages as (code, native name).
@@ -104,10 +179,7 @@ pub fn languages() -> Vec<(&'static str, &'static str)> {
 /// codes fall back to English.
 pub fn set_language(code: Option<&str>) {
     let wanted = code.map_or_else(system_language, str::to_owned);
-    let index = LOCALES
-        .iter()
-        .position(|(c, _)| *c == wanted)
-        .unwrap_or(FALLBACK);
+    let index = language_index(&wanted);
     ACTIVE.store(index, Ordering::Relaxed);
 }
 
@@ -183,6 +255,21 @@ mod tests {
         assert_eq!(language_code("de_DE.UTF-8"), "de");
         assert_eq!(language_code("en"), "en");
         assert_eq!(language_code("sr@latin"), "sr");
+    }
+
+    #[test]
+    fn regional_languages_and_english_fallback() {
+        for (locale, expected) in [
+            ("he-IL", "he"),
+            ("iw_IL", "he"),
+            ("FR_ca.UTF-8", "fr"),
+            ("ru-RU", "ru"),
+            ("ja-JP", "en"),
+            ("C", "en"),
+            ("", "en"),
+        ] {
+            assert_eq!(LOCALES[language_index(locale)].0, expected);
+        }
     }
 
     #[test]

@@ -16,6 +16,6 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleLocalizations</key>
-  <array><string>en</string><string>es</string><string>fr</string><string>de</string><string>he</string></array>
+  <array><string>en</string><string>es</string><string>fr</string><string>de</string><string>he</string><string>ru</string></array>
 </dict>
 </plist>

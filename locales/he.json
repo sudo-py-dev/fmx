@@ -1,4 +1,7 @@
 {
+  "window.minimize": "מזעור",
+  "window.maximize": "הגדלה",
+  "window.restore": "שחזור",
   "app.name": "fmx",
   "language.name": "עברית",
   "category.video": "וידאו",

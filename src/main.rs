@@ -121,9 +121,7 @@ fn main() {
         self_test || shell_only,
         primary && !shell_only,
     );
-    if let Ok(lang) = std::env::var("FMX_LANG") {
-        i18n::set_language(Some(&lang));
-    }
+    i18n::set_language(std::env::var("FMX_LANG").ok().as_deref());
     if shell_only {
         let done = if register_shell {
             shell::register()
@@ -172,6 +170,7 @@ fn main() {
         viewport: egui::ViewportBuilder::default()
             .with_title(i18n::tr("app.name"))
             .with_app_id(APP_ID)
+            .with_decorations(false)
             .with_inner_size(initial_size())
             .with_min_inner_size(MIN_SIZE)
             .with_drag_and_drop(true)

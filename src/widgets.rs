@@ -1736,3 +1736,142 @@ mod tool_grid_bounds_tests {
         }
     }
 }
+
+/// Custom window chrome, mirrored with the active language.
+pub fn window_bar(ui: &mut egui::Ui) {
+    let p = theme::palette(ui);
+    let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+    if !maximized {
+        let bounds = ui.max_rect();
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+            let left = pos.x < bounds.left() + 5.0;
+            let right = pos.x > bounds.right() - 5.0;
+            let top = pos.y < bounds.top() + 5.0;
+            let bottom = pos.y > bounds.bottom() - 5.0;
+            use egui::ResizeDirection as D;
+            let edge = match (left, right, top, bottom) {
+                (true, _, true, _) => Some((D::NorthWest, CursorIcon::ResizeNwSe)),
+                (_, true, true, _) => Some((D::NorthEast, CursorIcon::ResizeNeSw)),
+                (true, _, _, true) => Some((D::SouthWest, CursorIcon::ResizeNeSw)),
+                (_, true, _, true) => Some((D::SouthEast, CursorIcon::ResizeNwSe)),
+                (true, _, _, _) => Some((D::West, CursorIcon::ResizeHorizontal)),
+                (_, true, _, _) => Some((D::East, CursorIcon::ResizeHorizontal)),
+                (_, _, true, _) => Some((D::North, CursorIcon::ResizeVertical)),
+                (_, _, _, true) => Some((D::South, CursorIcon::ResizeVertical)),
+                _ => None,
+            };
+            if let Some((direction, cursor)) = edge {
+                ui.ctx().set_cursor_icon(cursor);
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                }
+            }
+        }
+    }
+    egui::Panel::top("window_bar")
+        .resizable(false)
+        .exact_size(44.0)
+        .frame(egui::Frame::new().fill(p.sidebar).inner_margin(6))
+        .show(ui, |ui| {
+            let rect = ui.max_rect();
+            ui.with_layout(dir::trailing(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (kind, label) in [
+                    (0, crate::i18n::tr("action.close")),
+                    (
+                        1,
+                        crate::i18n::tr(if maximized {
+                            "window.restore"
+                        } else {
+                            "window.maximize"
+                        }),
+                    ),
+                    (2, crate::i18n::tr("window.minimize")),
+                ] {
+                    let (r, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+                    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label));
+                    let active = response.hovered() || response.has_focus();
+                    let fill = if active && kind == 0 {
+                        p.danger
+                    } else if response.is_pointer_button_down_on() {
+                        p.control_pressed
+                    } else if active {
+                        p.control_hover
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    ui.painter().rect_filled(r, 9, fill);
+                    if response.has_focus() {
+                        ui.painter().rect_stroke(
+                            r.shrink(1.0),
+                            8,
+                            Stroke::new(1.5, p.accent),
+                            StrokeKind::Inside,
+                        );
+                    }
+                    let color = if active && kind == 0 {
+                        Color32::WHITE
+                    } else {
+                        p.text
+                    };
+                    let stroke = Stroke::new(1.5, color);
+                    let c = r.center();
+                    let glyph = Rect::from_center_size(c, Vec2::splat(10.0));
+                    match kind {
+                        0 => {
+                            ui.painter()
+                                .line_segment([glyph.left_top(), glyph.right_bottom()], stroke);
+                            ui.painter()
+                                .line_segment([glyph.right_top(), glyph.left_bottom()], stroke);
+                        }
+                        1 => {
+                            if maximized {
+                                ui.painter().rect_stroke(
+                                    glyph.translate(Vec2::new(2.0, -2.0)),
+                                    1,
+                                    stroke,
+                                    StrokeKind::Inside,
+                                );
+                                ui.painter().rect_filled(glyph, 1, p.sidebar);
+                            }
+                            ui.painter()
+                                .rect_stroke(glyph, 1, stroke, StrokeKind::Inside);
+                        }
+                        _ => {
+                            ui.painter().line_segment(
+                                [c + Vec2::new(-5.0, 3.0), c + Vec2::new(5.0, 3.0)],
+                                stroke,
+                            );
+                        }
+                    }
+                    if response.on_hover_text(label).clicked() {
+                        ui.ctx().send_viewport_cmd(match kind {
+                            0 => egui::ViewportCommand::Close,
+                            1 => egui::ViewportCommand::Maximized(!maximized),
+                            _ => egui::ViewportCommand::Minimized(true),
+                        });
+                    }
+                }
+                let drag_rect = ui.available_rect_before_wrap();
+                let drag = ui.interact(
+                    drag_rect,
+                    ui.scope_id().with("title_drag"),
+                    Sense::click_and_drag(),
+                );
+                if drag.double_clicked() {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                } else if drag.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+            });
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                crate::i18n::tr("app.name"),
+                FontId::proportional(13.0),
+                p.text_weak,
+            );
+        });
+}

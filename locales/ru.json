@@ -1,4 +1,7 @@
 {
+  "window.minimize": "Свернуть",
+  "window.maximize": "Развернуть",
+  "window.restore": "Восстановить",
   "language.name": "Русский",
   "app.name": "fmx",
   "category.video": "Видео",

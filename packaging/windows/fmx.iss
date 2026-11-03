@@ -50,7 +50,10 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir={#OutDir}
 OutputBaseFilename=fmx-{#AppVersion}-windows-x64-setup
-ShowLanguageDialog=auto
+; Detect the current display language on every install; English is first/fallback.
+LanguageDetectionMethod=uilanguage
+UsePreviousLanguage=no
+ShowLanguageDialog=no
 
 [Languages]
 ; The languages FMX itself has; the wizard follows the Windows language.
@@ -59,6 +62,7 @@ Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "fr"; MessagesFile: "compiler:Languages\French.isl"
 Name: "de"; MessagesFile: "compiler:Languages\German.isl"
 Name: "he"; MessagesFile: "compiler:Languages\Hebrew.isl"
+Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -95,6 +99,7 @@ ContextMenu=Add "Convert with fmx" to the right-click menu of files
 es.ContextMenu=Añadir "Convertir con fmx" al menú contextual de los archivos
 fr.ContextMenu=Ajouter « Convertir avec fmx » au menu contextuel des fichiers
 de.ContextMenu=„Mit fmx konvertieren“ zum Kontextmenü von Dateien hinzufügen
+ru.ContextMenu=Добавить «Конвертировать с fmx» в контекстное меню файлов
 he.ContextMenu=הוספת "המרה עם fmx" לתפריט הלחיצה הימנית של קבצים
 
 [Run]
