@@ -18,7 +18,8 @@ FFmpeg and yt-dlp are included for common conversions and video downloads.
 
 - Queue files or folders and process several jobs in parallel.
 - Use device presets, or adjust output settings and edit before converting.
-- Find tools with search and pin frequently used tools to Favorites.
+- Browse tools grouped by task, search across every category, and pin frequently used tools to Favorites.
+- Clean up recordings, edit music tags and cover art, and remove personal metadata from photos.
 - Convert from the file manager's right-click menu on Windows and Linux.
 - Choose light or dark mode and one of six languages: English, Español, Français,
   Deutsch, עברית or Русский, with a mirrored layout for Hebrew.
@@ -65,13 +66,37 @@ open the output folder or shut down the computer.
 
 | Category | What you can do |
 |---|---|
-| 🎬 **Video** | Convert to MP4, MKV, WebM, MOV, AVI, GIF and more. Trim, crop, rotate, add subtitles or a watermark. |
+| 🎬 **Video** | Convert to MP4, MKV, WebM, MOV, AVI, GIF and more. Join, crop or rotate clips, add subtitles or a watermark, stabilize, denoise or sharpen video, and make thumbnail sheets. |
 | 📱 **Phones & devices** | Ready-made settings for iPhone, iPad, Android, smart TVs, YouTube, WhatsApp, PlayStation and Xbox. |
-| 🎵 **Audio** | Convert to MP3, M4A, FLAC, WAV, OGG and more. Pull the sound out of any video. Make iPhone ringtones. |
-| 🖼️ **Pictures** | Convert to JPG, PNG, WebP and more. Resize, rotate, make black-and-white. Opens iPhone (HEIC) photos. |
+| 🎵 **Audio** | Convert to MP3, M4A, FLAC, WAV, OGG and more. Extract audio, make iPhone ringtones, edit tags and cover art, reduce noise or vocals, trim silence, and create waveform or spectrum videos. |
+| 🔧 **Edit media** | Trim, split, change speed, reverse or fade video and audio. Inspect media details or repair files. |
+| 🖼️ **Images** | Convert to JPG, PNG, WebP and more. Resize, rotate, make black-and-white, combine images or remove photo metadata. Opens iPhone (HEIC) photos. |
 | 📄 **Documents** | Pictures → PDF, PDF → Word, Excel or pictures, Word/Excel/PowerPoint → PDF. Merge, split and shrink PDFs. Convert eBooks. |
-| 💿 **DVD / CD** | Copy DVDs and Blu-rays to video files, rip music CDs, and make or open ISO disc images. |
-| 🔧 **Extras** | Join videos or songs, make a video smaller, change speed or volume, remove a logo, download videos from a link, record your screen, or record microphone and system audio. |
+| 💿 **Discs & ISO** | Copy DVDs and Blu-rays to video files, rip music CDs, and make or open ISO disc images. |
+| 📥 **Download & record** | Download videos from a link, record your screen, record microphone and system audio, or take a screenshot. |
+
+Tools are grouped by task within each category, with less common formats under
+**More** groups. Search matches tools across all categories; press **Ctrl+F**
+(**⌘F** on macOS) to focus it. The search field stays within the sidebar while
+typing long queries or clearing the text.
+
+### Tags, privacy and media details
+
+- **Edit tags and cover art** loads each file's existing tags so you can edit files
+  individually. Update title, artist, album, track numbers, lyrics and other tags,
+  or replace or remove cover art. Save as MP3, M4A or FLAC; matching audio formats
+  are copied without re-encoding. FMX saves a new file and verifies the saved tags
+  before publishing the result. Tag support depends on the output format.
+- **Remove photo metadata** strips embedded EXIF/GPS and other metadata from still
+  JPEG, PNG, WebP and BMP images. It applies photo rotation and saves clean PNG
+  copies, keeping the originals unchanged.
+- **Media info** shows container, bitrate, codecs and stream details without
+  creating an output file.
+
+Vocal reduction uses sounds shared by the left and right channels; results depend
+on the recording and stronger settings can weaken instruments too. Maximum
+reduction makes mono audio silent. Reverse works best with short clips because it
+holds the clip in memory; trimming silence also buffers audio to trim its end.
 
 <details>
 <summary><b>Format reference</b></summary>
