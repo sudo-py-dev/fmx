@@ -354,16 +354,49 @@ impl MixLayout {
 pub enum JoinLayout {
     Vertical,
     Horizontal,
+    Grid2,
+    Grid3,
+    Featured,
 }
 
 impl JoinLayout {
-    pub const ALL: [Self; 2] = [Self::Vertical, Self::Horizontal];
+    pub const ALL: [Self; 5] = [
+        Self::Grid2,
+        Self::Grid3,
+        Self::Featured,
+        Self::Vertical,
+        Self::Horizontal,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Vertical => tr("join.vertical"),
             Self::Horizontal => tr("join.horizontal"),
+            Self::Grid2 => tr("join.grid2"),
+            Self::Grid3 => tr("join.grid3"),
+            Self::Featured => tr("join.featured"),
         }
+    }
+    /// Normalized template slots, shared by the preview and renderer.
+    pub fn slots(self, count: usize) -> Vec<[f32; 4]> {
+        let columns = if self == Self::Grid3 { 3 } else { 2 };
+        let featured = self == Self::Featured && count > 1;
+        let remaining = count - usize::from(featured);
+        let rows = remaining.div_ceil(columns) + usize::from(featured);
+        (0..count)
+            .map(|i| {
+                if featured && i == 0 {
+                    return [0.0, 0.0, 1.0, 1.0 / rows as f32];
+                }
+                let n = i - usize::from(featured);
+                [
+                    (n % columns) as f32 / columns as f32,
+                    (n / columns + usize::from(featured)) as f32 / rows as f32,
+                    1.0 / columns as f32,
+                    1.0 / rows as f32,
+                ]
+            })
+            .collect()
     }
 }
 
@@ -1034,6 +1067,9 @@ pub struct Options {
     pub screenshot: ScreenshotOptions,
     pub download: DownloadOptions,
     pub join_layout: JoinLayout,
+    pub collage_size: u32,
+    pub collage_gap: u32,
+    pub collage_crop: bool,
     /// Text appended to every output file name, e.g. `_converted`.
     pub name_tag: String,
 }
@@ -1076,7 +1112,10 @@ impl Default for Options {
             sound_format: AudioFormat::Mp3,
             screenshot: ScreenshotOptions::default(),
             download: DownloadOptions::default(),
-            join_layout: JoinLayout::Vertical,
+            join_layout: JoinLayout::Grid2,
+            collage_size: 2048,
+            collage_gap: 16,
+            collage_crop: true,
             name_tag: String::new(),
         }
     }

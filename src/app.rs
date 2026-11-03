@@ -227,6 +227,7 @@ pub struct FmxApp {
     /// When the web address last changed, to wait for typing to pause.
     url_edited: Option<Instant>,
     link: Option<LinkPreview>,
+    collage_editor: crate::collage_editor::CollageEditor,
     /// What the screen recorder can capture, found in the background when
     /// the recorder first opens.
     capture_devices: Option<capture::Devices>,
@@ -340,6 +341,7 @@ impl FmxApp {
             focus_url: false,
             url_edited: None,
             link: None,
+            collage_editor: Default::default(),
             capture_devices: None,
             capture_rx: None,
             drives: None,
@@ -2815,14 +2817,78 @@ impl FmxApp {
             }
             Tool::ToImage(_) | Tool::ImagesToPdf | Tool::JoinImages => {
                 if tool == Tool::JoinImages {
-                    row(ui, tr("option.layout"), |ui| {
-                        let choices = JoinLayout::ALL.map(|l| (l, l.label()));
-                        widgets::segmented(ui, &mut opts.join_layout, &choices);
+                    self.collage_editor.prepare(opts);
+                    ui.horizontal_wrapped(|ui| {
+                        for layout in [JoinLayout::Grid2, JoinLayout::Grid3, JoinLayout::Featured] {
+                            if ui
+                                .add(
+                                    egui::Button::new(layout.label())
+                                        .selected(opts.join_layout == layout),
+                                )
+                                .clicked()
+                            {
+                                opts.join_layout = layout;
+                            }
+                        }
                     });
+                    row(ui, tr("option.layout"), |ui| {
+                        combo(
+                            ui,
+                            "collage_template",
+                            &mut opts.join_layout,
+                            &JoinLayout::ALL,
+                            |l| l.label().to_owned(),
+                        );
+                    });
+                    if !matches!(
+                        opts.join_layout,
+                        JoinLayout::Vertical | JoinLayout::Horizontal
+                    ) {
+                        row(ui, tr("collage.size"), |ui| {
+                            combo(
+                                ui,
+                                "collage_size",
+                                &mut opts.collage_size,
+                                &[1024, 2048, 4096],
+                                |s| format!("{s} × {s}"),
+                            );
+                        });
+                        row(ui, tr("collage.spacing"), |ui| {
+                            ui.add(egui::Slider::new(&mut opts.collage_gap, 0..=64).suffix(" px"));
+                        });
+                        row(ui, tr("collage.fit"), |ui| {
+                            widgets::segmented(
+                                ui,
+                                &mut opts.collage_crop,
+                                &[(true, tr("collage.fill")), (false, tr("collage.contain"))],
+                            );
+                        });
+                    }
                 }
-                quality_row(ui, &mut opts.quality);
-                image_rows(ui, opts);
-                watermark_row(ui, &mut opts.edit, "image_wm_corner");
+                if tool == Tool::JoinImages
+                    && !matches!(
+                        opts.join_layout,
+                        JoinLayout::Vertical | JoinLayout::Horizontal
+                    )
+                {
+                    self.collage_editor.show(
+                        ui,
+                        &mut self.files,
+                        opts,
+                        self.toolbox.get(External::Ffmpeg).map(|p| p.to_path_buf()),
+                    );
+                }
+                if tool == Tool::JoinImages {
+                    ui.collapsing(tr("collage.adjustments"), |ui| {
+                        quality_row(ui, &mut opts.quality);
+                        image_rows(ui, opts);
+                        watermark_row(ui, &mut opts.edit, "image_wm_corner");
+                    });
+                } else {
+                    quality_row(ui, &mut opts.quality);
+                    image_rows(ui, opts);
+                    watermark_row(ui, &mut opts.edit, "image_wm_corner");
+                }
             }
             Tool::ToDevice(device) => {
                 let p = device.profile();

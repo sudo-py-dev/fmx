@@ -6,6 +6,7 @@ mod app;
 mod art;
 mod capture;
 mod catalog;
+mod collage_editor;
 mod cso;
 #[cfg(debug_assertions)]
 mod devshot;

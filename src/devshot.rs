@@ -58,6 +58,7 @@ pub fn wants_tool() -> Option<crate::catalog::Tool> {
         "thumbnail_sheet" => Some(Tool::ThumbnailSheet),
         "waveform_video" => Some(Tool::WaveformVideo),
         "edit_tags" => Some(Tool::EditTags),
+        "collage" => Some(Tool::JoinImages),
         "privacy" => Some(Tool::RemoveImageMetadata),
         "info" => Some(Tool::MediaInfo),
         "record" => Some(Tool::Record),
@@ -111,10 +112,15 @@ pub fn tick(ctx: &egui::Context) {
     let Some(path) = std::env::var_os("FMX_SCREENSHOT") else {
         return;
     };
+    let settle_frames = if wants_tool() == Some(crate::catalog::Tool::JoinImages) {
+        180
+    } else {
+        SETTLE_FRAMES
+    };
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
     ctx.request_repaint();
     // Until the window has its final size, keep the zoom matching it.
-    if frame < SETTLE_FRAMES / 2
+    if frame < settle_frames / 2
         && let Some([width, _]) = window_size()
     {
         let actual = ctx.content_rect().width() * ctx.zoom_factor();
@@ -123,7 +129,7 @@ pub fn tick(ctx: &egui::Context) {
             ctx.set_zoom_factor(zoom);
         }
     }
-    if frame != SETTLE_FRAMES {
+    if frame != settle_frames {
         return;
     }
     let close = ctx.clone();

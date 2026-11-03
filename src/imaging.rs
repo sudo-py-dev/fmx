@@ -347,9 +347,68 @@ pub fn join(
         pictures.push(transform(open(path.as_ref(), ffmpeg)?, opts, None));
         on_progress((i + 1) as f32 / (inputs.len() + 1) as f32);
     }
-    let canvas = stitch(&pictures, layout);
+    let canvas = if matches!(layout, JoinLayout::Vertical | JoinLayout::Horizontal) {
+        stitch(&pictures, layout)
+    } else {
+        collage(&pictures, layout, opts)
+    };
     let img = watermark(DynamicImage::ImageRgba8(canvas), opts, ffmpeg)?;
     write_image(&img, output, ImageFormat::Png, opts, ffmpeg)
+}
+
+/// Decode off the UI thread and retain a bounded source for interactive edits.
+pub fn collage_photo(
+    path: &Path,
+    opts: &Options,
+    ffmpeg: Option<&Path>,
+) -> Result<DynamicImage, ImageError> {
+    Ok(transform(open(path, ffmpeg)?, opts, None).thumbnail(1024, 1024))
+}
+
+pub fn collage_preview(
+    pictures: &[&DynamicImage],
+    opts: &Options,
+    ffmpeg: Option<&Path>,
+) -> Result<image::RgbaImage, ImageError> {
+    let mut preview = opts.clone();
+    preview.collage_gap = (opts.collage_gap as f32 * 640.0
+        / opts.collage_size.clamp(256, 4096) as f32)
+        .round() as u32;
+    preview.collage_size = 640;
+    let canvas = collage(pictures, opts.join_layout, &preview);
+    Ok(watermark(DynamicImage::ImageRgba8(canvas), &preview, ffmpeg)?.to_rgba8())
+}
+
+/// A bounded square canvas keeps template exports predictable and inexpensive.
+fn collage(
+    pictures: &[impl std::borrow::Borrow<DynamicImage>],
+    layout: JoinLayout,
+    opts: &Options,
+) -> image::RgbaImage {
+    let size = opts.collage_size.clamp(256, 4096);
+    let gap = opts.collage_gap.min(size / 16);
+    let mut canvas = image::RgbaImage::from_pixel(size, size, image::Rgba([255, 255, 255, 255]));
+    for (picture, [x, y, w, h]) in pictures.iter().zip(layout.slots(pictures.len())) {
+        let picture = picture.borrow();
+        let left = (x * size as f32).round() as u32 + gap;
+        let top = (y * size as f32).round() as u32 + gap;
+        let right = ((x + w) * size as f32).round() as u32;
+        let bottom = ((y + h) * size as f32).round() as u32;
+        let width = right.saturating_sub(left + gap).max(1);
+        let height = bottom.saturating_sub(top + gap).max(1);
+        let image = if opts.collage_crop {
+            picture.resize_to_fill(width, height, FilterType::Lanczos3)
+        } else {
+            picture.resize(width, height, FilterType::Lanczos3)
+        };
+        image::imageops::overlay(
+            &mut canvas,
+            &image,
+            i64::from(left + (width - image.width()) / 2),
+            i64::from(top + (height - image.height()) / 2),
+        );
+    }
+    canvas
 }
 
 /// Largest side length the stitched image may reach.
@@ -374,7 +433,7 @@ fn stitch(pictures: &[DynamicImage], layout: JoinLayout) -> image::RgbaImage {
                     target,
                     (u64::from(h) * u64::from(target) / u64::from(w)).max(1) as u32,
                 ),
-                JoinLayout::Horizontal => (
+                _ => (
                     (u64::from(w) * u64::from(target) / u64::from(h)).max(1) as u32,
                     target,
                 ),
@@ -551,6 +610,65 @@ fn write_pdf(pages: &[Page], out: impl Write) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn collage_grid_places_all_four_photos_with_white_gutters() {
+        let colors = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [0, 0, 0, 255],
+        ];
+        let pictures: Vec<_> = colors
+            .iter()
+            .map(|c| DynamicImage::ImageRgba8(RgbaImage::from_pixel(30, 60, Rgba(*c))))
+            .collect();
+        let opts = Options {
+            collage_size: 256,
+            collage_gap: 8,
+            ..Options::default()
+        };
+        let canvas = collage(&pictures, JoinLayout::Grid2, &opts);
+        assert_eq!(canvas.dimensions(), (256, 256));
+        for (point, color) in [(64, 64), (192, 64), (64, 192), (192, 192)]
+            .iter()
+            .zip(colors)
+        {
+            assert_eq!(canvas.get_pixel(point.0, point.1).0, color);
+        }
+        assert_eq!(canvas.get_pixel(128, 128).0, [255; 4]);
+    }
+
+    #[test]
+    fn preview_matches_export_photo_order_and_gutters() {
+        let red = DynamicImage::ImageRgba8(RgbaImage::from_pixel(40, 80, Rgba([255, 0, 0, 255])));
+        let blue = DynamicImage::ImageRgba8(RgbaImage::from_pixel(80, 40, Rgba([0, 0, 255, 255])));
+        let opts = Options {
+            collage_size: 1280,
+            collage_gap: 20,
+            ..Options::default()
+        };
+        let preview = collage_preview(&[&blue, &red], &opts, None).unwrap();
+        let exported = collage(&[&blue, &red], opts.join_layout, &opts);
+        assert_eq!(preview.dimensions(), (640, 640));
+        for (x, y) in [(0, 0), (160, 320), (480, 320), (320, 320)] {
+            assert_eq!(preview.get_pixel(x, y), exported.get_pixel(x * 2, y * 2));
+        }
+    }
+
+    #[test]
+    fn collage_templates_keep_every_slot_inside_canvas() {
+        for layout in [JoinLayout::Grid2, JoinLayout::Grid3, JoinLayout::Featured] {
+            for count in 0..12 {
+                let slots = layout.slots(count);
+                assert_eq!(slots.len(), count);
+                for [x, y, w, h] in slots {
+                    assert!(x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0);
+                    assert!(x + w <= 1.0001 && y + h <= 1.0001);
+                }
+            }
+        }
+    }
 
     fn sample(dir: &Path, name: &str, w: u32, h: u32) -> std::path::PathBuf {
         let path = dir.join(name);
