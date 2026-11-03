@@ -1354,43 +1354,7 @@ impl FmxApp {
         ui.add_space(10.0);
         // Searching shows the matching tools from every category, and leaves
         // an open tool to show them.
-        let p = theme::palette(ui);
-        let mut clear_search = false;
-        // A bounded row: a bare `with_layout` here would take the panel's
-        // whole height and centre the field in it.
-        let search = ui
-            .horizontal(|ui| {
-                ui.with_layout(dir::leading(Align::Center), |ui| {
-                    let clear_width = if self.search.is_empty() {
-                        0.0
-                    } else {
-                        theme::SMALL_BUTTON_HEIGHT + ui.spacing().item_spacing.x
-                    };
-                    let search_width = (ui.available_width() - clear_width).max(80.0);
-                    let search = ui.add(
-                        TextEdit::singleline(&mut self.search)
-                            .id(Id::unique("tool_search"))
-                            .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
-                            .align(egui::Align2([dir::start(), Align::Center]))
-                            .background_color(p.surface)
-                            .margin(Margin::symmetric(10, 7))
-                            .desired_width(search_width),
-                    );
-                    if !self.search.is_empty() {
-                        clear_search = widgets::icon_button(
-                            ui,
-                            icons::X,
-                            tr("action.clear"),
-                            Kind::Ghost,
-                            Size::Small,
-                        )
-                        .clicked();
-                    }
-                    search
-                })
-                .inner
-            })
-            .inner;
+        let (search, mut clear_search) = tool_search(ui, &mut self.search);
         let search = search.on_hover_text(ui.ctx().format_shortcut(&FIND_TOOLS));
         if search.changed() {
             self.reset_tool_scroll = true;
@@ -4948,6 +4912,36 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
     clicked
 }
 
+/// Reserve the clear action before laying out the editor, including on the
+/// frame that receives the first character. TextEdit's width includes its frame.
+fn tool_search(ui: &mut egui::Ui, text: &mut String) -> (egui::Response, bool) {
+    let p = theme::palette(ui);
+    ui.horizontal(|ui| {
+        ui.with_layout(dir::trailing(Align::Center), |ui| {
+            let clear = ui
+                .add_enabled_ui(!text.is_empty(), |ui| {
+                    widgets::icon_button(ui, icons::X, tr("action.clear"), Kind::Ghost, Size::Small)
+                })
+                .inner
+                .clicked();
+            let width = ui.available_width().max(0.0);
+            let search = ui.add_sized(
+                egui::vec2(width, theme::BUTTON_HEIGHT),
+                TextEdit::singleline(text)
+                    .id(Id::unique("tool_search"))
+                    .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
+                    .align(egui::Align2([dir::start(), Align::Center]))
+                    .background_color(p.surface)
+                    .margin(Margin::symmetric(10, 7))
+                    .desired_width(0.0),
+            );
+            (search, clear)
+        })
+        .inner
+    })
+    .inner
+}
+
 /// Lays out `content` at most `max_width` wide, centered in the available space.
 fn centered(ui: &mut egui::Ui, max_width: f32, content: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width().min(max_width);
@@ -6406,6 +6400,53 @@ impl eframe::App for FmxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_stays_inside_sidebar_while_typing_and_clearing() {
+        for width in [120.0, 180.0, 232.0, 320.0] {
+            for align in [Align::Min, Align::Max] {
+                for dark in [false, true] {
+                    let ctx = egui::Context::default();
+                    icons::install(&ctx);
+                    if dark {
+                        ctx.set_visuals(egui::Visuals::dark());
+                    } else {
+                        ctx.set_visuals(egui::Visuals::light());
+                    }
+                    let mut text = String::new();
+                    for frame in 0..5 {
+                        let events = match frame {
+                            1 => vec![egui::Event::Text("a".into())],
+                            2 => vec![egui::Event::Text(" very long search query".repeat(20))],
+                            _ => vec![],
+                        };
+                        ctx.run_ui(egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                            events,
+                            ..Default::default()
+                        }, |ui| {
+                            ui.allocate_ui_with_layout(egui::vec2(width, 60.0), egui::Layout::top_down(align), |ui| {
+                                let bounds = ui.available_rect_before_wrap();
+                                let (search, _) = tool_search(ui, &mut text);
+                                if frame == 0 { search.request_focus(); }
+                                assert!(search.rect.left() >= bounds.left() - 0.5 && search.rect.right() <= bounds.right() + 0.5,
+                                    "width={width}, frame={frame}, search={:?}, bounds={bounds:?}", search.rect);
+                                assert!(ui.min_rect().width() <= width + 0.5,
+                                    "search row grew beyond sidebar: width={width}, frame={frame}, row={:?}", ui.min_rect());
+                            });
+                        }).textures_delta.clear();
+                        if frame == 1 {
+                            assert_eq!(text, "a");
+                        }
+                        if frame == 2 {
+                            assert!(text.len() > 100);
+                            text.clear();
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn welcome_pages_fit_small_and_large_windows() {
