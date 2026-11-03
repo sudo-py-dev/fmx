@@ -32,9 +32,7 @@ pub fn create(tool: Tool) -> io::Result<PathBuf> {
         return Err(io::Error::other("Desktop folder unavailable"));
     }
     fs::create_dir_all(&desktop)?;
-    let exe = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_exe()?);
+    let exe = launch_exe()?;
     let id = tool_id(tool);
     let name = format!(
         "FMX — {} ({})",
@@ -44,6 +42,31 @@ pub fn create(tool: Tool) -> io::Result<PathBuf> {
             .replace(['\n', '\r', '\u{200f}'], "")
     );
     write_launcher(&desktop, &exe, &id, &name)
+}
+
+/// The program a launcher should start. Linux reports a binary replaced while
+/// running (a rebuild or an update) as "<path> (deleted)"; the new file sits at
+/// the original path. Never write a launcher that points at nothing.
+fn launch_exe() -> io::Result<PathBuf> {
+    let exe = match std::env::var_os("APPIMAGE") {
+        Some(appimage) => PathBuf::from(appimage),
+        None => std::env::current_exe()?,
+    };
+    let exe = strip_deleted(exe);
+    if !exe.is_file() {
+        return Err(io::Error::other(format!(
+            "FMX executable not found at {}",
+            exe.display()
+        )));
+    }
+    Ok(exe)
+}
+
+fn strip_deleted(exe: PathBuf) -> PathBuf {
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(original) => PathBuf::from(original),
+        None => exe,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -134,6 +157,17 @@ mod tests {
         for id in ["", "x", "zz", "éé", "00"] {
             assert_eq!(parse_tool(id), None);
         }
+    }
+    #[test]
+    fn replaced_executables_point_at_their_original_path() {
+        assert_eq!(
+            strip_deleted("/opt/fmx/fmx (deleted)".into()),
+            Path::new("/opt/fmx/fmx")
+        );
+        assert_eq!(
+            strip_deleted("/opt/fmx/fmx".into()),
+            Path::new("/opt/fmx/fmx")
+        );
     }
     #[cfg(target_os = "linux")]
     #[test]
