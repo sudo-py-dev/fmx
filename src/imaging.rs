@@ -350,63 +350,227 @@ pub fn join(
     let canvas = if matches!(layout, JoinLayout::Vertical | JoinLayout::Horizontal) {
         stitch(&pictures, layout)
     } else {
-        collage(&pictures, layout, opts)
+        let edits: Vec<_> = inputs
+            .iter()
+            .map(|path| {
+                opts.collage_photos
+                    .get(path.as_ref())
+                    .copied()
+                    .unwrap_or_default()
+            })
+            .collect();
+        collage_filtered(&pictures, layout, opts, FilterType::Lanczos3, &edits)
     };
     let img = watermark(DynamicImage::ImageRgba8(canvas), opts, ffmpeg)?;
     write_image(&img, output, ImageFormat::Png, opts, ffmpeg)
 }
 
 /// Decode off the UI thread and retain a bounded source for interactive edits.
-pub fn collage_photo(
-    path: &Path,
-    opts: &Options,
-    ffmpeg: Option<&Path>,
-) -> Result<DynamicImage, ImageError> {
-    Ok(transform(open(path, ffmpeg)?, opts, None).thumbnail(1024, 1024))
+pub fn collage_photo(path: &Path, ffmpeg: Option<&Path>) -> Result<DynamicImage, ImageError> {
+    // Decode once; retain only the small, unadjusted source while editing.
+    Ok(open(path, ffmpeg)?.thumbnail(640, 640))
 }
 
+#[cfg(test)]
 pub fn collage_preview(
     pictures: &[&DynamicImage],
+    paths: &[std::path::PathBuf],
     opts: &Options,
     ffmpeg: Option<&Path>,
 ) -> Result<image::RgbaImage, ImageError> {
+    collage_preview_sized(pictures, paths, opts, ffmpeg, 640)
+}
+
+pub fn collage_preview_sized(
+    pictures: &[&DynamicImage],
+    paths: &[std::path::PathBuf],
+    opts: &Options,
+    ffmpeg: Option<&Path>,
+    side: u32,
+) -> Result<image::RgbaImage, ImageError> {
+    let side = side.clamp(256, 1024);
     let mut preview = opts.clone();
-    preview.collage_gap = (opts.collage_gap as f32 * 640.0
+    preview.collage_gap = (opts.collage_gap as f32 * side as f32
         / opts.collage_size.clamp(256, 4096) as f32)
         .round() as u32;
-    preview.collage_size = 640;
-    let canvas = collage(pictures, opts.join_layout, &preview);
+    preview.collage_size = side;
+    let pictures: Vec<_> = pictures
+        .iter()
+        .map(|picture| {
+            if opts.image_rotation.is_none() && !opts.grayscale && opts.image_max_side.is_none() {
+                std::borrow::Cow::Borrowed(*picture)
+            } else {
+                std::borrow::Cow::Owned(transform((*picture).clone(), opts, None))
+            }
+        })
+        .collect();
+    let edits: Vec<_> = paths
+        .iter()
+        .map(|path| opts.collage_photos.get(path).copied().unwrap_or_default())
+        .collect();
+    let canvas = collage_filtered(
+        &pictures,
+        opts.join_layout,
+        &preview,
+        FilterType::Triangle,
+        &edits,
+    );
     Ok(watermark(DynamicImage::ImageRgba8(canvas), &preview, ffmpeg)?.to_rgba8())
 }
 
 /// A bounded square canvas keeps template exports predictable and inexpensive.
+#[cfg(test)]
 fn collage(
     pictures: &[impl std::borrow::Borrow<DynamicImage>],
     layout: JoinLayout,
     opts: &Options,
 ) -> image::RgbaImage {
+    collage_filtered(pictures, layout, opts, FilterType::Lanczos3, &[])
+}
+
+fn collage_filtered(
+    pictures: &[impl std::borrow::Borrow<DynamicImage>],
+    layout: JoinLayout,
+    opts: &Options,
+    filter: FilterType,
+    edits: &[options::CollagePhotoEdit],
+) -> image::RgbaImage {
     let size = opts.collage_size.clamp(256, 4096);
     let gap = opts.collage_gap.min(size / 16);
     let mut canvas = image::RgbaImage::from_pixel(size, size, image::Rgba([255, 255, 255, 255]));
-    for (picture, [x, y, w, h]) in pictures.iter().zip(layout.slots(pictures.len())) {
+    for (i, (picture, [x, y, w, h])) in pictures
+        .iter()
+        .zip(opts.collage_slots_for(layout, pictures.len()))
+        .enumerate()
+    {
+        let edit = edits.get(i).copied().unwrap_or_default();
         let picture = picture.borrow();
+        let rotated;
+        let picture = match edit.turns % 4 {
+            1 => {
+                rotated = picture.rotate90();
+                &rotated
+            }
+            2 => {
+                rotated = picture.rotate180();
+                &rotated
+            }
+            3 => {
+                rotated = picture.rotate270();
+                &rotated
+            }
+            _ => picture,
+        };
         let left = (x * size as f32).round() as u32 + gap;
         let top = (y * size as f32).round() as u32 + gap;
         let right = ((x + w) * size as f32).round() as u32;
         let bottom = ((y + h) * size as f32).round() as u32;
         let width = right.saturating_sub(left + gap).max(1);
         let height = bottom.saturating_sub(top + gap).max(1);
-        let image = if opts.collage_crop {
-            picture.resize_to_fill(width, height, FilterType::Lanczos3)
+        // Crop the source before resizing: zoom never allocates an oversized bitmap.
+        let sx = width as f32 / picture.width() as f32;
+        let sy = height as f32 / picture.height() as f32;
+        let scale = if opts.collage_crop {
+            sx.max(sy)
         } else {
-            picture.resize(width, height, FilterType::Lanczos3)
-        };
-        image::imageops::overlay(
-            &mut canvas,
-            &image,
-            i64::from(left + (width - image.width()) / 2),
-            i64::from(top + (height - image.height()) / 2),
-        );
+            sx.min(sy)
+        } * edit.zoom.clamp(1.0, 4.0);
+        let visible_w = (picture.width() as f32 * scale)
+            .round()
+            .clamp(1.0, width as f32) as u32;
+        let visible_h = (picture.height() as f32 * scale)
+            .round()
+            .clamp(1.0, height as f32) as u32;
+        let crop_w = (visible_w as f32 / scale)
+            .round()
+            .clamp(1.0, picture.width() as f32) as u32;
+        let crop_h = (visible_h as f32 / scale)
+            .round()
+            .clamp(1.0, picture.height() as f32) as u32;
+        let x = edit.x.clamp(0.0, 1.0);
+        let y = edit.y.clamp(0.0, 1.0);
+        let image = picture
+            .crop_imm(
+                ((picture.width() - crop_w) as f32 * x).round() as u32,
+                ((picture.height() - crop_h) as f32 * y).round() as u32,
+                crop_w,
+                crop_h,
+            )
+            .resize_exact(visible_w, visible_h, filter);
+        let offset_x = ((width - visible_w) as f32 * x).round() as u32;
+        let offset_y = ((height - visible_h) as f32 * y).round() as u32;
+        let mut tile =
+            image::RgbaImage::from_pixel(width, height, image::Rgba([255, 255, 255, 255]));
+        if edit.angle.abs() > 0.01 {
+            let radians = edit.angle.to_radians();
+            let (sin, cos) = radians.sin_cos();
+            let iw = image.width() as f32;
+            let ih = image.height() as f32;
+            let (w, h) = (width as f32, height as f32);
+            let scale = if opts.collage_crop {
+                ((w * cos.abs() + h * sin.abs()) / iw).max((w * sin.abs() + h * cos.abs()) / ih)
+            } else {
+                (w / (iw * cos.abs() + ih * sin.abs())).min(h / (iw * sin.abs() + ih * cos.abs()))
+            };
+            let source = image.to_rgba8();
+            for (px, py, pixel) in tile.enumerate_pixels_mut() {
+                let dx = (px as f32 + 0.5 - w / 2.0) / scale;
+                let dy = (py as f32 + 0.5 - h / 2.0) / scale;
+                let sx = cos * dx + sin * dy + iw / 2.0 - 0.5;
+                let sy = -sin * dx + cos * dy + ih / 2.0 - 0.5;
+                if sx >= 0.0 && sy >= 0.0 && sx < iw && sy < ih {
+                    let x0 = sx.floor() as u32;
+                    let y0 = sy.floor() as u32;
+                    let x1 = (x0 + 1).min(source.width() - 1);
+                    let y1 = (y0 + 1).min(source.height() - 1);
+                    let (fx, fy) = (sx.fract(), sy.fract());
+                    let samples = [
+                        (x0, y0, (1.0 - fx) * (1.0 - fy)),
+                        (x1, y0, fx * (1.0 - fy)),
+                        (x0, y1, (1.0 - fx) * fy),
+                        (x1, y1, fx * fy),
+                    ];
+                    // Premultiplied blending keeps transparent edges free of dark halos.
+                    let mut rgba = [0.0_f32; 4];
+                    for (sx, sy, weight) in samples {
+                        let color = source.get_pixel(sx, sy).0;
+                        let alpha = color[3] as f32 / 255.0;
+                        for channel in 0..3 {
+                            rgba[channel] += color[channel] as f32 * alpha * weight;
+                        }
+                        rgba[3] += alpha * weight;
+                    }
+                    for channel in 0..3 {
+                        pixel[channel] = (rgba[channel] + 255.0 * (1.0 - rgba[3])).round() as u8;
+                    }
+                }
+            }
+        } else {
+            image::imageops::overlay(&mut tile, &image, i64::from(offset_x), i64::from(offset_y));
+        }
+        if matches!(
+            opts.collage_frame,
+            options::CollageFrame::Rounded | options::CollageFrame::Circle
+        ) {
+            let half_w = width as f32 / 2.0;
+            let half_h = height as f32 / 2.0;
+            let radius = if opts.collage_frame == options::CollageFrame::Circle {
+                half_w.min(half_h)
+            } else {
+                width.min(height) as f32 * 0.15
+            };
+            for (px, py, pixel) in tile.enumerate_pixels_mut() {
+                let dx = ((px as f32 + 0.5 - half_w).abs() - (half_w - radius)).max(0.0);
+                let dy = ((py as f32 + 0.5 - half_h).abs() - (half_h - radius)).max(0.0);
+                let coverage = (radius + 0.5 - dx.hypot(dy)).clamp(0.0, 1.0);
+                for channel in 0..3 {
+                    pixel[channel] =
+                        (pixel[channel] as f32 * coverage + 255.0 * (1.0 - coverage)).round() as u8;
+                }
+                pixel[3] = (pixel[3] as f32 * coverage + 255.0 * (1.0 - coverage)).round() as u8;
+            }
+        }
+        image::imageops::overlay(&mut canvas, &tile, i64::from(left), i64::from(top));
     }
     canvas
 }
@@ -612,6 +776,184 @@ mod tests {
     use image::{Rgba, RgbaImage};
 
     #[test]
+    fn interactive_preview_is_small_and_keeps_composition() {
+        let photo =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(400, 400, Rgba([255, 0, 0, 255])));
+        let opts = Options {
+            collage_gap: 0,
+            join_layout: JoinLayout::Grid2,
+            ..Options::default()
+        };
+        let draft = collage_preview_sized(&[&photo], &[], &opts, None, 320).unwrap();
+        let settled = collage_preview_sized(&[&photo], &[], &opts, None, 640).unwrap();
+        assert_eq!(draft.dimensions(), (320, 320));
+        assert_eq!(settled.dimensions(), (640, 640));
+        assert_eq!(draft.get_pixel(160, 160), settled.get_pixel(320, 320));
+        assert_eq!(draft.get_pixel(0, 0), settled.get_pixel(0, 0));
+    }
+
+    #[test]
+    fn frame_shapes_and_fine_rotation_match_preview_and_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("halves.png");
+        RgbaImage::from_fn(800, 800, |x, _| {
+            if x < 400 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        let photo = collage_photo(&source, None).unwrap();
+        for frame in options::CollageFrame::ALL {
+            let mut opts = Options {
+                join_layout: JoinLayout::Grid2,
+                collage_gap: 0,
+                collage_size: 1280,
+                collage_frame: frame,
+                ..Options::default()
+            };
+            opts.collage_photos.insert(
+                source.clone(),
+                options::CollagePhotoEdit {
+                    angle: 35.0,
+                    ..Default::default()
+                },
+            );
+            let [x, y, w, h] = opts.collage_slots(1)[0];
+            if matches!(
+                frame,
+                options::CollageFrame::Square | options::CollageFrame::Circle
+            ) {
+                assert_eq!(w, h);
+            }
+            let preview =
+                collage_preview(&[&photo], std::slice::from_ref(&source), &opts, None).unwrap();
+            let output = dir.path().join(format!("{frame:?}.png"));
+            join(
+                std::slice::from_ref(&source),
+                &output,
+                opts.join_layout,
+                &opts,
+                None,
+                |_| {},
+            )
+            .unwrap();
+            let exported = image::open(output).unwrap().to_rgba8();
+            for (fraction, expected) in [
+                (0.15, Rgba([255, 0, 0, 255])),
+                (0.85, Rgba([0, 0, 255, 255])),
+            ] {
+                let px = ((x + w * 0.5) * 640.0) as u32;
+                let py = ((y + h * fraction) * 640.0) as u32;
+                assert_eq!(preview.get_pixel(px, py), &expected, "{frame:?}");
+                assert_eq!(exported.get_pixel(px * 2, py * 2), &expected, "{frame:?}");
+            }
+            if matches!(
+                frame,
+                options::CollageFrame::Rounded | options::CollageFrame::Circle
+            ) {
+                assert_eq!(
+                    preview.get_pixel((x * 640.0) as u32, (y * 640.0) as u32),
+                    &Rgba([255; 4])
+                );
+                assert_eq!(
+                    exported.get_pixel((x * 1280.0) as u32, (y * 1280.0) as u32),
+                    &Rgba([255; 4])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn photo_framing_follows_source_when_reordered_and_exports() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("strip.png");
+        let other = dir.path().join("green.png");
+        RgbaImage::from_fn(800, 400, |x, _| {
+            if x < 400 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        RgbaImage::from_pixel(400, 400, Rgba([0, 255, 0, 255]))
+            .save(&other)
+            .unwrap();
+        let mut opts = Options {
+            join_layout: JoinLayout::Grid2,
+            collage_gap: 0,
+            collage_size: 1280,
+            ..Options::default()
+        };
+        opts.collage_photos.insert(
+            source.clone(),
+            options::CollagePhotoEdit {
+                zoom: 2.0,
+                x: 1.0,
+                y: 0.5,
+                turns: 1,
+                angle: 0.0,
+            },
+        );
+        let photos = [
+            collage_photo(&other, None).unwrap(),
+            collage_photo(&source, None).unwrap(),
+        ];
+        let paths = [other, source];
+        let preview = collage_preview(&[&photos[0], &photos[1]], &paths, &opts, None).unwrap();
+        let output = dir.path().join("export.png");
+        join(&paths, &output, opts.join_layout, &opts, None, |_| {}).unwrap();
+        let export = image::open(output).unwrap().to_rgba8();
+        for (x, y) in [(160, 100), (400, 100), (400, 540)] {
+            assert_eq!(preview.get_pixel(x, y), export.get_pixel(x * 2, y * 2));
+        }
+        assert_eq!(export.get_pixel(320, 200), &Rgba([0, 255, 0, 255]));
+        // The rotated second image has red above blue, with no edit on the green one.
+        assert_eq!(export.get_pixel(800, 200), &Rgba([255, 0, 0, 255]));
+        assert_eq!(export.get_pixel(800, 1080), &Rgba([0, 0, 255, 255]));
+        let restored: Options =
+            serde_json::from_str(&serde_json::to_string(&opts).unwrap()).unwrap();
+        assert_eq!(restored.collage_photos, opts.collage_photos);
+    }
+
+    #[test]
+    fn small_editing_sources_export_at_requested_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.png");
+        RgbaImage::from_fn(1600, 800, |x, _| {
+            if x < 800 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            }
+        })
+        .save(&source)
+        .unwrap();
+        let photo = collage_photo(&source, None).unwrap();
+        assert_eq!((photo.width(), photo.height()), (640, 320));
+        let opts = Options {
+            join_layout: JoinLayout::Grid2,
+            collage_size: 1024,
+            collage_gap: 0,
+            image_rotation: Some(Rotation::FlipHorizontal),
+            ..Options::default()
+        };
+        let preview =
+            collage_preview(&[&photo], std::slice::from_ref(&source), &opts, None).unwrap();
+        assert_eq!(preview.dimensions(), (640, 640));
+        assert_eq!(preview.get_pixel(260, 320), &Rgba([0, 0, 255, 255]));
+        let output = dir.path().join("collage.png");
+        join(&[source], &output, opts.join_layout, &opts, None, |_| {}).unwrap();
+        let exported = image::open(output).unwrap().to_rgba8();
+        assert_eq!(exported.dimensions(), (1024, 1024));
+        assert_eq!(exported.get_pixel(416, 512), preview.get_pixel(260, 320));
+    }
+
+    #[test]
     fn collage_grid_places_all_four_photos_with_white_gutters() {
         let colors = [
             [255, 0, 0, 255],
@@ -648,7 +990,7 @@ mod tests {
             collage_gap: 20,
             ..Options::default()
         };
-        let preview = collage_preview(&[&blue, &red], &opts, None).unwrap();
+        let preview = collage_preview(&[&blue, &red], &[], &opts, None).unwrap();
         let exported = collage(&[&blue, &red], opts.join_layout, &opts);
         assert_eq!(preview.dimensions(), (640, 640));
         for (x, y) in [(0, 0), (160, 320), (480, 320), (320, 320)] {

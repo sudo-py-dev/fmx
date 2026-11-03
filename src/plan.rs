@@ -1710,7 +1710,9 @@ fn screen_input(
     cursor: bool,
 ) -> (Args, Option<ScreenRect>) {
     let cursor = if cursor { "1" } else { "0" };
-    let args = args.flag("-thread_queue_size", "1024");
+    // About a second of raw frames: an encoder that falls behind then drops
+    // frames instead of piling up gigabytes and lagging further each second.
+    let args = args.flag("-thread_queue_size", "32");
     match capture {
         Capture::X11 { display, area } => {
             let mut args = args
@@ -1745,7 +1747,14 @@ fn screen_input(
                 .flag("-i", format!("{device}:none"));
             (args, *area)
         }
-        Capture::Stdin => (args.flag("-f", "yuv4mpegpipe").flag("-i", "pipe:0"), None),
+        // Frames are stamped as they arrive, so ones GStreamer drops leave a
+        // gap rather than shortening the video and putting the sound out of step.
+        Capture::Stdin => (
+            args.flag("-use_wallclock_as_timestamps", "1")
+                .flag("-f", "yuv4mpegpipe")
+                .flag("-i", "pipe:0"),
+            None,
+        ),
     }
 }
 

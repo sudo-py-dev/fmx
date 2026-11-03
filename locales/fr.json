@@ -283,6 +283,7 @@
   "record.choose_screen": "Choisissez ce qui est partagé…",
   "record.starting_in": "Début dans {seconds}…",
   "record.recording": "Enregistrement {time} · {size}",
+  "record.dropping_frames": "Images perdues : essayez une fréquence ou une taille plus basse",
   "record.screen": "Écran",
   "record.no_screen": "Aucun écran à enregistrer n’a été trouvé.",
   "record.needs_gstreamer": "Enregistrer sous Wayland nécessite GStreamer avec son greffon PipeWire (gstreamer1.0-pipewire sur Debian et Ubuntu, gstreamer1-plugin-pipewire sur Fedora).",
@@ -762,5 +763,8 @@
   "tools.read_discs": "Lire et copier des disques",
   "tools.disc_images": "Images de disque",
   "tools.media_edit": "Couper et changer la lecture",
-  "tools.inspect_repair": "Inspecter et réparer"
+  "tools.inspect_repair": "Inspecter et réparer",
+  "collage.design": "Disposition et export",
+  "collage.deselect": "Annuler la sélection",
+  "collage.preview_hint": "Aperçu rapide · Export à partir des photos originales à la taille choisie."
 }

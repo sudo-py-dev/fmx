@@ -390,7 +390,16 @@ impl JoinLayout {
                 }
                 let n = i - usize::from(featured);
                 [
-                    (n % columns) as f32 / columns as f32,
+                    {
+                        let used = if n / columns == remaining.saturating_sub(1) / columns {
+                            let remainder = remaining % columns;
+                            if remainder == 0 { columns } else { remainder }
+                        } else {
+                            columns
+                        };
+                        (n % columns) as f32 / columns as f32
+                            + (columns - used) as f32 / (2 * columns) as f32
+                    },
                     (n / columns + usize::from(featured)) as f32 / rows as f32,
                     1.0 / columns as f32,
                     1.0 / rows as f32,
@@ -1023,6 +1032,51 @@ impl Default for MediaToolOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CollageFrame {
+    #[default]
+    Rectangle,
+    Square,
+    Rounded,
+    Circle,
+}
+
+impl CollageFrame {
+    pub const ALL: [Self; 4] = [Self::Rectangle, Self::Square, Self::Rounded, Self::Circle];
+
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            Self::Rectangle => "collage.rectangle",
+            Self::Square => "collage.square",
+            Self::Rounded => "collage.rounded",
+            Self::Circle => "collage.circle",
+        })
+    }
+}
+
+/// Non-destructive framing, keyed by source path so reordering keeps edits attached.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollagePhotoEdit {
+    pub zoom: f32,
+    pub x: f32,
+    pub y: f32,
+    pub turns: u8,
+    pub angle: f32,
+}
+
+impl Default for CollagePhotoEdit {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            x: 0.5,
+            y: 0.5,
+            turns: 0,
+            angle: 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Options {
@@ -1070,8 +1124,37 @@ pub struct Options {
     pub collage_size: u32,
     pub collage_gap: u32,
     pub collage_crop: bool,
+    pub collage_frame: CollageFrame,
+    pub collage_photos: std::collections::HashMap<PathBuf, CollagePhotoEdit>,
     /// Text appended to every output file name, e.g. `_converted`.
     pub name_tag: String,
+}
+
+impl Options {
+    /// Frame geometry shared by the editor and full-resolution compositor.
+    pub fn collage_slots(&self, count: usize) -> Vec<[f32; 4]> {
+        self.collage_slots_for(self.join_layout, count)
+    }
+
+    pub fn collage_slots_for(&self, layout: JoinLayout, count: usize) -> Vec<[f32; 4]> {
+        layout
+            .slots(count)
+            .into_iter()
+            .map(|[mut x, mut y, mut w, mut h]| {
+                if matches!(
+                    self.collage_frame,
+                    CollageFrame::Square | CollageFrame::Circle
+                ) {
+                    let side = w.min(h);
+                    x += (w - side) / 2.0;
+                    y += (h - side) / 2.0;
+                    w = side;
+                    h = side;
+                }
+                [x, y, w, h]
+            })
+            .collect()
+    }
 }
 
 impl Default for Options {
@@ -1116,6 +1199,8 @@ impl Default for Options {
             collage_size: 2048,
             collage_gap: 16,
             collage_crop: true,
+            collage_frame: CollageFrame::default(),
+            collage_photos: Default::default(),
             name_tag: String::new(),
         }
     }

@@ -29,8 +29,8 @@ use crate::icons;
 use crate::instance;
 use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
 use crate::options::{
-    self, Channels, Corner, DownloadKind, Edit, FrameMode, HwAccel, JoinLayout, MixLayout, Options,
-    Quality, Rect, Resolution, Rotation,
+    self, Channels, Corner, DownloadKind, Edit, FrameMode, HwAccel, MixLayout, Options, Quality,
+    Rect, Resolution, Rotation,
 };
 use crate::preview::{Mode as PreviewMode, Preview};
 use crate::process::spawn_detached;
@@ -56,6 +56,8 @@ const PROGRESS_WIDTH: f32 = 220.0;
 const EDITOR_MAX_WIDTH: f32 = 1320.0;
 /// Below this width the editor stacks its two panels and scrolls.
 const TWO_COLUMN_MIN_WIDTH: f32 = 760.0;
+/// The least height the collage canvas and inspector get before the page scrolls.
+const COLLAGE_MIN_HEIGHT: f32 = 320.0;
 const PANEL_GAP: f32 = 14.0;
 /// Share of the width the file panel gets, beside settings or a video preview.
 const FILES_SHARE: f32 = 0.46;
@@ -442,7 +444,15 @@ impl FmxApp {
         #[cfg(debug_assertions)]
         if crate::devshot::wants_enqueue() && app.can_enqueue() {
             app.enqueue();
-            if crate::devshot::wants_running() {
+            if crate::devshot::wants_running() && app.tool == Tool::Record {
+                // The longest recorder detail: time, size and the frame warning.
+                let detail = trf(
+                    "record.recording",
+                    &[("time", &"12:34"), ("size", &"812.4 MB")],
+                );
+                let detail = format!("{detail} · {}", tr("record.dropping_frames"));
+                app.queue.pretend_running(0, None, Some(detail));
+            } else if crate::devshot::wants_running() {
                 // A download's own detail line, and a step of unknown length.
                 let done = trf(
                     "download.progress_of",
@@ -1634,6 +1644,117 @@ impl FmxApp {
 
     // ── Task editor ─────────────────────────────────────────────────────
 
+    /// The collage canvas beside its inspector, filling `size`.
+    fn collage_workspace(&mut self, ui: &mut egui::Ui, size: egui::Vec2) {
+        let (workspace, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let wide = size.x >= 680.0;
+        let inspector_width = if wide {
+            320.0
+        } else {
+            (size.x * 0.42).clamp(160.0, 240.0)
+        };
+        let inspector = egui::Rect::from_min_max(
+            egui::pos2(workspace.max.x - inspector_width, workspace.min.y),
+            workspace.max,
+        );
+        let canvas = egui::Rect::from_min_max(
+            workspace.min,
+            egui::pos2(inspector.min.x - 12.0, workspace.max.y),
+        );
+        let p = theme::palette(ui);
+        ui.painter().rect_filled(inspector, 10, p.sunken);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(inspector.shrink(14.0))
+                .layout(dir::column()),
+            |ui| {
+                ui.set_width(inspector_width - 28.0);
+                theme::page_scroll()
+                    .id_salt(("collage_inspector", self.collage_editor.tab()))
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        self.collage_editor.inspector(
+                            ui,
+                            &mut self.files,
+                            &mut self.settings.options,
+                        );
+                        if self.collage_editor.output_tab() {
+                            let opts = &mut self.settings.options;
+                            ui.separator();
+                            ui.label(tr("option.quality"));
+                            ui.horizontal_wrapped(|ui| {
+                                for quality in Quality::ALL {
+                                    ui.selectable_value(
+                                        &mut opts.quality,
+                                        quality,
+                                        quality.label(),
+                                    );
+                                }
+                            });
+                            ui.checkbox(&mut opts.grayscale, tr("option.grayscale"));
+                            ui.separator();
+                            ui.label(tr("option.watermark"));
+                            if let Some(path) = &opts.edit.watermark {
+                                ui.label(
+                                    RichText::new(
+                                        path.file_name().unwrap_or_default().to_string_lossy(),
+                                    )
+                                    .small(),
+                                );
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button(tr("action.choose")).clicked() {
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
+                                        .pick_file()
+                                    {
+                                        opts.edit.watermark = Some(path);
+                                    }
+                                }
+                                if opts.edit.watermark.is_some()
+                                    && widgets::icon_button(
+                                        ui,
+                                        icons::X,
+                                        tr("action.clear"),
+                                        Kind::Ghost,
+                                        Size::Small,
+                                    )
+                                    .clicked()
+                                {
+                                    opts.edit.watermark = None;
+                                }
+                            });
+                            if opts.edit.watermark.is_some() {
+                                let mut corner =
+                                    opts.edit.watermark_corner.unwrap_or(Corner::BottomRight);
+                                combo(
+                                    ui,
+                                    "collage_watermark_corner",
+                                    &mut corner,
+                                    &Corner::ALL,
+                                    |corner| corner.label().to_owned(),
+                                );
+                                opts.edit.watermark_corner = Some(corner);
+                            }
+                        }
+                    });
+            },
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(canvas)
+                .layout(dir::column()),
+            |ui| {
+                self.collage_editor.show(
+                    ui,
+                    &mut self.files,
+                    &mut self.settings.options,
+                    self.toolbox.get(External::Ffmpeg).map(Path::to_path_buf),
+                );
+            },
+        );
+    }
+
     /// The tool window: files on the left, settings (or the video) on the right,
     /// sized to the window so nothing scrolls except long lists.
     fn task_editor(&mut self, ui: &mut egui::Ui) {
@@ -1641,6 +1762,23 @@ impl FmxApp {
         ui.add_space(12.0);
         if self.tool == Tool::MediaInfo {
             self.media_info_page(ui);
+            return;
+        }
+        if self.tool == Tool::JoinImages {
+            self.add_buttons(ui);
+            ui.add_space(8.0);
+            self.collage_editor.prepare(&mut self.settings.options);
+            // The canvas and inspector need room to work; a short window
+            // scrolls the page instead of squeezing them until they spill over.
+            let size = ui.available_size();
+            if size.y >= COLLAGE_MIN_HEIGHT {
+                self.collage_workspace(ui, size);
+            } else {
+                theme::page_scroll().id_salt("collage_page").show(ui, |ui| {
+                    let size = egui::vec2(ui.available_width(), COLLAGE_MIN_HEIGHT);
+                    self.collage_workspace(ui, size);
+                });
+            }
             return;
         }
         let (title, help) = self.input_heading();
@@ -2819,80 +2957,10 @@ impl FmxApp {
             Tool::ToAudio(_) | Tool::Rotate | Tool::Speed | Tool::Delogo | Tool::PdfCompress => {
                 quality_row(ui, &mut opts.quality);
             }
-            Tool::ToImage(_) | Tool::ImagesToPdf | Tool::JoinImages => {
-                if tool == Tool::JoinImages {
-                    self.collage_editor.prepare(opts);
-                    ui.horizontal_wrapped(|ui| {
-                        for layout in [JoinLayout::Grid2, JoinLayout::Grid3, JoinLayout::Featured] {
-                            if ui
-                                .add(
-                                    egui::Button::new(layout.label())
-                                        .selected(opts.join_layout == layout),
-                                )
-                                .clicked()
-                            {
-                                opts.join_layout = layout;
-                            }
-                        }
-                    });
-                    row(ui, tr("option.layout"), |ui| {
-                        combo(
-                            ui,
-                            "collage_template",
-                            &mut opts.join_layout,
-                            &JoinLayout::ALL,
-                            |l| l.label().to_owned(),
-                        );
-                    });
-                    if !matches!(
-                        opts.join_layout,
-                        JoinLayout::Vertical | JoinLayout::Horizontal
-                    ) {
-                        row(ui, tr("collage.size"), |ui| {
-                            combo(
-                                ui,
-                                "collage_size",
-                                &mut opts.collage_size,
-                                &[1024, 2048, 4096],
-                                |s| format!("{s} × {s}"),
-                            );
-                        });
-                        row(ui, tr("collage.spacing"), |ui| {
-                            ui.add(egui::Slider::new(&mut opts.collage_gap, 0..=64).suffix(" px"));
-                        });
-                        row(ui, tr("collage.fit"), |ui| {
-                            widgets::segmented(
-                                ui,
-                                &mut opts.collage_crop,
-                                &[(true, tr("collage.fill")), (false, tr("collage.contain"))],
-                            );
-                        });
-                    }
-                }
-                if tool == Tool::JoinImages
-                    && !matches!(
-                        opts.join_layout,
-                        JoinLayout::Vertical | JoinLayout::Horizontal
-                    )
-                {
-                    self.collage_editor.show(
-                        ui,
-                        &mut self.files,
-                        opts,
-                        self.toolbox.get(External::Ffmpeg).map(|p| p.to_path_buf()),
-                    );
-                }
-                if tool == Tool::JoinImages {
-                    ui.collapsing(tr("collage.adjustments"), |ui| {
-                        quality_row(ui, &mut opts.quality);
-                        image_rows(ui, opts);
-                        watermark_row(ui, &mut opts.edit, "image_wm_corner");
-                    });
-                } else {
-                    quality_row(ui, &mut opts.quality);
-                    image_rows(ui, opts);
-                    watermark_row(ui, &mut opts.edit, "image_wm_corner");
-                }
+            Tool::ToImage(_) | Tool::ImagesToPdf => {
+                quality_row(ui, &mut opts.quality);
+                image_rows(ui, opts);
+                watermark_row(ui, &mut opts.edit, "image_wm_corner");
             }
             Tool::ToDevice(device) => {
                 let p = device.profile();
@@ -6103,6 +6171,8 @@ fn job_row(ui: &mut egui::Ui, job: &Job, cancel: &mut Option<JobId>, remove: &mu
     );
     let details = match &job.state {
         JobState::Failed(message) => format!("{}\n\n{message}", job.spec.output.display()),
+        // A narrow window cuts the subtitle short; the whole status stays here.
+        JobState::Running { .. } => format!("{}\n\n{status}", job.spec.output.display()),
         _ => job.spec.output.display().to_string(),
     };
     row.on_hover_text(details);

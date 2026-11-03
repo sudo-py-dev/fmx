@@ -81,14 +81,21 @@ impl Cast {
 
     /// Starts GStreamer writing the shared picture to its stdout as YUV4MPEG
     /// frames at a steady `fps`; it finishes the stream when sent SIGINT.
+    ///
+    /// The compositor sends frames only when the screen changes, so the last
+    /// one is repeated every frame interval to keep the stream steady. When
+    /// ffmpeg falls behind, the leaky queue drops frames rather than stalling
+    /// the capture, which would make the video shorter than the time recorded.
     pub fn spawn_frames(&self, gst_launch: &Path, fps: u32) -> std::io::Result<Child> {
         let fd = self.remote.as_fd();
         let pipeline = format!(
-            "pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time=1000 \
+            "pipewiresrc fd={fd} path={node} do-timestamp=true keepalive-time={keepalive} \
              ! videorate ! video/x-raw,framerate={fps}/1 \
+             ! queue leaky=downstream max-size-buffers=4 max-size-bytes=0 max-size-time=0 \
              ! videoconvert ! video/x-raw,format=I420 ! y4menc ! fdsink fd=1",
             fd = std::os::fd::AsRawFd::as_raw_fd(&fd),
             node = self.node,
+            keepalive = (1000 / fps.max(1)).max(1),
         );
         let mut cmd = process::command(gst_launch);
         cmd.args(["-q", "-e"])

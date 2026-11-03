@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::capture;
 use crate::catalog::{AudioFormat, EbookFormat, Tool};
@@ -151,7 +151,7 @@ fn record_screen(
             ffmpeg,
             &plan.args,
             cancel,
-            recording_lines(on_detail),
+            recording_lines(Some(rec.fps), on_detail),
         );
         drop::<Cast>(cast);
         return result.map_err(JobError::Run);
@@ -164,7 +164,7 @@ fn record_screen(
         &plan.args,
         plan.stop,
         cancel,
-        recording_lines(on_detail),
+        recording_lines(Some(rec.fps), on_detail),
     )
     .map_err(JobError::Run)
 }
@@ -282,8 +282,9 @@ fn in_path(program: &str) -> bool {
 }
 
 /// Feeds ffmpeg's progress lines to `on_detail` as "Recording 1:05 · 12.4 MB".
-fn recording_lines(on_detail: &mut dyn FnMut(String)) -> impl FnMut(&str) + '_ {
-    let mut progress = RecordingProgress::default();
+/// `fps` is the frame rate asked of a screen recording, to notice dropped frames.
+fn recording_lines(fps: Option<u32>, on_detail: &mut dyn FnMut(String)) -> impl FnMut(&str) + '_ {
+    let mut progress = RecordingProgress::new(fps);
     move |line| {
         if let Some(detail) = progress.update(line) {
             on_detail(detail);
@@ -355,31 +356,98 @@ fn countdown(
     Ok(())
 }
 
-#[derive(Default)]
+/// Seconds of frames compared at a time to tell whether ffmpeg keeps up.
+const FRAME_RATE_WINDOW: Duration = Duration::from_secs(2);
+
+/// Below this share of the asked frame rate, the recording is dropping frames.
+const KEEPING_UP: f64 = 0.8;
+
 struct RecordingProgress {
+    /// When the recording's first second began, on the clock on the wall.
+    /// ffmpeg's own time is that of the frames written, which trails behind
+    /// while the encoder works and stutters when frames come unevenly.
+    started: Option<Instant>,
+    fps: Option<f64>,
     secs: f64,
     bytes: f64,
+    /// Frames read from the screen: written, less repeats, plus discards.
+    frames: Option<f64>,
+    dup: f64,
+    drop: f64,
+    /// The frame count and time the current measuring window began.
+    window: Option<(Instant, f64)>,
+    behind: bool,
 }
 
 impl RecordingProgress {
+    fn new(fps: Option<u32>) -> Self {
+        Self {
+            started: None,
+            fps: fps.map(f64::from),
+            secs: 0.0,
+            bytes: 0.0,
+            frames: None,
+            dup: 0.0,
+            drop: 0.0,
+            window: None,
+            behind: false,
+        }
+    }
+
     fn update(&mut self, line: &str) -> Option<String> {
+        self.update_at(line, Instant::now())
+    }
+
+    fn update_at(&mut self, line: &str, now: Instant) -> Option<String> {
+        let number = |prefix: &str| line.strip_prefix(prefix)?.trim().parse::<f64>().ok();
         if let Some(secs) = ffmpeg::progress_seconds(line) {
-            self.secs = secs;
-        } else if let Some(bytes) = line
-            .strip_prefix("total_size=")
-            .and_then(|b| b.parse::<f64>().ok())
-        {
+            self.secs = secs.max(0.0);
+        } else if let Some(bytes) = number("total_size=") {
             self.bytes = bytes;
+        } else if let Some(frames) = number("frame=") {
+            self.frames = Some(frames);
+        } else if let Some(dup) = number("dup_frames=") {
+            self.dup = dup;
+        } else if let Some(drop) = number("drop_frames=") {
+            self.drop = drop;
         } else if line.starts_with("progress=") {
-            return Some(trf(
+            let started = *self
+                .started
+                .get_or_insert_with(|| now - Duration::from_secs_f64(self.secs));
+            self.check_frame_rate(now);
+            let detail = trf(
                 "record.recording",
                 &[
-                    ("time", &download::clock(self.secs)),
+                    ("time", &download::clock((now - started).as_secs_f64())),
                     ("size", &download::human_bytes(self.bytes)),
                 ],
-            ));
+            );
+            return Some(if self.behind {
+                format!("{detail} · {}", tr("record.dropping_frames"))
+            } else {
+                detail
+            });
         }
         None
+    }
+
+    /// Compares the frames read over the last window with the frame rate
+    /// asked for; the verdict holds until the next window ends.
+    fn check_frame_rate(&mut self, now: Instant) {
+        let (Some(fps), Some(written)) = (self.fps, self.frames) else {
+            return;
+        };
+        let read = written - self.dup + self.drop;
+        match self.window {
+            None => self.window = Some((now, read)),
+            Some((since, at_start)) => {
+                let span = (now - since).as_secs_f64();
+                if span >= FRAME_RATE_WINDOW.as_secs_f64() {
+                    self.behind = (read - at_start) / span < fps * KEEPING_UP;
+                    self.window = Some((now, read));
+                }
+            }
+        }
     }
 }
 
@@ -539,7 +607,7 @@ fn run_tool(
                 &plan.args,
                 plan.stop,
                 cancel,
-                recording_lines(on_detail),
+                recording_lines(None, on_detail),
             )
             .map_err(JobError::Run)?;
             if out.is_file() {
@@ -2019,7 +2087,7 @@ mod e2e {
 
     #[test]
     fn recording_detail_shows_time_and_size() {
-        let mut p = RecordingProgress::default();
+        let mut p = RecordingProgress::new(None);
         assert_eq!(p.update("out_time_us=65000000"), None);
         assert_eq!(p.update("total_size=12400000"), None);
         let detail = p.update("progress=continue").expect("detail");
@@ -2027,6 +2095,38 @@ mod e2e {
             detail.contains("1:05") && detail.contains("12.4 MB"),
             "{detail}"
         );
+    }
+
+    #[test]
+    fn recording_time_follows_the_wall_clock() {
+        let mut p = RecordingProgress::new(None);
+        let start = Instant::now();
+        p.update_at("out_time_us=0", start);
+        p.update_at("progress=continue", start);
+        // ffmpeg's frames trail behind, but the clock does not wait for them.
+        p.update_at("out_time_us=3000000", start + Duration::from_secs(10));
+        let detail = p
+            .update_at("progress=continue", start + Duration::from_secs(10))
+            .expect("detail");
+        assert!(detail.contains("0:10"), "{detail}");
+    }
+
+    #[test]
+    fn recording_notices_dropped_frames() {
+        let mut p = RecordingProgress::new(Some(30));
+        let start = Instant::now();
+        let report = |p: &mut RecordingProgress, secs: u64, frames: u32, dup: u32| {
+            let at = start + Duration::from_secs(secs);
+            p.update_at(&format!("frame={frames}"), at);
+            p.update_at(&format!("dup_frames={dup}"), at);
+            p.update_at("progress=continue", at).expect("detail")
+        };
+        let dropping = tr("record.dropping_frames");
+        assert!(!report(&mut p, 0, 0, 0).contains(dropping));
+        assert!(!report(&mut p, 2, 60, 0).contains(dropping));
+        // Written at full rate, but most of them are repeats of old frames.
+        assert!(report(&mut p, 4, 120, 40).contains(dropping));
+        assert!(!report(&mut p, 6, 180, 40).contains(dropping));
     }
 
     /// May need a person to allow screenshots once: `cargo test -- --ignored screenshot`.

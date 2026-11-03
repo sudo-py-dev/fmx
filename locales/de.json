@@ -283,6 +283,7 @@
   "record.choose_screen": "Wählen Sie, was geteilt wird…",
   "record.starting_in": "Beginnt in {seconds}…",
   "record.recording": "Aufnahme {time} · {size}",
+  "record.dropping_frames": "Bilder gehen verloren: niedrigere Bildrate oder Größe versuchen",
   "record.screen": "Bildschirm",
   "record.no_screen": "Es wurde kein Bildschirm zum Aufnehmen gefunden.",
   "record.needs_gstreamer": "Aufnehmen unter Wayland braucht GStreamer mit dem PipeWire-Plugin (gstreamer1.0-pipewire unter Debian und Ubuntu, gstreamer1-plugin-pipewire unter Fedora).",
@@ -762,5 +763,8 @@
   "tools.read_discs": "Datenträger lesen und kopieren",
   "tools.disc_images": "Datenträgerabbilder",
   "tools.media_edit": "Kürzen und Wiedergabe ändern",
-  "tools.inspect_repair": "Prüfen und reparieren"
+  "tools.inspect_repair": "Prüfen und reparieren",
+  "collage.design": "Layout und Ausgabe",
+  "collage.deselect": "Auswahl aufheben",
+  "collage.preview_hint": "Schnelle Vorschau · Export mit Originalfotos in der gewählten Leinwandgröße."
 }
