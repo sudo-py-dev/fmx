@@ -9,7 +9,8 @@
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue
 //!   (`FMX_SCREENSHOT_RUNNING=1` then shows the first two as running);
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
-//! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`);
+//! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`, `presets`),
+//!   or `save_preset` the dialog that names a new preset;
 //! - `FMX_SCREENSHOT_UPDATE=1` pretends a newer release was found
 //!   (`=downloading:0.4` pretends it is 40 % downloaded).
 //!

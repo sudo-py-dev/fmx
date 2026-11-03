@@ -441,15 +441,14 @@ impl CollageEditor {
                 }
             }
         }
-        if ui.input(|input| input.pointer.any_released()) {
-            if let (Some(from), Some(to)) = (self.dragging.take(), drop_target)
-                && from < files.len()
-                && to < files.len()
-            {
-                files.swap(from, to);
-                self.selected = Some(to);
-                self.last = None;
-            }
+        if ui.input(|input| input.pointer.any_released())
+            && let (Some(from), Some(to)) = (self.dragging.take(), drop_target)
+            && from < files.len()
+            && to < files.len()
+        {
+            files.swap(from, to);
+            self.selected = Some(to);
+            self.last = None;
         }
     }
     fn record_history(&mut self, files: &[PathBuf], opts: &Options, busy: bool) {

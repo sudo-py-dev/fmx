@@ -48,6 +48,7 @@ pub const FOLDER_OPEN: &str = "\u{E256}";
 pub const FOLDER_PLUS: &str = "\u{E258}";
 pub const GEAR: &str = "\u{E270}";
 pub const INFO: &str = "\u{E2CE}";
+pub const LIGHTNING: &str = "\u{E2DE}";
 pub const LIST_PLUS: &str = "\u{E2F8}";
 pub const MAGNIFYING_GLASS: &str = "\u{E30C}";
 pub const PAUSE: &str = "\u{E39E}";

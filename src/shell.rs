@@ -3,7 +3,8 @@
 //! Right-clicking files offers the conversions that fit them (video to MP4,
 //! images to PDF, …), each of which runs `fmx --convert <target> <files>`:
 //! the files are queued with the current settings and converted right away.
-//! "Open in FMX" opens them in FMX instead.
+//! "Open in FMX" opens them in FMX instead. Saved presets follow, each running
+//! `fmx --preset <id> <files>` with the preset's tool and settings.
 //!
 //! FMX writes the entries itself, per user, so installers and the Settings
 //! switch share one source of truth:
@@ -11,8 +12,8 @@
 //!   written through the registry API (Windows 11 lists it under "Show more options");
 //! - Linux: Dolphin service menus, Nemo actions, and Nautilus and Caja scripts.
 //!
-//! The entries name this executable and are in the UI language, so
-//! [`refresh`] rewrites them when either changes.
+//! The entries name this executable, are in the UI language and list the
+//! presets, so [`refresh`] rewrites them when any of these changes.
 
 use std::fs;
 use std::io;
@@ -20,12 +21,15 @@ use std::path::{Path, PathBuf};
 
 use crate::catalog::{self, AudioFormat, EbookFormat, ImageFormat, Tool, VideoFormat};
 use crate::i18n::{tr, trf};
+use crate::settings::Preset;
 
 /// Lists what was written by the last registration, and for which program
 /// and language; missing when the menu is off.
 const MARKER: &str = "shell-menu";
 /// The command-line switch the menu entries use.
 pub const CONVERT_FLAG: &str = "--convert";
+/// The command-line switch preset entries use, followed by the preset's id.
+pub const PRESET_FLAG: &str = "--preset";
 
 /// A kind of file and the conversions its menu offers.
 struct Group {
@@ -181,14 +185,59 @@ fn item_label(target: &str) -> String {
         .to_owned()
 }
 
-/// Every target, once, in menu order: for file managers whose menus can't
-/// depend on the file type.
+/// One conversion in the menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Item {
+    /// Unique among the items; names Linux menu files and actions.
+    #[cfg_attr(windows, allow(dead_code))]
+    key: String,
+    label: String,
+    /// What follows the executable, before the files.
+    args: String,
+}
+
+/// Whether `tool` takes every file `group` is shown for.
+fn fits(tool: Tool, group: &Group) -> bool {
+    let accepted = tool.input_kind().extensions();
+    group.extensions.iter().all(|ext| accepted.contains(ext))
+}
+
+fn preset_item(preset: &Preset) -> Item {
+    Item {
+        key: format!("preset-{}", preset.id),
+        // Desktop files and registry values are one line each.
+        label: preset.name.replace(['\n', '\r'], " "),
+        args: format!("{PRESET_FLAG} {}", preset.id),
+    }
+}
+
+/// The conversions a group's menu offers: its own, then the presets that fit it.
+fn group_items(group: &Group, presets: &[Preset]) -> Vec<Item> {
+    group
+        .targets
+        .iter()
+        .map(|(id, _)| Item {
+            key: (*id).to_owned(),
+            label: item_label(id),
+            args: format!("{CONVERT_FLAG} {id}"),
+        })
+        .chain(
+            presets
+                .iter()
+                .filter(|p| fits(p.tool, group))
+                .map(preset_item),
+        )
+        .collect()
+}
+
+/// Every item, once, in menu order: for file managers whose menus can't
+/// depend on the file type. FMX skips the files an item doesn't fit.
 #[cfg_attr(windows, allow(dead_code))]
-fn all_targets() -> Vec<&'static str> {
-    let mut seen = Vec::new();
-    for (id, _) in GROUPS.iter().flat_map(|g| g.targets) {
-        if !seen.contains(id) {
-            seen.push(*id);
+fn all_items(presets: &[Preset]) -> Vec<Item> {
+    let mut seen: Vec<Item> = Vec::new();
+    for item in GROUPS.iter().flat_map(|g| group_items(g, presets)) {
+        if !seen.iter().any(|i| i.key == item.key) {
+            seen.push(item);
         }
     }
     seen
@@ -213,23 +262,29 @@ pub fn is_registered() -> bool {
 }
 
 /// What the entries depend on; when it changes they are written again.
-fn signature(exe: &Path) -> String {
+fn signature(exe: &Path, presets: &[Preset]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for preset in presets {
+        (preset.id, &preset.name, preset.tool).hash(&mut hasher);
+    }
     format!(
-        "{} {} {}",
+        "{} {} {:016x} {}",
         crate::update::VERSION,
         crate::i18n::active_language(),
+        hasher.finish(),
         exe.display()
     )
 }
 
-/// Adds (or rewrites) the menu entries for this executable.
-pub fn register() -> io::Result<()> {
+/// Adds (or rewrites) the menu entries for this executable, with `presets`.
+pub fn register(presets: &[Preset]) -> io::Result<()> {
     let exe = std::env::current_exe()?;
     unregister()?;
-    let written = platform::register(&exe)?;
+    let written = platform::register(&exe, presets)?;
     let marker = marker_path().ok_or_else(|| io::Error::other("no data folder"))?;
     fs::create_dir_all(marker.parent().expect("marker has a folder"))?;
-    let mut contents = signature(&exe);
+    let mut contents = signature(&exe, presets);
     for path in written {
         contents.push('\n');
         contents.push_str(&path.to_string_lossy());
@@ -256,16 +311,17 @@ pub fn unregister() -> io::Result<()> {
     Ok(())
 }
 
-/// Rewrites the entries if FMX moved, was updated, or speaks another language.
-pub fn refresh() {
+/// Rewrites the entries if FMX moved, was updated, speaks another language,
+/// or the presets changed.
+pub fn refresh(presets: &[Preset]) {
     let (Some(marker), Ok(exe)) = (marker_path(), std::env::current_exe()) else {
         return;
     };
     let Ok(contents) = fs::read_to_string(marker) else {
         return;
     };
-    if contents.lines().next() != Some(signature(&exe).as_str())
-        && let Err(e) = register()
+    if contents.lines().next() != Some(signature(&exe, presets).as_str())
+        && let Err(e) = register(presets)
     {
         tracing::warn!(error = %e, "could not update the right-click menu");
     }
@@ -286,21 +342,15 @@ mod platform {
         format!(r"{ROOT}\.{ext}\shell\{VERB}")
     }
 
-    pub fn register(exe: &Path) -> io::Result<Vec<PathBuf>> {
+    pub fn register(exe: &Path, presets: &[Preset]) -> io::Result<Vec<PathBuf>> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let exe = exe.display().to_string();
         let icon = format!("{exe},0");
         for group in GROUPS {
             // Numbered keys keep the menu in this order.
-            let items: Vec<(String, String)> = group
-                .targets
-                .iter()
-                .map(|(id, _)| {
-                    (
-                        item_label(id),
-                        format!("\"{exe}\" {CONVERT_FLAG} {id} \"%1\""),
-                    )
-                })
+            let items: Vec<(String, String)> = group_items(group, presets)
+                .into_iter()
+                .map(|item| (item.label, format!("\"{exe}\" {} \"%1\"", item.args)))
                 .chain(std::iter::once((
                     menu_text("shell.open").to_owned(),
                     format!("\"{exe}\" \"%1\""),
@@ -381,7 +431,7 @@ mod platform {
         label.replace(['/', '\0'], "-")
     }
 
-    pub fn register(exe: &Path) -> io::Result<Vec<PathBuf>> {
+    pub fn register(exe: &Path, presets: &[Preset]) -> io::Result<Vec<PathBuf>> {
         let mut out = Vec::new();
         let (Some(data), Some(config)) = (dirs::data_dir(), dirs::config_dir()) else {
             return Ok(out);
@@ -391,20 +441,20 @@ mod platform {
 
         // Dolphin (KDE 6 and 5): one service menu per file kind, merged into one submenu.
         for group in GROUPS {
+            let items = group_items(group, presets);
             let mut text = format!(
                 "[Desktop Entry]\nType=Service\nMimeType={};\nX-KDE-Submenu={menu}\nIcon=fmx\nActions={};open;\n",
                 group.mime_types.join(";"),
-                group
-                    .targets
+                items
                     .iter()
-                    .map(|(id, _)| *id)
+                    .map(|item| item.key.as_str())
                     .collect::<Vec<_>>()
                     .join(";"),
             );
-            for (id, _) in group.targets {
+            for item in &items {
                 text.push_str(&format!(
-                    "\n[Desktop Action {id}]\nName={}\nIcon=fmx\nExec={exec} {CONVERT_FLAG} {id} %F\n",
-                    item_label(id)
+                    "\n[Desktop Action {}]\nName={}\nIcon=fmx\nExec={exec} {} %F\n",
+                    item.key, item.label, item.args
                 ));
             }
             text.push_str(&format!(
@@ -419,15 +469,16 @@ mod platform {
 
         // Nemo (Cinnamon): one action per conversion, shown only for fitting files.
         for group in GROUPS {
-            for (id, _) in group.targets {
+            for item in group_items(group, presets) {
                 let text = format!(
-                    "[Nemo Action]\nName={menu}: {}\nIcon-Name=fmx\nExec={exec} {CONVERT_FLAG} {id} %F\nSelection=notnone\nExtensions={};\n",
-                    item_label(id),
+                    "[Nemo Action]\nName={menu}: {}\nIcon-Name=fmx\nExec={exec} {} %F\nSelection=notnone\nExtensions={};\n",
+                    item.label,
+                    item.args,
                     group.extensions.join(";"),
                 );
                 let path = data
                     .join("nemo/actions")
-                    .join(format!("fmx-{}-{id}.nemo_action", group.id));
+                    .join(format!("fmx-{}-{}.nemo_action", group.id, item.key));
                 write(path, &text, false, &mut out)?;
             }
         }
@@ -437,14 +488,16 @@ mod platform {
         let exe = shell_quote(exe);
         for scripts in [data.join("nautilus/scripts"), config.join("caja/scripts")] {
             let folder = scripts.join(file_name(menu));
-            for id in all_targets() {
-                let text = format!("#!/bin/sh\nexec {exe} {CONVERT_FLAG} {id} \"$@\"\n");
-                write(
-                    folder.join(file_name(&item_label(id))),
-                    &text,
-                    true,
-                    &mut out,
-                )?;
+            let mut names = vec![file_name(menu_text("shell.open"))];
+            for item in all_items(presets) {
+                let text = format!("#!/bin/sh\nexec {exe} {} \"$@\"\n", item.args);
+                // A preset named like another entry would replace its script.
+                let mut name = file_name(&item.label);
+                if names.contains(&name) {
+                    name = format!("{name} ({})", item.key);
+                }
+                names.push(name.clone());
+                write(folder.join(name), &text, true, &mut out)?;
             }
             let text = format!("#!/bin/sh\nexec {exe} \"$@\"\n");
             write(
@@ -508,6 +561,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn preset(id: u32, name: &str, tool: Tool) -> Preset {
+        Preset {
+            id,
+            name: name.to_owned(),
+            tool,
+            ..Preset::default()
+        }
+    }
+
+    #[test]
+    fn presets_join_the_menus_of_files_they_fit() {
+        let presets = [
+            preset(4, "Web 2000px", Tool::ToImage(ImageFormat::Webp)),
+            preset(7, "Phone", Tool::ToVideo(VideoFormat::Mp4)),
+            // Takes no files, so no menu offers it.
+            preset(9, "Desk", Tool::Record),
+        ];
+        let group = |id: &str| GROUPS.iter().find(|g| g.id == id).unwrap();
+        let image = group_items(group("image"), &presets);
+        let web = image.last().unwrap();
+        assert_eq!(web.key, "preset-4");
+        assert_eq!(web.label, "Web 2000px");
+        assert_eq!(web.args, format!("{PRESET_FLAG} 4"));
+        assert_eq!(image.len(), group("image").targets.len() + 1);
+        assert!(image[0].args.starts_with(CONVERT_FLAG));
+
+        let video = group_items(group("video"), &presets);
+        assert!(video.iter().any(|i| i.key == "preset-7"));
+        assert!(!video.iter().any(|i| i.key == "preset-4"));
+        assert!(
+            !group_items(group("pdf"), &presets)
+                .iter()
+                .any(|i| i.key.starts_with("preset"))
+        );
+
+        let all = all_items(&presets);
+        assert_eq!(all.iter().filter(|i| i.key == "preset-4").count(), 1);
+        assert!(!all.iter().any(|i| i.key == "preset-9"));
+    }
+
+    #[test]
+    fn preset_changes_rewrite_the_menu() {
+        let exe = Path::new("/usr/bin/fmx");
+        let one = [preset(1, "Web", Tool::ToImage(ImageFormat::Webp))];
+        let renamed = [preset(1, "Blog", Tool::ToImage(ImageFormat::Webp))];
+        assert_eq!(signature(exe, &one), signature(exe, &one));
+        assert_ne!(signature(exe, &one), signature(exe, &renamed));
+        assert_ne!(signature(exe, &one), signature(exe, &[]));
+        assert!(!signature(exe, &one).contains('\n'));
+    }
+
+    #[test]
+    fn preset_labels_stay_on_one_line() {
+        let item = preset_item(&preset(2, "a\nb", Tool::Record));
+        assert_eq!(item.label, "a b");
     }
 
     #[test]

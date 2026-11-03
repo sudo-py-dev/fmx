@@ -44,6 +44,8 @@ pub enum Request {
     Open(Vec<PathBuf>),
     /// Queue files for a right-click conversion (see `shell::tool_for`) and start.
     Convert { target: String, files: Vec<PathBuf> },
+    /// Queue files with a saved preset (see `settings::Preset`) and start.
+    Preset { id: u32, files: Vec<PathBuf> },
 }
 
 fn dir() -> Option<PathBuf> {
@@ -189,12 +191,13 @@ fn take(inbox: &Path) -> Vec<Request> {
 }
 
 /// Joins requests that came together: all files to open, and the files of
-/// each conversion target, each set in name order.
+/// each conversion target and preset, each set in name order.
 fn merge(requests: Vec<Request>) -> Vec<Request> {
     let mut tools = Vec::new();
     let mut focus = false;
     let mut open: Vec<PathBuf> = Vec::new();
     let mut convert: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    let mut presets: Vec<(u32, Vec<PathBuf>)> = Vec::new();
     for request in requests {
         match request {
             request @ Request::Tool { .. } => tools.push(request),
@@ -206,6 +209,10 @@ fn merge(requests: Vec<Request>) -> Vec<Request> {
                     None => convert.push((target, files)),
                 }
             }
+            Request::Preset { id, files } => match presets.iter_mut().find(|(i, _)| *i == id) {
+                Some((_, all)) => all.extend(files),
+                None => presets.push((id, files)),
+            },
         }
     }
     let mut merged = tools;
@@ -218,6 +225,11 @@ fn merge(requests: Vec<Request>) -> Vec<Request> {
         files.sort();
         files.dedup();
         merged.push(Request::Convert { target, files });
+    }
+    for (id, mut files) in presets {
+        files.sort();
+        files.dedup();
+        merged.push(Request::Preset { id, files });
     }
     if merged.is_empty() && focus {
         merged.push(Request::Focus);
@@ -262,6 +274,31 @@ mod tests {
             merge(vec![Request::Focus, Request::Focus]),
             vec![Request::Focus]
         );
+    }
+
+    #[test]
+    fn a_selection_becomes_one_request_per_preset() {
+        let preset = |id, files: &[&str]| Request::Preset {
+            id,
+            files: files.iter().map(PathBuf::from).collect(),
+        };
+        let merged = merge(vec![
+            preset(2, &["b.png"]),
+            convert("pdf", &["a.jpg"]),
+            preset(2, &["a.png", "b.png"]),
+            preset(5, &["c.png"]),
+        ]);
+        assert_eq!(
+            merged,
+            vec![
+                convert("pdf", &["a.jpg"]),
+                preset(2, &["a.png", "b.png"]),
+                preset(5, &["c.png"]),
+            ]
+        );
+        let decoded: Request =
+            serde_json::from_slice(&serde_json::to_vec(&merged[1]).unwrap()).unwrap();
+        assert_eq!(decoded, merged[1]);
     }
 
     #[test]

@@ -109,6 +109,7 @@ fn main() {
     let unregister_shell = take_flag(&mut args, UNREGISTER_SHELL_FLAG);
     let tool = take_value(&mut args, "--tool");
     let convert = take_value(&mut args, shell::CONVERT_FLAG);
+    let preset = take_value(&mut args, shell::PRESET_FLAG);
     let shell_only = register_shell || unregister_shell;
     // Test and screenshot runs stay out of the way of a running FMX.
     let single_instance = !self_test
@@ -123,8 +124,9 @@ fn main() {
     );
     i18n::set_language(std::env::var("FMX_LANG").ok().as_deref());
     if shell_only {
+        // Saved presets join the menu once FMX starts (see `shell::refresh`).
         let done = if register_shell {
-            shell::register()
+            shell::register(&[])
         } else {
             shell::unregister()
         };
@@ -137,17 +139,24 @@ fn main() {
 
     // Files passed on the command line ("Open with", the right-click menu).
     let files: Vec<std::path::PathBuf> = args.iter().map(Into::into).collect();
-    let request = match (tool, convert) {
-        (Some(id), _) => match shortcut::parse_tool(&id) {
+    let request = match (preset, tool, convert) {
+        (Some(id), _, _) => match id.parse() {
+            Ok(id) => instance::Request::Preset { id, files },
+            Err(_) => {
+                tracing::error!("unknown preset");
+                std::process::exit(2);
+            }
+        },
+        (None, Some(id), _) => match shortcut::parse_tool(&id) {
             Some(tool) => instance::Request::Tool { tool, files },
             None => {
                 tracing::error!("unknown tool shortcut");
                 std::process::exit(2);
             }
         },
-        (None, Some(target)) => instance::Request::Convert { target, files },
-        (None, None) if files.is_empty() => instance::Request::Focus,
-        (None, None) => instance::Request::Open(files),
+        (None, None, Some(target)) => instance::Request::Convert { target, files },
+        (None, None, None) if files.is_empty() => instance::Request::Focus,
+        (None, None, None) => instance::Request::Open(files),
     };
     if !primary {
         match instance::forward(&request) {

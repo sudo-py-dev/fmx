@@ -35,7 +35,7 @@ use crate::options::{
 use crate::preview::{Mode as PreviewMode, Preview};
 use crate::process::spawn_detached;
 use crate::queue::{Job, JobId, JobState, Notifier, Queue};
-use crate::settings::{MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
+use crate::settings::{self, MAX_PARALLEL_JOBS, STORAGE_KEY, Settings};
 use crate::shell;
 use crate::sound;
 use crate::theme::{self, MOTION, ThemeChoice};
@@ -63,8 +63,6 @@ const PANEL_GAP: f32 = 14.0;
 const FILES_SHARE: f32 = 0.46;
 const FILES_SHARE_BESIDE_PREVIEW: f32 = 0.34;
 const MIN_DROP_HEIGHT: f32 = 120.0;
-/// Below this panel width "Add folder" and "Clear list" show only their icon.
-const COMPACT_BUTTONS_WIDTH: f32 = 460.0;
 /// Sizes used when the panels are stacked on narrow windows.
 const STACKED_DROP_HEIGHT: f32 = 170.0;
 const STACKED_LIST_HEIGHT: f32 = 260.0;
@@ -182,6 +180,13 @@ impl SettingsTab {
     }
 }
 
+/// The name box for saving the open tool as a preset, or renaming one.
+struct PresetDialog {
+    /// The preset being renamed; `None` saves a new one.
+    id: Option<u32>,
+    name: String,
+}
+
 /// What happens once the whole queue has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterDone {
@@ -220,6 +225,7 @@ pub struct FmxApp {
     /// The category shown in the tool grid.
     category: Category,
     show_favorites: bool,
+    preset_dialog: Option<PresetDialog>,
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
@@ -339,7 +345,8 @@ impl FmxApp {
             inspected_path: None,
             preview: None,
             category: settings.last_tool.category(),
-            show_favorites: !settings.favorite_tools.is_empty(),
+            show_favorites: !settings.favorite_tools.is_empty() || !settings.presets.is_empty(),
+            preset_dialog: None,
             in_editor: false,
             search: String::new(),
             reset_tool_scroll: false,
@@ -415,6 +422,12 @@ impl FmxApp {
             if let Some(tool) = crate::devshot::wants_tool() {
                 app.select_tool(tool);
             }
+            if crate::devshot::wants_menu("save_preset") {
+                app.preset_dialog = Some(PresetDialog {
+                    id: None,
+                    name: app.tool_title(),
+                });
+            }
             if let Some(section) = crate::devshot::wants_settings() {
                 app.show_settings = true;
                 app.settings_tab = match section.as_str() {
@@ -489,19 +502,44 @@ impl FmxApp {
                 self.add_files(files);
                 self.in_editor = !self.files.is_empty();
             }
-            instance::Request::Convert { target, files } => self.quick_convert(&target, files),
+            instance::Request::Convert { target, files } => {
+                // No clip, crop or watermark: those were set for some other files.
+                let options = Options {
+                    edit: Edit::default(),
+                    ..self.settings.options.clone()
+                };
+                self.quick_convert(files, &options, |file| shell::tool_for(&target, file));
+            }
+            instance::Request::Preset { id, files } => self.run_preset(id, files),
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
-    /// A right-click conversion: queues `files` with the current settings and
-    /// starts at once, leaving whatever is open in the editor alone.
-    fn quick_convert(&mut self, target: &str, files: Vec<PathBuf>) {
+    /// Runs a saved preset on `files` (see `quick_convert`).
+    fn run_preset(&mut self, id: u32, files: Vec<PathBuf>) {
+        let Some(preset) = self.settings.preset(id).cloned() else {
+            self.toasts.push(ToastKind::Error, tr("preset.missing"));
+            return;
+        };
+        self.quick_convert(files, &preset.options, |file| {
+            preset_takes(preset.tool, file).then_some(preset.tool)
+        });
+    }
+
+    /// A right-click conversion: queues each of `files` with the tool `tool_for`
+    /// picks for it and `options`, and starts at once, leaving whatever is
+    /// open in the editor alone.
+    fn quick_convert(
+        &mut self,
+        files: Vec<PathBuf>,
+        options: &Options,
+        tool_for: impl Fn(&Path) -> Option<Tool>,
+    ) {
         let mut by_tool: Vec<(Tool, Vec<PathBuf>)> = Vec::new();
         let mut skipped = 0usize;
         for file in files {
-            match shell::tool_for(target, &file).filter(|_| file.is_file()) {
+            match tool_for(&file).filter(|_| file.is_file()) {
                 Some(tool) => match by_tool.iter_mut().find(|(t, _)| *t == tool) {
                     Some((_, list)) => list.push(file),
                     None => by_tool.push((tool, vec![file])),
@@ -509,11 +547,6 @@ impl FmxApp {
                 None => skipped += 1,
             }
         }
-        // No clip, crop or watermark: those were set for some other files.
-        let options = Options {
-            edit: Edit::default(),
-            ..self.settings.options.clone()
-        };
         let mut claimed: HashSet<PathBuf> = self.queue.claimed_outputs().cloned().collect();
         let mut queued = 0usize;
         for (tool, files) in by_tool {
@@ -526,7 +559,7 @@ impl FmxApp {
                 files: &files,
                 url: "",
                 output_dir: self.settings.output_dir.as_deref(),
-                options: &options,
+                options,
             };
             match plan_jobs(&selection, &mut claimed) {
                 Ok(specs) => {
@@ -559,15 +592,51 @@ impl FmxApp {
         if first_time {
             self.shell_menu = true;
         }
+        let presets = self.settings.presets.clone();
         std::thread::spawn(move || {
             if first_time {
-                if let Err(e) = shell::register() {
+                if let Err(e) = shell::register(&presets) {
                     tracing::warn!(error = %e, "could not add the right-click menu");
                 }
             } else {
-                shell::refresh();
+                shell::refresh(&presets);
             }
         });
+    }
+
+    /// Lists the presets in the right-click menu, if it is on.
+    fn presets_changed(&mut self) {
+        if self.settings.presets.is_empty() && self.settings.favorite_tools.is_empty() {
+            self.show_favorites = false;
+        }
+        if shell::supported() {
+            let presets = self.settings.presets.clone();
+            std::thread::spawn(move || shell::refresh(&presets));
+        }
+    }
+
+    /// Opens a preset's tool with its settings, or runs it at once on the files
+    /// already added when they all fit it.
+    fn use_preset(&mut self, id: u32) {
+        let Some(preset) = self.settings.preset(id).cloned() else {
+            return;
+        };
+        let files_fit =
+            !self.files.is_empty() && self.files.iter().all(|f| preset_takes(preset.tool, f));
+        if files_fit {
+            let files = std::mem::take(&mut self.files);
+            self.run_preset(id, files);
+            self.in_editor = false;
+            return;
+        }
+        self.select_tool(preset.tool);
+        let edit = std::mem::take(&mut self.settings.options.edit);
+        let photos = std::mem::take(&mut self.settings.options.collage_photos);
+        self.settings.options = Options {
+            edit,
+            collage_photos: photos,
+            ..preset.options
+        };
     }
 
     fn select_tool(&mut self, tool: Tool) {
@@ -601,7 +670,7 @@ impl FmxApp {
                     .clicked()
                 {
                     self.settings.toggle_favorite(tool);
-                    if self.settings.favorite_tools.is_empty() {
+                    if self.settings.favorite_tools.is_empty() && self.settings.presets.is_empty() {
                         self.show_favorites = false;
                     }
                     ui.close();
@@ -1388,7 +1457,7 @@ impl FmxApp {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
-                if !self.settings.favorite_tools.is_empty() {
+                if !self.settings.favorite_tools.is_empty() || !self.settings.presets.is_empty() {
                     card_frame(ui).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         let selected = self.show_favorites && self.search.trim().is_empty();
@@ -1401,7 +1470,7 @@ impl FmxApp {
                             tr("favorites.title"),
                             selected,
                             false,
-                            Some(self.settings.favorite_tools.len()),
+                            Some(self.settings.favorite_tools.len() + self.settings.presets.len()),
                         )
                         .clicked()
                         {
@@ -1493,7 +1562,8 @@ impl FmxApp {
         } else {
             self.category.tools()
         };
-        if tools.is_empty() {
+        let favorites = self.show_favorites && !searching;
+        if tools.is_empty() && !(favorites && !self.settings.presets.is_empty()) {
             widgets::empty_state(
                 ui,
                 if self.show_favorites && !searching {
@@ -1545,6 +1615,16 @@ impl FmxApp {
                 ui.add_space(20.0);
             }
         } else if self.show_favorites {
+            if !self.settings.presets.is_empty() {
+                group_title(ui, tr("preset.title"));
+                ui.add_space(8.0);
+                self.preset_cards(ui);
+                if !tools.is_empty() {
+                    ui.add_space(20.0);
+                    group_title(ui, tr("favorites.tools"));
+                    ui.add_space(8.0);
+                }
+            }
             self.tool_cards(ui, &tools, true);
         } else {
             for group in self.category.groups() {
@@ -1572,15 +1652,230 @@ impl FmxApp {
         }
     }
 
+    /// Saved presets as cards: a click runs one on the files already added, or
+    /// opens its tool with its settings.
+    fn preset_cards(&mut self, ui: &mut egui::Ui) {
+        let gap = 12.0;
+        let card_width = card_width(ui, gap);
+        let mut picked = None;
+        let presets = self.settings.presets.clone();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            for preset in &presets {
+                widgets::tool_card_cell(ui, card_width, |ui| {
+                    ui.push_id(("preset", preset.id), |ui| {
+                        let reason = self.unavailable_reason(preset.tool);
+                        let mut hover = preset_summary(preset);
+                        if let Some(r) = &reason {
+                            hover = format!("{hover}\n\n{} {r}", icons::WARNING);
+                        }
+                        let card = widgets::tool_card(
+                            ui,
+                            card_width,
+                            art::Art {
+                                glyph: icons::LIGHTNING,
+                                ..art::tool(preset.tool)
+                            },
+                            &preset.name,
+                            &preset_summary(preset),
+                            reason.is_some(),
+                        )
+                        .on_hover_text(hover);
+                        let menu_rect = egui::Rect::from_min_size(
+                            egui::pos2(
+                                dir::mirror_x(card.rect, card.rect.right() - 38.0, 28.0),
+                                card.rect.top() + 10.0,
+                            ),
+                            egui::Vec2::splat(28.0),
+                        );
+                        let mut actions = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt("preset_actions")
+                                .max_rect(menu_rect)
+                                .layout(dir::leading(Align::Center)),
+                        );
+                        let menu_clicked = self.preset_menu(&mut actions, preset);
+                        if card.clicked() && !menu_clicked {
+                            picked = Some(preset.id);
+                        }
+                    })
+                });
+            }
+        });
+        if let Some(id) = picked {
+            self.use_preset(id);
+        }
+    }
+
+    /// Rename and delete for a preset card.
+    fn preset_menu(&mut self, ui: &mut egui::Ui, preset: &settings::Preset) -> bool {
+        let more =
+            widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("shortcut.actions"));
+        let popup = egui::Popup::menu(&more).show(|ui| {
+            dir::menu(ui, |ui| {
+                if ui.button(tr("preset.rename")).clicked() {
+                    self.preset_dialog = Some(PresetDialog {
+                        id: Some(preset.id),
+                        name: preset.name.clone(),
+                    });
+                    ui.close();
+                }
+                if ui
+                    .button(RichText::new(tr("preset.delete")).color(theme::palette(ui).danger))
+                    .clicked()
+                {
+                    self.settings.remove_preset(preset.id);
+                    self.presets_changed();
+                    self.toasts.push(
+                        ToastKind::Success,
+                        trf("preset.deleted", &[("name", &preset.name)]),
+                    );
+                    ui.close();
+                }
+            })
+        });
+        more.clicked() || popup.is_some()
+    }
+
+    /// The editor's presets button: run or open a saved preset, or save the
+    /// open tool and its settings as a new one.
+    fn presets_button(&mut self, ui: &mut egui::Ui) {
+        let button = widgets::compact_icon_button(ui, icons::LIGHTNING, tr("preset.title"));
+        #[cfg(debug_assertions)]
+        if crate::devshot::wants_menu("presets") {
+            egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&button));
+        }
+        egui::Popup::menu(&button).show(|ui| {
+            dir::menu(ui, |ui| {
+                let mut picked = None;
+                for preset in &self.settings.presets {
+                    if ui
+                        .button(&preset.name)
+                        .on_hover_text(preset_summary(preset))
+                        .clicked()
+                    {
+                        picked = Some(preset.id);
+                        ui.close();
+                    }
+                }
+                if let Some(id) = picked {
+                    self.use_preset(id);
+                }
+                if !self.settings.presets.is_empty() {
+                    ui.separator();
+                }
+                if ui
+                    .add_enabled(
+                        self.tool != Tool::MediaInfo,
+                        egui::Button::new(tr("preset.save")),
+                    )
+                    .clicked()
+                {
+                    self.preset_dialog = Some(PresetDialog {
+                        id: None,
+                        name: self.tool_title(),
+                    });
+                    ui.close();
+                }
+            })
+        });
+    }
+
+    /// The name box for saving or renaming a preset.
+    fn preset_window(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.preset_dialog else {
+            return;
+        };
+        let width = (ctx.content_rect().width() - 64.0).clamp(1.0, 400.0);
+        let mut save = false;
+        let modal = egui::Modal::new(Id::unique("preset_dialog")).show(ctx, |ui| {
+            ui.set_width(width);
+            dir::vertical(ui, |ui| {
+                ui.heading(tr(if dialog.id.is_some() {
+                    "preset.rename_title"
+                } else {
+                    "preset.save_title"
+                }));
+                if dialog.id.is_none() {
+                    ui.add_space(4.0);
+                    ui.add(
+                        Label::new(
+                            RichText::new(tr("preset.save_hint"))
+                                .color(theme::palette(ui).text_weak),
+                        )
+                        .wrap(),
+                    );
+                }
+                ui.add_space(10.0);
+                let edit = ui.add(
+                    TextEdit::singleline(&mut dialog.name)
+                        .hint_text(tr("preset.name"))
+                        .align(egui::Align2([dir::start(), Align::Center]))
+                        .char_limit(settings::MAX_PRESET_NAME)
+                        .margin(Margin::symmetric(10, 8))
+                        .desired_width(f32::INFINITY),
+                );
+                if ui.memory(|m| m.focused().is_none()) {
+                    edit.request_focus();
+                }
+                let valid = !settings::clean_preset_name(&dialog.name).is_empty();
+                save |= valid && edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(14.0);
+                ui.with_layout(dir::trailing(Align::Center), |ui| {
+                    save |= ui
+                        .add_enabled_ui(valid, |ui| {
+                            widgets::button(
+                                ui,
+                                None,
+                                tr("action.save"),
+                                Kind::Primary,
+                                Size::Regular,
+                            )
+                        })
+                        .inner
+                        .clicked();
+                    if widgets::button(
+                        ui,
+                        None,
+                        tr("action.cancel"),
+                        Kind::Secondary,
+                        Size::Regular,
+                    )
+                    .clicked()
+                    {
+                        ui.close();
+                    }
+                });
+            });
+        });
+        if save {
+            let dialog = self.preset_dialog.take().expect("open");
+            match dialog.id {
+                Some(id) => self.settings.rename_preset(id, &dialog.name),
+                None => {
+                    self.settings.add_preset(
+                        &dialog.name,
+                        self.tool,
+                        &self.settings.options.clone(),
+                    );
+                    self.toasts.push(
+                        ToastKind::Success,
+                        trf(
+                            "preset.saved",
+                            &[("name", &settings::clean_preset_name(&dialog.name))],
+                        ),
+                    );
+                }
+            }
+            self.presets_changed();
+        } else if modal.should_close() {
+            self.preset_dialog = None;
+        }
+    }
+
     fn tool_cards(&mut self, ui: &mut egui::Ui, tools: &[Tool], show_category: bool) {
         let gap = 12.0;
-        let available = ui.available_width();
-        let columns = ((available + gap) / (widgets::CARD_SIZE.x + gap))
-            .floor()
-            .max(1.0);
-        let card_width = ((available - gap * (columns - 1.0)) / columns)
-            .min(widgets::CARD_MAX_WIDTH)
-            .floor();
+        let card_width = card_width(ui, gap);
         let mut picked = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
@@ -1703,13 +1998,12 @@ impl FmxApp {
                                 );
                             }
                             ui.horizontal_wrapped(|ui| {
-                                if ui.button(tr("action.choose")).clicked() {
-                                    if let Some(path) = rfd::FileDialog::new()
+                                if ui.button(tr("action.choose")).clicked()
+                                    && let Some(path) = rfd::FileDialog::new()
                                         .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
                                         .pick_file()
-                                    {
-                                        opts.edit.watermark = Some(path);
-                                    }
+                                {
+                                    opts.edit.watermark = Some(path);
                                 }
                                 if opts.edit.watermark.is_some()
                                     && widgets::icon_button(
@@ -1891,6 +2185,7 @@ impl FmxApp {
                 .layout(dir::trailing(Align::Center)),
         );
         self.tool_menu(&mut end, self.tool);
+        self.presets_button(&mut end);
         ui.vertical_centered(|ui| {
             ui.add(
                 egui::Label::new(RichText::new(self.tool.description()).color(p.text_weak)).wrap(),
@@ -2623,17 +2918,34 @@ impl FmxApp {
         let p = theme::palette(ui);
         let kind = self.tool.input_kind();
         let has_files = !self.files.is_empty();
-        // In a narrow file panel the secondary buttons show only their icon.
-        let compact = ui.available_width() < COMPACT_BUTTONS_WIDTH;
+        let label = match (kind.picks_folders(), has_files) {
+            (true, false) => tr("action.add_folders"),
+            (true, true) => tr("action.add_more_folders"),
+            (false, false) => tr("action.add_files"),
+            (false, true) => tr("action.add_more"),
+        };
+        // When the labelled buttons don't fit (narrow panel, or a language with
+        // longer words), the secondary ones show only their icon. A row wider
+        // than its panel would push the panel beside it off the window.
+        let mut buttons = vec![(icons::PLUS, label)];
+        if kind == InputKind::Disc {
+            buttons.push((icons::DISC, tr("action.add_iso")));
+        }
+        if !kind.picks_folders() {
+            buttons.push((icons::FOLDER_PLUS, tr("action.add_folder_scan")));
+        }
+        if has_files {
+            buttons.push((icons::BROOM, tr("action.clear")));
+        }
+        let full_width: f32 = buttons
+            .iter()
+            .map(|(icon, text)| widgets::button_width(ui, Some(icon), text, Size::Regular))
+            .sum::<f32>()
+            + ui.spacing().item_spacing.x * buttons.len().saturating_sub(1) as f32;
+        let compact = ui.available_width() < full_width;
         let text = |label: &'static str| if compact { "" } else { label };
         ui.horizontal(|ui| {
             {
-                let label = match (kind.picks_folders(), has_files) {
-                    (true, false) => tr("action.add_folders"),
-                    (true, true) => tr("action.add_more_folders"),
-                    (false, false) => tr("action.add_files"),
-                    (false, true) => tr("action.add_more"),
-                };
                 if widgets::button(ui, Some(icons::PLUS), label, Kind::Secondary, Size::Regular)
                     .on_hover_text(ui.ctx().format_shortcut(&ADD_FILES))
                     .clicked()
@@ -3765,7 +4077,7 @@ impl FmxApp {
     /// Adds or removes the right-click menu after its switch was flipped.
     fn toggle_shell_menu(&mut self) {
         let done = if self.shell_menu {
-            shell::register()
+            shell::register(&self.settings.presets)
         } else {
             shell::unregister()
         };
@@ -5273,6 +5585,39 @@ fn card_detail(tool: Tool) -> String {
     }
 }
 
+/// The width of each card in a grid filling the row, `gap` apart.
+fn card_width(ui: &egui::Ui, gap: f32) -> f32 {
+    let available = ui.available_width();
+    let columns = ((available + gap) / (widgets::CARD_SIZE.x + gap))
+        .floor()
+        .max(1.0);
+    ((available - gap * (columns - 1.0)) / columns)
+        .min(widgets::CARD_MAX_WIDTH)
+        .floor()
+}
+
+/// What a preset does, for its card: the tool, and the size limit for images.
+fn preset_summary(preset: &settings::Preset) -> String {
+    let tool = preset.tool.label();
+    match (preset.tool.input_kind(), preset.options.image_max_side) {
+        (InputKind::Images | InputKind::Photos, Some(side)) => {
+            format!("{tool} · {}", trf("preset.max_side", &[("px", &side)]))
+        }
+        _ => tool.to_owned(),
+    }
+}
+
+/// Whether a preset of `tool` runs on `path` as it is: a file of a kind the tool
+/// takes. Tools that take folders, drives or nothing open their editor instead.
+fn preset_takes(tool: Tool, path: &Path) -> bool {
+    let exts = tool.input_kind().extensions();
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| exts.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 /// Gives a loaded job an output name that doesn't overwrite anything.
 fn fresh_output(spec: &JobSpec, claimed: &mut HashSet<PathBuf>) -> PathBuf {
     if spec.tool == Tool::Download {
@@ -6517,6 +6862,7 @@ impl eframe::App for FmxApp {
         self.media_info_window(&ctx);
         self.preview_window(&ctx);
         self.welcome_window(&ctx);
+        self.preset_window(&ctx);
         if let Some(result) = self
             .shortcut_result
             .as_ref()

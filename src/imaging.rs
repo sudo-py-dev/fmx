@@ -151,6 +151,11 @@ fn jpeg_quality(opts: &Options) -> u8 {
     opts.quality.pick(92, 82, 65)
 }
 
+/// libwebp's quality for lossy WebP.
+fn webp_quality(opts: &Options) -> &'static str {
+    opts.quality.pick("90", "80", "65")
+}
+
 fn encode_jpeg(img: &DynamicImage, quality: u8, out: impl Write) -> Result<(), ImageError> {
     let rgb = flatten(img);
     JpegEncoder::new_with_quality(out, quality).encode_image(&rgb)?;
@@ -183,8 +188,22 @@ fn write_image(
     ffmpeg: Option<&Path>,
 ) -> Result<(), ImageError> {
     let dir = output.parent().unwrap_or(Path::new("."));
+    // The native WebP encoder is lossless only, which makes photos several
+    // times larger than the JPEG they came from; libwebp encodes them lossy.
+    if format == ImageFormat::Webp && ffmpeg.is_some() {
+        let flags = [
+            "-c:v",
+            "libwebp",
+            "-quality",
+            webp_quality(opts),
+            "-compression_level",
+            "6",
+        ];
+        return encode_with_ffmpeg(img, output, format, &flags, ffmpeg);
+    }
     let Some(codec) = format.codec() else {
-        return encode_with_ffmpeg(img, output, format, ffmpeg);
+        let flags = format.ffmpeg_encoder().unwrap_or_default();
+        return encode_with_ffmpeg(img, output, format, flags, ffmpeg);
     };
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     {
@@ -234,11 +253,13 @@ fn write_image(
     Ok(())
 }
 
-/// Hands a lossless PNG to ffmpeg for formats with no native encoder (AVIF, JPEG XL, PCX).
+/// Hands a lossless PNG to ffmpeg, which encodes it with `flags`: for formats
+/// with no native encoder (AVIF, JPEG XL, PCX) and for lossy WebP.
 fn encode_with_ffmpeg(
     img: &DynamicImage,
     output: &Path,
     format: ImageFormat,
+    flags: &[&str],
     ffmpeg: Option<&Path>,
 ) -> Result<(), ImageError> {
     let ffmpeg = ffmpeg.ok_or_else(|| {
@@ -247,7 +268,6 @@ fn encode_with_ffmpeg(
             &[("program", &"ffmpeg")],
         ))
     })?;
-    let flags = format.ffmpeg_encoder().unwrap_or_default();
     let dir = output.parent().unwrap_or(Path::new("."));
     let staging = tempfile::Builder::new().suffix(".png").tempfile_in(dir)?;
     DynamicImage::ImageRgba8(img.to_rgba8())
@@ -1339,5 +1359,49 @@ mod privacy_tests {
         image::RgbImage::new(16_385, 1).save(&source).unwrap();
         assert!(remove_metadata(&source, &output).is_err());
         assert!(!output.exists());
+    }
+
+    /// Needs ffmpeg: `FMX_FFMPEG=<path> cargo test webp`.
+    #[test]
+    fn webp_is_lossy_and_keeps_transparency() {
+        let Some(ffmpeg) = std::env::var_os("FMX_FFMPEG").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        // Photo-like detail with a transparent corner.
+        let photo = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(600, 400, |x, y| {
+            let n = (x.wrapping_mul(7919) ^ y.wrapping_mul(104_729)) % 61;
+            let alpha = if x < 100 && y < 100 { 0 } else { 255 };
+            image::Rgba([(x / 3 + n) as u8, (y / 2 + n) as u8, (n * 4) as u8, alpha])
+        }));
+        let lossy = dir.path().join("lossy.webp");
+        let lossless = dir.path().join("lossless.webp");
+        write_image(
+            &photo,
+            &lossy,
+            ImageFormat::Webp,
+            &Options::default(),
+            Some(&ffmpeg),
+        )
+        .unwrap();
+        write_image(
+            &photo,
+            &lossless,
+            ImageFormat::Webp,
+            &Options::default(),
+            None,
+        )
+        .unwrap();
+        let size = |path: &Path| std::fs::metadata(path).unwrap().len();
+        assert!(
+            size(&lossy) * 2 < size(&lossless),
+            "{} vs {}",
+            size(&lossy),
+            size(&lossless)
+        );
+        let decoded = image::open(&lossy).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (600, 400));
+        assert_eq!(decoded.get_pixel(10, 10)[3], 0);
+        assert_eq!(decoded.get_pixel(300, 300)[3], 255);
     }
 }
