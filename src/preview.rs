@@ -26,6 +26,7 @@ use crate::widgets::{self, Kind, Size};
 
 /// Preview frames are scaled down to at most this width.
 const PREVIEW_WIDTH: u32 = 1280;
+const PREVIEW_HEIGHT: u32 = 1920;
 /// Cap on the PNG bytes read for one frame.
 const MAX_FRAME_BYTES: u64 = 64 << 20;
 const DISPLAY_MAX_WIDTH: f32 = 1100.0;
@@ -182,12 +183,18 @@ impl Player {
     }
 }
 
-/// The size frames are played at: the preview width at most, even sides.
+/// Bound both dimensions before allocating raw frames, with even sides.
 fn play_size(source: (u32, u32)) -> (u32, u32) {
     let (sw, sh) = (source.0.max(2), source.1.max(2));
-    let w = sw.min(PREVIEW_WIDTH) & !1;
-    let h = ((u64::from(w) * u64::from(sh) / u64::from(sw)) as u32 & !1).max(2);
-    (w, h)
+    let (w, h) =
+        if u64::from(sw) * u64::from(PREVIEW_HEIGHT) >= u64::from(sh) * u64::from(PREVIEW_WIDTH) {
+            let w = sw.min(PREVIEW_WIDTH);
+            (w, (u64::from(w) * u64::from(sh) / u64::from(sw)) as u32)
+        } else {
+            let h = sh.min(PREVIEW_HEIGHT);
+            ((u64::from(h) * u64::from(sw) / u64::from(sh)) as u32, h)
+        };
+    ((w & !1).max(2), (h & !1).max(2))
 }
 
 /// Decodes one frame at `time` as an egui image.
@@ -206,7 +213,7 @@ fn grab_frame(ffmpeg: &Path, path: &Path, time: f64) -> FrameResult {
             "-frames:v",
             "1",
             "-vf",
-            &format!("scale='min({PREVIEW_WIDTH},iw)':-2"),
+            &format!("scale=w='min({PREVIEW_WIDTH},iw)':h='min({PREVIEW_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"),
             "-f",
             "image2pipe",
             "-c:v",
@@ -220,12 +227,23 @@ fn grab_frame(ffmpeg: &Path, path: &Path, time: f64) -> FrameResult {
         .map_err(|e| e.to_string())?;
     let mut png = Vec::new();
     if let Some(out) = child.0.stdout.take() {
-        out.take(MAX_FRAME_BYTES)
+        out.take(MAX_FRAME_BYTES + 1)
             .read_to_end(&mut png)
             .map_err(|e| e.to_string())?;
+        if png.len() as u64 > MAX_FRAME_BYTES {
+            return Err("preview frame exceeds size limit".into());
+        }
     }
     let _ = child.0.wait();
-    let rgba = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(PREVIEW_WIDTH);
+    limits.max_image_height = Some(PREVIEW_HEIGHT);
+    limits.max_alloc = Some(MAX_FRAME_BYTES);
+    reader.limits(limits);
+    let rgba = reader
+        .decode()
         .map_err(|_| tr("preview.no_frame").to_owned())?
         .to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
@@ -1141,6 +1159,16 @@ mod tests {
         assert_eq!(play_size((1920, 1080)), (1280, 720));
         assert_eq!(play_size((641, 361)), (640, 360));
         assert_eq!(play_size((1080, 1920)), (1080, 1920));
+    }
+
+    #[test]
+    fn extreme_frame_dimensions_stay_bounded() {
+        for source in [(0, 0), (2, u32::MAX), (u32::MAX, 2), (u32::MAX, u32::MAX)] {
+            let (w, h) = play_size(source);
+            assert!((2..=PREVIEW_WIDTH).contains(&w));
+            assert!((2..=PREVIEW_HEIGHT).contains(&h));
+            assert_eq!((w % 2, h % 2), (0, 0));
+        }
     }
 
     #[test]

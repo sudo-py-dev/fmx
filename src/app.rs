@@ -264,6 +264,9 @@ pub struct FmxApp {
     debug_logging: bool,
     /// Frames left before a `--self-test` run closes itself.
     self_test_frames: Option<u32>,
+    /// Keep the screenshot's simulated download open until the app is dropped.
+    #[cfg(debug_assertions)]
+    screenshot_download_tx: Option<mpsc::Sender<Result<update::Installed, String>>>,
     /// Requests from later starts of FMX (see `instance`).
     requests: Option<mpsc::Receiver<instance::Request>>,
     /// The right-click menu, as switched in Settings (see `shell`).
@@ -365,6 +368,8 @@ impl FmxApp {
             update: UpdateState::Idle,
             debug_logging: diagnostics::debug_enabled(),
             self_test_frames: None,
+            #[cfg(debug_assertions)]
+            screenshot_download_tx: None,
             requests: None,
             shell_menu: shell::is_registered(),
             welcome_step: (!settings.welcome_seen && !self_test).then_some(0),
@@ -394,8 +399,7 @@ impl FmxApp {
                     None => UpdateState::Available(release),
                     Some(fraction) => {
                         let (tx, rx) = mpsc::channel();
-                        // Kept open, so the pretend download never ends.
-                        std::mem::forget(tx);
+                        app.screenshot_download_tx = Some(tx);
                         UpdateState::Downloading {
                             release,
                             progress: Arc::new(AtomicU32::new(fraction.to_bits())),
