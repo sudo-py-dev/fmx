@@ -1,21 +1,10 @@
 ## What's new
 
-### Getting started
-- A welcome guide walks through the basics on first launch.
-- Russian is now available alongside the existing interface languages.
-
-### More conversion formats
-- Added ALAC (Apple Lossless), CAF and AU audio output.
-- Added PPM, PGM and PAM image output.
-
-### Video downloader
-- Save video, audio, subtitles, thumbnails or metadata.
-- Choose playlist items and clip ranges, split chapters and use SponsorBlock.
-- Added download history, live-stream options and cookies-file support.
-
-### Documentation and checks
-- Clearer setup instructions and new screenshots in the README and download website.
-- macOS lint and test checks now run on code changes, alongside Linux and Windows.
+### Live image collages
+- Create collages with two-column, three-column and spotlight templates.
+- See your photos in a live preview while changing spacing and photo fit.
+- Click two photos to swap their positions, then export a PNG at up to 4096 × 4096 pixels.
+- Cached photos keep preview edits responsive, and the canvas stays centered in Hebrew and other interface languages.
 
 ## Download
 
