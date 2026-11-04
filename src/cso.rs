@@ -60,23 +60,24 @@ fn block_count(total: u64, block_size: u32) -> u64 {
 }
 
 /// Smallest alignment shift that keeps every offset below bit 31.
-fn alignment_for(total: u64, blocks: u64) -> u8 {
-    let mut align = 0u8;
-    loop {
-        let padding = blocks * ((1u64 << align) - 1);
-        let worst_end = u64::from(HEADER_SIZE) + (blocks + 1) * 4 + total + padding;
-        if worst_end >> align < u64::from(PLAIN_FLAG) {
-            return align;
+fn alignment_for(total: u64, blocks: u64) -> Result<u8, CsoError> {
+    // CISO's reader accepts shifts up to 16. Use wider arithmetic while
+    // estimating padding so even huge sparse input files cannot overflow.
+    for align in 0..=16 {
+        let padding = u128::from(blocks) * ((1u128 << align) - 1);
+        let worst_end =
+            u128::from(HEADER_SIZE) + (u128::from(blocks) + 1) * 4 + u128::from(total) + padding;
+        if worst_end >> align < u128::from(PLAIN_FLAG) {
+            return Ok(align);
         }
-        align += 1;
     }
+    Err(CsoError::Corrupt)
 }
 
-fn deflate(block: &[u8], level: u32) -> Vec<u8> {
+fn deflate(block: &[u8], level: u32) -> Result<Vec<u8>, CsoError> {
     let mut enc = DeflateEncoder::new(Vec::with_capacity(block.len()), Compression::new(level));
-    // Writing into a Vec cannot fail.
-    let _ = enc.write_all(block);
-    enc.finish().unwrap_or_default()
+    enc.write_all(block)?;
+    Ok(enc.finish()?)
 }
 
 /// Reads up to `limit` bytes, stopping early only at end of file.
@@ -98,7 +99,7 @@ pub fn compress(
     let mut reader = BufReader::new(File::open(input)?);
     let total = reader.get_ref().metadata()?.len();
     let blocks = block_count(total, BLOCK_SIZE);
-    let align = alignment_for(total, blocks);
+    let align = alignment_for(total, blocks)?;
     let index_len = usize::try_from(blocks + 1).map_err(|_| CsoError::Corrupt)?;
 
     let dir = output.parent().unwrap_or(Path::new("."));
@@ -111,7 +112,8 @@ pub fn compress(
         out.write_all(&total.to_le_bytes())?;
         out.write_all(&BLOCK_SIZE.to_le_bytes())?;
         out.write_all(&[VERSION, align, 0, 0])?;
-        out.write_all(&vec![0u8; index_len * 4])?;
+        let index_bytes = index_len.checked_mul(4).ok_or(CsoError::Corrupt)?;
+        out.write_all(&vec![0u8; index_bytes])?;
         let mut pos = u64::from(HEADER_SIZE) + index_len as u64 * 4;
         let unit = 1u64 << align;
 
@@ -127,14 +129,14 @@ pub fn compress(
             let packed: Vec<(Vec<u8>, bool)> = batch
                 .par_chunks(BLOCK_SIZE as usize)
                 .map(|block| {
-                    let z = deflate(block, level);
+                    let z = deflate(block, level)?;
                     if z.len() < block.len() {
-                        (z, false)
+                        Ok((z, false))
                     } else {
-                        (block.to_vec(), true)
+                        Ok((block.to_vec(), true))
                     }
                 })
-                .collect();
+                .collect::<Result<_, CsoError>>()?;
             for (data, plain) in &packed {
                 let padding = (unit - pos % unit) % unit;
                 out.write_all(&vec![0u8; padding as usize])?;
@@ -203,17 +205,20 @@ pub fn decompress(
     let header = read_header(&mut reader)?;
     let blocks = block_count(header.total, header.block_size);
     // Each index entry takes 4 bytes; a table larger than the file is a lie.
-    if (blocks + 1) * 4 > file_len {
+    let index_len = blocks.checked_add(1).ok_or(CsoError::Corrupt)?;
+    let index_bytes = index_len.checked_mul(4).ok_or(CsoError::Corrupt)?;
+    if index_bytes > file_len.saturating_sub(u64::from(HEADER_SIZE)) {
         return Err(CsoError::Corrupt);
     }
-    let raw_index = read_up_to(&mut reader, ((blocks + 1) * 4) as usize)?;
+    let index_bytes = usize::try_from(index_bytes).map_err(|_| CsoError::Corrupt)?;
+    let raw_index = read_up_to(&mut reader, index_bytes)?;
     let index: Vec<u32> = raw_index
         .as_chunks::<4>()
         .0
         .iter()
         .map(|c| u32::from_le_bytes(*c))
         .collect();
-    if index.len() as u64 != blocks + 1 {
+    if index.len() as u64 != index_len {
         return Err(CsoError::Corrupt);
     }
     let offset = |entry: u32| u64::from(entry & !PLAIN_FLAG) << header.align;
@@ -362,8 +367,32 @@ mod tests {
     }
 
     #[test]
+    fn rejects_overflowing_and_truncated_index_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        for total in [u64::MAX, u64::MAX / 4, 1] {
+            let input = dir.path().join("bad.cso");
+            let output = dir.path().join("bad.iso");
+            let mut header = Vec::from(*MAGIC);
+            header.extend(HEADER_SIZE.to_le_bytes());
+            header.extend(total.to_le_bytes());
+            header.extend(1u32.to_le_bytes());
+            header.extend([VERSION, 0, 0, 0]);
+            std::fs::write(&input, header).unwrap();
+            assert!(matches!(
+                decompress(&input, &output, &AtomicBool::new(false), |_| {}),
+                Err(CsoError::Corrupt)
+            ));
+            assert!(!output.exists());
+        }
+    }
+
+    #[test]
     fn alignment_grows_for_huge_images() {
-        assert_eq!(alignment_for(1 << 20, 512), 0);
-        assert!(alignment_for(5 << 30, (5 << 30) / 2048) >= 2);
+        assert_eq!(alignment_for(1 << 20, 512).unwrap(), 0);
+        assert!(alignment_for(5 << 30, (5 << 30) / 2048).unwrap() >= 2);
+        assert!(matches!(
+            alignment_for(u64::MAX, block_count(u64::MAX, BLOCK_SIZE)),
+            Err(CsoError::Corrupt)
+        ));
     }
 }

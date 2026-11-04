@@ -90,7 +90,12 @@ fn publish_output(source: &Path, target: &Path) -> std::io::Result<()> {
     if kind.is_file() {
         // Staging is on the same filesystem. Linking is atomic and fails if the
         // destination exists; unlike rename, it cannot overwrite another file.
-        std::fs::hard_link(source, target)
+        match std::fs::hard_link(source, target) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+            // FAT/exFAT and some network filesystems cannot create hard links.
+            Err(_) => copy_output_exclusive(source, target),
+        }
     } else if kind.is_dir() {
         std::fs::create_dir(target)?;
         for entry in std::fs::read_dir(source)? {
@@ -104,6 +109,17 @@ fn publish_output(source: &Path, target: &Path) -> std::io::Result<()> {
             "conversion produced a symlink or special file",
         ))
     }
+}
+
+fn copy_output_exclusive(source: &Path, target: &Path) -> std::io::Result<()> {
+    let mut input = std::fs::File::open(source)?;
+    // Exclusive creation also rejects dangling links and late collisions.
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.sync_all()
 }
 
 fn need(toolbox: &Toolbox, ext: External) -> Result<&Path, JobError> {
@@ -2412,6 +2428,19 @@ mod office_e2e {
 #[cfg(test)]
 mod security_tests {
     use super::*;
+
+    #[test]
+    fn exclusive_copy_publishes_and_refuses_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        std::fs::write(&source, b"converted").unwrap();
+        copy_output_exclusive(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"converted");
+        std::fs::write(&source, b"replacement").unwrap();
+        assert!(copy_output_exclusive(&source, &target).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"converted");
+    }
 
     #[test]
     fn publishing_never_overwrites_existing_files_or_directories() {

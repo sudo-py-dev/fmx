@@ -190,7 +190,11 @@ pub fn run_watching(
             let mut stdin = child.0.stdin.take();
             Some(move || {
                 if let Some(stdin) = stdin.as_mut() {
-                    let _ = stdin.write_all(b"q\n").and_then(|()| stdin.flush());
+                    // The child may have exited before receiving q; supervise
+                    // still checks its status and enforces the quit deadline.
+                    if let Err(error) = stdin.write_all(b"q\n").and_then(|()| stdin.flush()) {
+                        tracing::debug!(%error, "could not send graceful quit");
+                    }
                 }
             })
         }

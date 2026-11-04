@@ -284,11 +284,9 @@ mod tests {
         let en = &catalogs()[FALLBACK];
         let mut missing = HashSet::new();
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-        for entry in std::fs::read_dir(dir).expect("src dir") {
-            let path = entry.expect("dir entry").path();
-            if path.ends_with("i18n.rs") {
-                continue;
-            }
+        let mut sources = Vec::new();
+        collect_rust_sources(std::path::Path::new(dir), &mut sources);
+        for path in sources {
             let text = std::fs::read_to_string(&path).expect("source file");
             for marker in ["tr(\"", "trf(\""] {
                 for (at, _) in text.match_indices(marker) {
@@ -306,5 +304,33 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "missing locale keys: {missing:?}");
+    }
+
+    fn collect_rust_sources(dir: &std::path::Path, sources: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("source directory") {
+            let entry = entry.expect("source entry");
+            let kind = entry.file_type().expect("source type");
+            let path = entry.path();
+            if kind.is_dir() {
+                collect_rust_sources(&path, sources);
+            } else if kind.is_file()
+                && path.extension().is_some_and(|ext| ext == "rs")
+                && !path.ends_with("i18n.rs")
+            {
+                sources.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn source_scan_handles_nested_directories_and_non_rust_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("nested")).unwrap();
+        let source = dir.path().join("nested/module.rs");
+        std::fs::write(&source, "").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), [0xff]).unwrap();
+        let mut sources = Vec::new();
+        collect_rust_sources(dir.path(), &mut sources);
+        assert_eq!(sources, [source]);
     }
 }
