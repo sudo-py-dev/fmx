@@ -2,10 +2,6 @@
 
 <img src="packaging/icons/fmx-128.png" alt="FMX icon" width="80" align="right" />
 
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:154c851f19889f30a59fededf1a4f8cd2fe955bab881474522ec5a8a7136a907 -->
-
 FMX is a free, open-source desktop app for converting video, audio, images,
 documents and discs on Windows, macOS and Linux. Add your files, choose a format
 and let the queue do the work. FFmpeg and yt-dlp are included for common
@@ -17,16 +13,10 @@ conversions and video downloads.
 [Build and contribute](DEVELOPMENT.md) ·
 [Report a problem](https://github.com/sudo-py-dev/fmx/issues)
 
-<!-- /coderabbit-ai-generated:v1 -->
-
 [![Release](https://img.shields.io/github/v/release/sudo-py-dev/fmx?style=flat-square&color=3584e4)](https://github.com/sudo-py-dev/fmx/releases/latest)
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](#-license)
 
 ![FMX main window](assets/screenshot.png)
-
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:2c0389bb00b7bc9843b9d80e65ab69c9f994f6fc229a31adb63d3395143b61fa -->
 
 ## Highlights
 
@@ -44,8 +34,6 @@ conversions and video downloads.
 - [Conversion and editing tools](#-conversion-and-editing-tools) · [Video downloader](#-video-downloader) · [Right-click conversion](#%EF%B8%8F-convert-with-a-right-click)
 - [Appearance](#-appearance) · [Updates](#-updates) · [Optional programs](#-optional-programs)
 - [Troubleshooting](#%EF%B8%8F-troubleshooting) · [License](#-license)
-
-<!-- /coderabbit-ai-generated:v1 -->
 
 ## 📦 Download and install
 
@@ -222,15 +210,9 @@ FMX checks for updates once a day. A blue dot on **Settings** means an update is
 
 You can also check manually or turn off automatic checks on that page.
 
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:a1d8af03a03e7d11e114adf2f2affed15f4a12ee99b5e432f4e55699c8e2b52e -->
-
 Updates are digitally signed, so FMX only installs genuine releases from this page.
 
 <a id="-optional-extras"></a>
-
-<!-- /coderabbit-ai-generated:v1 -->
 
 ---
 
@@ -249,15 +231,9 @@ requirements are missing; supported codecs also depend on the FFmpeg build.
 | Convert old `.doc` / `.ppt` files | LibreOffice |
 | Create APE audio files | Monkey’s Audio |
 
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:75c04ec7eb154ffa5df9f97238edca292343e15bde4cff4c1b02551c38827b5f -->
-
 Open **Settings → Programs** to see which programs FMX detects.
 
 <a id="-something-went-wrong"></a>
-
-<!-- /coderabbit-ai-generated:v1 -->
 
 ---
 
