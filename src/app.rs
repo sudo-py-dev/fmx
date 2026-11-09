@@ -7298,6 +7298,102 @@ mod tests {
     }
 
     #[test]
+    fn settings_sections_stay_within_screen_at_small_logical_sizes() {
+        // At the minimum 760x520 window, these smaller logical sizes also
+        // represent roughly 2x and 1.5x UI zoom.
+        for size in [
+            [380.0, 260.0],
+            [507.0, 347.0],
+            [760.0, 520.0],
+            [900.0, 700.0],
+        ] {
+            for tab in SettingsTab::ALL {
+                let ctx = egui::Context::default();
+                let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+                let mut app = FmxApp::new(
+                    &cc,
+                    Launch {
+                        request: instance::Request::Focus,
+                        self_test: true,
+                        single_instance: false,
+                    },
+                );
+                app.show_settings = true;
+                app.settings_tab = tab;
+                theme::apply(&ctx, ThemeChoice::Light, true);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+                for _ in 0..4 {
+                    ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(screen),
+                            ..Default::default()
+                        },
+                        |ui| app.settings_window(ui.ctx()),
+                    )
+                    .textures_delta
+                    .clear();
+                }
+                let bounds = ctx
+                    .memory(|m| m.area_rect(Id::unique("settings_dialog")))
+                    .unwrap();
+                assert!(
+                    screen.contains_rect(bounds),
+                    "tab={tab:?}, size={size:?}, bounds={bounds:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn editor_panels_stay_within_available_space() {
+        for size in [
+            [500.0, 300.0],
+            [760.0, 320.0],
+            [900.0, 320.0],
+            [900.0, 450.0],
+            [1100.0, 500.0],
+        ] {
+            for tool in [
+                Tool::PdfMerge,
+                Tool::Trim,
+                Tool::Download,
+                Tool::DiscToIso,
+                Tool::RemoveImageMetadata,
+            ] {
+                let ctx = egui::Context::default();
+                let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+                let mut app = FmxApp::new(
+                    &cc,
+                    Launch {
+                        request: instance::Request::Focus,
+                        self_test: true,
+                        single_instance: false,
+                    },
+                );
+                app.tool = tool;
+                theme::apply(&ctx, ThemeChoice::Light, true);
+                for _ in 0..4 {
+                    ctx.run_ui(egui::RawInput::default(), |ui| {
+                        let bounds = egui::Rect::from_min_size(ui.cursor().min, size.into());
+                        let response = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(bounds), |ui| {
+                                app.task_editor(ui)
+                            });
+                        assert!(
+                            response.response.rect.width() <= size[0] + 1.0
+                                && response.response.rect.height() <= size[1] + 1.0,
+                            "tool={tool:?}, size={size:?}, bounds={bounds:?}, response={:?}",
+                            response.response.rect
+                        );
+                    })
+                    .textures_delta
+                    .clear();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn welcome_pages_fit_small_and_large_windows() {
         for size in [[360.0, 480.0], [900.0, 700.0]] {
             for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
