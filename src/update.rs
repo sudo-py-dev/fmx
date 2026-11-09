@@ -15,6 +15,7 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
 use minisign_verify::{PublicKey, Signature};
 use serde::Deserialize;
@@ -40,6 +41,8 @@ const CHUNK: usize = 64 * 1024;
 const MAX_NOTES_CHARS: usize = 20_000;
 /// How often FMX looks for updates on its own, in seconds.
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// Give unfinished installers a week before reclaiming their downloads.
+const UPDATE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// A plain `major.minor.patch` version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -361,6 +364,87 @@ fn updates_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("fmx").join("updates"))
 }
 
+/// Identify only files named by the updater, including Debian signature sidecars.
+fn update_file_version(name: &str) -> Option<Version> {
+    let name = name.strip_suffix(".minisig").unwrap_or(name);
+    for kind in [
+        InstallKind::Deb,
+        InstallKind::LinuxPortable,
+        InstallKind::WindowsSetup,
+        InstallKind::MacDmg,
+    ] {
+        let version = match kind {
+            InstallKind::Deb => name
+                .strip_prefix("fmx_")
+                .and_then(|n| n.split_once('_').map(|p| p.0)),
+            _ => name
+                .strip_prefix("fmx-")
+                .and_then(|n| n.split_once('-').map(|p| p.0)),
+        };
+        if let Some(version) = version.and_then(Version::parse)
+            && kind.asset_name(version) == name
+        {
+            return Some(version);
+        }
+    }
+    None
+}
+
+/// Remove installed and expired downloads, without following links or touching other files.
+fn cleanup_updates(dir: &Path, current: Version, now: SystemTime) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read update directory");
+            return;
+        }
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let version = update_file_version(&name);
+        // NamedTempFile uses this prefix for interrupted downloads in earlier versions too.
+        let temp = name
+            .strip_prefix(".tmp")
+            .is_some_and(|s| s.len() == 6 && s.bytes().all(|c| c.is_ascii_alphanumeric()));
+        if version.is_none() && !temp {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let expired = metadata
+            .modified()
+            .ok()
+            .and_then(|time| now.duration_since(time).ok())
+            .is_some_and(|age| age >= UPDATE_RETENTION);
+        if (version.is_some_and(|v| v <= current) || expired)
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            tracing::info!(file = %name, error = %e, "could not remove old update; will retry");
+        }
+    }
+}
+
+/// Clean on startup and retry after installers have had time to exit, then daily.
+pub fn start_update_cleanup() {
+    let Some(dir) = updates_dir() else { return };
+    std::thread::spawn(move || {
+        cleanup_updates(&dir, Version::current(), SystemTime::now());
+        std::thread::sleep(Duration::from_secs(60));
+        loop {
+            cleanup_updates(&dir, Version::current(), SystemTime::now());
+            std::thread::sleep(Duration::from_secs(CHECK_INTERVAL_SECS));
+        }
+    });
+}
+
 /// Downloads `release` and verifies its signature. Returns the verified file.
 pub fn download(
     release: &Release,
@@ -436,12 +520,24 @@ pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError>
         }
         InstallKind::Deb => {
             install_deb(release, file)?;
+            remove_installed_download(file, true);
             Ok(Installed::Restart)
         }
         InstallKind::LinuxPortable => {
             let exe = std::env::current_exe()?;
             replace_from_archive(file, &exe)?;
+            remove_installed_download(file, false);
             Ok(Installed::Restart)
+        }
+    }
+}
+
+fn remove_installed_download(file: &Path, deb: bool) {
+    for path in
+        std::iter::once(file.to_path_buf()).chain(deb.then(|| file.with_extension("deb.minisig")))
+    {
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::info!(file = %path.display(), error = %e, "could not remove installed update; will retry");
         }
     }
 }
@@ -630,6 +726,70 @@ mod tests {
             assert_eq!(Version::parse(bad), None, "{bad}");
         }
         assert_eq!(Version::current().to_string(), VERSION);
+    }
+
+    #[test]
+    fn cleanup_removes_installed_and_expired_updates_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = "fmx_1.0.0_amd64.deb";
+        let signature = "fmx_1.0.0_amd64.deb.minisig";
+        let current = "fmx-2.0.0-windows-x64-setup.exe";
+        let newer = "fmx-3.0.0-macos-universal.dmg";
+        let portable = "fmx-3.0.0-linux-x86_64.tar.gz";
+        let temp = ".tmpAb12Cd";
+        let unrelated = "fmx-1.0.0-personal.txt";
+        for name in [old, signature, current, newer, portable, temp, unrelated] {
+            std::fs::write(dir.path().join(name), b"download").unwrap();
+        }
+        // Even a directory with a recognized name must be left alone.
+        let directory = dir.path().join("fmx-1.0.0-macos-universal.dmg");
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.path().join(unrelated),
+            dir.path().join("fmx-1.0.0-linux-x86_64.tar.gz"),
+        )
+        .unwrap();
+
+        let now = SystemTime::now();
+        cleanup_updates(dir.path(), v("2.0.0"), now);
+        for name in [old, signature, current] {
+            assert!(!dir.path().join(name).exists(), "{name}");
+        }
+        for name in [newer, portable, temp, unrelated] {
+            assert!(dir.path().join(name).exists(), "{name}");
+        }
+        assert!(directory.is_dir());
+
+        cleanup_updates(
+            dir.path(),
+            v("2.0.0"),
+            now + UPDATE_RETENTION + Duration::from_secs(1),
+        );
+        for name in [newer, portable, temp] {
+            assert!(!dir.path().join(name).exists(), "{name}");
+        }
+        assert!(dir.path().join(unrelated).exists());
+        assert!(directory.is_dir());
+        #[cfg(unix)]
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("fmx-1.0.0-linux-x86_64.tar.gz"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn completed_debian_download_and_signature_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("fmx_1.0.0_amd64.deb");
+        let signature = package.with_extension("deb.minisig");
+        std::fs::write(&package, b"package").unwrap();
+        std::fs::write(&signature, b"signature").unwrap();
+        remove_installed_download(&package, true);
+        assert!(!package.exists());
+        assert!(!signature.exists());
     }
 
     fn api_json(tag: &str, names: &[&str]) -> String {
