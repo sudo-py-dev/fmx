@@ -43,6 +43,8 @@ const MAX_NOTES_CHARS: usize = 20_000;
 pub const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// Give unfinished installers a week before reclaiming their downloads.
 const UPDATE_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Detached installers may still need their package after the new app starts.
+const INSTALLER_GRACE: Duration = Duration::from_secs(10 * 60);
 
 /// A plain `major.minor.patch` version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -419,12 +421,14 @@ fn cleanup_updates(dir: &Path, current: Version, now: SystemTime) {
         if !metadata.file_type().is_file() {
             continue;
         }
-        let expired = metadata
+        let age = metadata
             .modified()
             .ok()
-            .and_then(|time| now.duration_since(time).ok())
-            .is_some_and(|age| age >= UPDATE_RETENTION);
-        if (version.is_some_and(|v| v <= current) || expired)
+            .and_then(|time| now.duration_since(time).ok());
+        let installed =
+            version.is_some_and(|v| v <= current) && age.is_some_and(|age| age >= INSTALLER_GRACE);
+        let expired = age.is_some_and(|age| age >= UPDATE_RETENTION);
+        if (installed || expired)
             && let Err(e) = std::fs::remove_file(entry.path())
         {
             tracing::info!(file = %name, error = %e, "could not remove old update; will retry");
@@ -435,11 +439,12 @@ fn cleanup_updates(dir: &Path, current: Version, now: SystemTime) {
 /// Clean on startup and retry after installers have had time to exit, then daily.
 pub fn start_update_cleanup() {
     let Some(dir) = updates_dir() else { return };
+    let current = Version::current();
     std::thread::spawn(move || {
-        cleanup_updates(&dir, Version::current(), SystemTime::now());
-        std::thread::sleep(Duration::from_secs(60));
+        cleanup_updates(&dir, current, SystemTime::now());
+        std::thread::sleep(INSTALLER_GRACE);
         loop {
-            cleanup_updates(&dir, Version::current(), SystemTime::now());
+            cleanup_updates(&dir, current, SystemTime::now());
             std::thread::sleep(Duration::from_secs(CHECK_INTERVAL_SECS));
         }
     });
@@ -753,6 +758,15 @@ mod tests {
 
         let now = SystemTime::now();
         cleanup_updates(dir.path(), v("2.0.0"), now);
+        // Recent packages survive startup even when their version is already installed.
+        for name in [old, signature, current, newer, portable, temp, unrelated] {
+            assert!(dir.path().join(name).exists(), "{name}");
+        }
+        cleanup_updates(
+            dir.path(),
+            v("2.0.0"),
+            now + INSTALLER_GRACE + Duration::from_secs(1),
+        );
         for name in [old, signature, current] {
             assert!(!dir.path().join(name).exists(), "{name}");
         }
