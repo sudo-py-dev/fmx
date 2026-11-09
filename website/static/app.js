@@ -1,4 +1,26 @@
 'use strict';
+const preferredLanguages = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
+const language = preferredLanguages.map(value => {
+  const code = value.toLowerCase().split(/[-_]/)[0];
+  return code === 'iw' ? 'he' : code;
+}).find(code => Object.hasOwn(translations, code)) || 'en';
+const messages = translations[language];
+const markupKeys = new Set(['heroTitle', 'mediaTypes', 'featureTitle', 'featureIntro', 'faqTitle']);
+function translatePage() {
+  document.documentElement.lang = language;
+  document.documentElement.dir = language === 'he' ? 'rtl' : 'ltr';
+  document.querySelectorAll('[data-i18n]').forEach(element => {
+    const key = element.dataset.i18n;
+    if (!Object.hasOwn(messages, key)) return;
+    if (markupKeys.has(key)) element.innerHTML = messages[key];
+    else element.textContent = messages[key];
+  });
+  document.querySelectorAll('[data-i18n-attr]').forEach(element => {
+    const [key, attribute] = element.dataset.i18nAttr.split(':');
+    if (Object.hasOwn(messages, key)) element.setAttribute(attribute, messages[key]);
+  });
+}
+translatePage();
 const repository = 'sudo-py-dev/fmx';
 const patterns = {
   windows: /windows.*setup\.exe$/i,
@@ -21,7 +43,8 @@ async function loadRelease() {
       available[platform] = asset.browser_download_url;
       document.querySelectorAll(`[data-platform="${platform}"]`).forEach(link => {
         link.href = asset.browser_download_url;
-        link.replaceChildren(document.createTextNode(platform === 'portable' ? 'Download portable archive ' : `Download ${platform === 'android' ? 'Android APK' : platform === 'macos' ? 'for macOS' : `for ${platform === 'windows' ? 'Windows' : 'Linux'}`} `));
+        const label = platform === 'portable' ? messages.downloadPortable : platform === 'android' ? messages.downloadAndroid : messages.downloadFor.replace('{platform}', {windows:'Windows', macos:'macOS', linux:'Linux'}[platform]);
+        link.replaceChildren(document.createTextNode(`${label} `));
         const arrow = document.createElement('span'); arrow.textContent = '↓'; link.append(arrow);
       });
     }
@@ -29,11 +52,11 @@ async function loadRelease() {
     if (detected && available[detected]) {
       const primary = document.querySelector('#smart-download');
       primary.href = available[detected];
-      primary.textContent = `Download for ${ {windows:'Windows',macos:'macOS',linux:'Linux',android:'Android'}[detected]} ↓`;
+      primary.textContent = `${messages.downloadFor.replace('{platform}', {windows:'Windows',macos:'macOS',linux:'Linux',android:'Android'}[detected])} ↓`;
     }
-    status.textContent = `${release.tag_name || 'Latest release'} · Downloads served directly from GitHub`;
+    status.textContent = `${release.tag_name || messages.latestRelease} · ${messages.releaseServed}`;
   } catch {
-    status.textContent = 'Browse the latest GitHub release to choose your download.';
+    status.textContent = messages.releaseFallback;
   }
 }
 loadRelease();
