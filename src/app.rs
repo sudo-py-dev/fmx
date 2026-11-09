@@ -3318,9 +3318,19 @@ impl FmxApp {
                 quality_row(ui, &mut opts.quality);
             }
             Tool::AddSubtitles => {
-                row(ui, tr("option.subtitle_file"), |ui| {
-                    file_slot(ui, &mut opts.edit.subtitle, &["srt", "ass", "ssa", "vtt"]);
-                });
+                row_hint(
+                    ui,
+                    tr("option.match_subtitles"),
+                    tr("hint.match_subtitles"),
+                    |ui| {
+                        widgets::switch(ui, &mut opts.edit.match_subtitles);
+                    },
+                );
+                if !opts.edit.match_subtitles {
+                    row(ui, tr("option.subtitle_file"), |ui| {
+                        file_slot(ui, &mut opts.edit.subtitle, &["srt", "ass", "ssa", "vtt"]);
+                    });
+                }
             }
             Tool::JoinAudio | Tool::AudioMix => {
                 quality_row(ui, &mut opts.quality);

@@ -80,6 +80,13 @@ Tools are grouped by task within each category, with less common formats under
 (**⌘F** on macOS) to focus it. The search field stays within the sidebar while
 typing long queries or clearing the text.
 
+To add subtitle tracks in a batch, open **Add subtitle track**, add videos or use
+**Add folder**, and enable **Match subtitles by filename**. Each video needs one
+SRT, ASS, SSA or VTT file in the same folder with exactly the same name before
+the extension, including capitalization (for example `clip.mp4` and `clip.srt`).
+If a match is missing or multiple files match, fix the filenames before queueing.
+Leave matching off to use one chosen subtitle file for every selected video.
+
 ### Tags, privacy and media details
 
 - **Edit tags and cover art** loads each file's existing tags so you can edit files

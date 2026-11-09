@@ -756,7 +756,7 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
                 return Err(PlanError::InvalidRect);
             }
         }
-        Tool::AddSubtitles => {
+        Tool::AddSubtitles if !opts.edit.match_subtitles => {
             let sub = opts
                 .edit
                 .subtitle

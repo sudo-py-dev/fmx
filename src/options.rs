@@ -883,6 +883,8 @@ pub struct Edit {
     pub crop: Option<Rect>,
     pub rotation: Option<Rotation>,
     pub subtitle: Option<PathBuf>,
+    /// Resolve a matching subtitle beside each video when creating jobs.
+    pub match_subtitles: bool,
     pub watermark: Option<PathBuf>,
     pub watermark_corner: Option<Corner>,
 }
