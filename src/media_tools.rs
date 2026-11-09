@@ -80,6 +80,14 @@ fn recipe(tool: Tool, input: &Input, output: &Path, opts: &Options) -> Result<Pl
     validate(tool, o)?;
     let duration = input.info.duration_s;
     let mut args = base();
+    let buffers_stream = matches!(tool, Tool::Reverse | Tool::TrimSilence);
+    if buffers_stream {
+        // Avoid reserving a stack per host CPU within the address-space budget.
+        args = args
+            .switch("-xerror")
+            .flag("-threads", "1")
+            .flag("-filter_threads", "1");
+    }
     if tool == Tool::EditTags {
         args = args.flag("-protocol_whitelist", "file,pipe");
     }
@@ -327,12 +335,21 @@ fn recipe(tool: Tool, input: &Input, output: &Path, opts: &Options) -> Result<Pl
         }
         _ => return Err(PlanError::UnsupportedTool),
     }
+    if buffers_stream {
+        args = args.flag("-threads", "1");
+    }
     let expected = if tool == Tool::TrimSilence {
         None
     } else {
         duration
     };
-    Ok(args.output(output).expect(expected))
+    let mut plan = args.output(output).expect(expected);
+    if buffers_stream {
+        // Shared by all buffering filters in this child, including both streams
+        // and both Trim Silence reversals. Never trust compressed size/duration.
+        plan.memory_limit = Some(1024 * 1024 * 1024);
+    }
+    Ok(plan)
 }
 
 #[cfg(test)]
@@ -437,6 +454,46 @@ mod tests {
         assert!(args.iter().any(|a| a.contains("areverse,asetpts")));
         assert!(args.iter().any(|a| a == "0:V:0"));
         assert!(!args.iter().any(|a| a == "copy"));
+    }
+
+    #[test]
+    fn buffering_tools_have_one_shared_budget_even_without_duration() {
+        for tool in [
+            Tool::Reverse,
+            Tool::TrimSilence,
+            Tool::Fade,
+            Tool::AudioDenoise,
+        ] {
+            let p = plan(tool, &input(false, true, Some(10.0)), &Options::default()).unwrap();
+            assert_eq!(
+                p.memory_limit,
+                if matches!(tool, Tool::Reverse | Tool::TrimSilence) {
+                    Some(1024 * 1024 * 1024)
+                } else {
+                    None
+                }
+            );
+        }
+        assert!(
+            plan(
+                Tool::Reverse,
+                &input(false, true, None),
+                &Options::default()
+            )
+            .unwrap()
+            .memory_limit
+            .is_some()
+        );
+        assert!(
+            plan(
+                Tool::TrimSilence,
+                &input(false, true, None),
+                &Options::default()
+            )
+            .unwrap()
+            .memory_limit
+            .is_some()
+        );
     }
 
     #[test]
