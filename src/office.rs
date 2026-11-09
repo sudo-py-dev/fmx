@@ -18,6 +18,9 @@ use crate::pdfgen::{Block, Span};
 const MAX_PART_BYTES: u64 = 64 << 20;
 /// Largest plain-text input read whole.
 const MAX_TEXT_BYTES: u64 = 32 << 20;
+/// Bound nested DOCX table state and total bytes copied while flattening tables.
+const MAX_DOCX_TABLE_DEPTH: usize = 32;
+const MAX_DOCX_TABLE_COPY_BYTES: usize = 64 << 20;
 /// Spreadsheet rows rendered per sheet.
 const MAX_SHEET_ROWS: usize = 5_000;
 
@@ -178,9 +181,37 @@ struct DocxState {
     tables: Vec<Vec<Vec<String>>>,
     row: Vec<String>,
     cell: String,
+    table_copy_bytes: usize,
 }
 
 impl DocxState {
+    fn append_nested_text(&mut self, text: &str) -> Result<(), OfficeError> {
+        self.table_copy_bytes = self
+            .table_copy_bytes
+            .checked_add(text.len())
+            .filter(|&bytes| bytes <= MAX_DOCX_TABLE_COPY_BYTES)
+            .ok_or_else(|| corrupt("DOCX nested table copy limit exceeded"))?;
+        self.cell.push_str(text);
+        Ok(())
+    }
+
+    fn append_nested_table(&mut self, rows: &[Vec<String>]) -> Result<(), OfficeError> {
+        // Append directly so every copied byte, including separators, is charged
+        // before allocation. The budget is shared across the entire document.
+        for (row_index, row) in rows.iter().enumerate() {
+            if row_index > 0 {
+                self.append_nested_text("\n")?;
+            }
+            for (cell_index, cell) in row.iter().enumerate() {
+                if cell_index > 0 {
+                    self.append_nested_text(" | ")?;
+                }
+                self.append_nested_text(cell)?;
+            }
+        }
+        Ok(())
+    }
+
     fn push_text(&mut self, text: &str) {
         match self.spans.last_mut() {
             Some(last) if last.bold == self.bold && last.italic == self.italic => {
@@ -243,7 +274,12 @@ fn docx_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                         st.push_text("\n");
                     }
                 }
-                "tbl" => st.tables.push(Vec::new()),
+                "tbl" => {
+                    if st.tables.len() >= MAX_DOCX_TABLE_DEPTH {
+                        return Err(corrupt("DOCX table nesting limit exceeded"));
+                    }
+                    st.tables.push(Vec::new());
+                }
                 "tr" => st.row.clear(),
                 "tc" => st.cell.clear(),
                 _ => {}
@@ -273,12 +309,7 @@ fn docx_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                             st.blocks.push(Block::Table(rows));
                         } else {
                             // A nested table becomes text inside its parent cell.
-                            let text = rows
-                                .iter()
-                                .map(|r| r.join(" | "))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            st.cell.push_str(&text);
+                            st.append_nested_table(&rows)?;
                         }
                     }
                 }
@@ -870,6 +901,49 @@ mod tests {
             blocks[4],
             Block::Table(vec![vec!["A1".into(), "B1".into()]])
         );
+    }
+
+    #[test]
+    fn docx_table_depth_is_bounded() {
+        let nested = |depth| {
+            format!(
+                "{}{}",
+                "<w:tbl><w:tr><w:tc>".repeat(depth),
+                "</w:tc></w:tr></w:tbl>".repeat(depth)
+            )
+        };
+        assert!(docx_blocks(&nested(MAX_DOCX_TABLE_DEPTH)).is_ok());
+        assert!(matches!(docx_blocks(&nested(MAX_DOCX_TABLE_DEPTH + 1)),
+            Err(OfficeError::Corrupt(message)) if message.contains("nesting limit")));
+        // Empty tags take the same start-event path and must also be bounded.
+        assert!(docx_blocks(&"<w:tbl/>".repeat(MAX_DOCX_TABLE_DEPTH + 1)).is_err());
+    }
+
+    #[test]
+    fn docx_nested_payload_hits_copy_budget_below_depth_limit() {
+        let xml = format!(
+            "{}<w:p><w:r><w:t>{}</w:t></w:r></w:p>{}",
+            "<w:tbl><w:tr><w:tc>".repeat(18),
+            "x".repeat(4 << 20),
+            "</w:tc></w:tr></w:tbl>".repeat(18)
+        );
+        assert!(matches!(docx_blocks(&xml),
+            Err(OfficeError::Corrupt(message)) if message.contains("copy limit")));
+    }
+
+    #[test]
+    fn docx_nested_table_copy_budget_is_cumulative() {
+        let mut st = DocxState {
+            table_copy_bytes: MAX_DOCX_TABLE_COPY_BYTES - 8,
+            ..DocxState::default()
+        };
+        let rows = vec![vec!["a".into(), "b".into()], vec!["cd".into()]];
+        st.append_nested_table(&rows)
+            .expect("exact budget including separators");
+        assert_eq!(st.cell, "a | b\ncd");
+        assert_eq!(st.table_copy_bytes, MAX_DOCX_TABLE_COPY_BYTES);
+        assert!(st.append_nested_table(&[vec!["x".into()]]).is_err());
+        assert_eq!(st.cell, "a | b\ncd", "reject before copying");
     }
 
     #[test]
