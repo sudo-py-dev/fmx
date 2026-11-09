@@ -726,6 +726,9 @@ mod tests {
             matches!(plan_jobs(&select(Tool::AddSubtitles, &videos, None, &opts), &mut claimed), Err(JobError::SubtitleMatchMissing(path)) if path == videos[1])
         );
         assert!(claimed.is_empty());
+        // Remove the case-mismatch fixture first: on case-insensitive filesystems,
+        // writing `two.srt` over `Two.srt` preserves the original directory name.
+        std::fs::remove_file(root.path().join("Two.srt")).unwrap();
         std::fs::write(root.path().join("two.srt"), b"").unwrap();
         std::fs::write(root.path().join("two.vtt"), b"").unwrap();
         assert!(
