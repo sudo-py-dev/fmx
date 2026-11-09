@@ -149,39 +149,52 @@ fn wrap(font: &Font<'_>, tokens: &[Token], size: f32, max_width: f32) -> Vec<Lin
             used = 0.0;
             continue;
         };
-        let mut word = text.clone();
-        loop {
-            let w = font.width(&word, size);
-            let line = lines.last_mut().expect("at least one line");
-            let needed = if line.is_empty() { w } else { used + space + w };
-            if needed <= max_width {
-                used = needed;
-                line.push((word, *bold, *italic));
-                break;
-            }
-            if !line.is_empty() {
+        let w = font.width(text, size);
+        let line = lines.last_mut().expect("at least one line");
+        let needed = if line.is_empty() { w } else { used + space + w };
+        if needed <= max_width {
+            used = needed;
+            line.push((text.clone(), *bold, *italic));
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(Vec::new());
+        }
+        if w <= max_width {
+            lines
+                .last_mut()
+                .unwrap()
+                .push((text.clone(), *bold, *italic));
+            used = w;
+            continue;
+        }
+        // Scan the original word forwards. Never measure or copy a shrinking
+        // suffix: each character is visited only a constant number of times.
+        let mut start = 0;
+        let mut acc = 0.0;
+        for (idx, c) in text.char_indices() {
+            let advance = font.advance(font.glyph(c)) * size / 1000.0;
+            if acc + advance > max_width && idx > start {
+                lines
+                    .last_mut()
+                    .unwrap()
+                    .push((text[start..idx].to_owned(), *bold, *italic));
                 lines.push(Vec::new());
-                used = 0.0;
-                continue;
+                start = idx;
+                acc = 0.0;
             }
-            // A single word wider than the line: cut it where it overflows.
-            let mut cut = 0;
-            let mut acc = 0.0;
-            for (idx, c) in word.char_indices() {
-                acc += font.width(&c.to_string(), size);
-                if acc > max_width && idx > 0 {
-                    break;
-                }
-                cut = idx + c.len_utf8();
-            }
-            let rest = word.split_off(cut);
-            line.push((word, *bold, *italic));
+            acc += advance;
+        }
+        let tail = &text[start..];
+        lines
+            .last_mut()
+            .unwrap()
+            .push((tail.to_owned(), *bold, *italic));
+        used = font.width(tail, size);
+        // Even a line narrower than one glyph must make progress.
+        if used > max_width {
             lines.push(Vec::new());
             used = 0.0;
-            if rest.is_empty() {
-                break;
-            }
-            word = rest;
         }
     }
     lines
@@ -587,6 +600,53 @@ mod tests {
             long.iter()
                 .all(|l| l.iter().map(|(w, _, _)| font.width(w, 10.0)).sum::<f32>() <= 100.5)
         );
+    }
+
+    #[test]
+    fn long_unicode_word_preserves_text_and_style_at_narrow_widths() {
+        let font = Font::load(FONT).expect("font");
+        let text = "éЖ界".repeat(20_000);
+        let tokens = tokenize(&[Span {
+            text: text.clone(),
+            bold: true,
+            italic: true,
+        }]);
+        for width in [100.0, 0.0, -1.0] {
+            let lines = wrap(&font, &tokens, BODY_SIZE, width);
+            let mut restored = String::new();
+            for line in &lines {
+                for (chunk, bold, italic) in line {
+                    assert!(*bold && *italic);
+                    assert!(!chunk.is_empty());
+                    if width <= 0.0 {
+                        assert_eq!(chunk.chars().count(), 1);
+                    } else {
+                        assert!(font.width(chunk, BODY_SIZE) <= width + 0.001);
+                    }
+                    restored.push_str(chunk);
+                }
+            }
+            assert_eq!(restored, text);
+        }
+    }
+
+    #[test]
+    fn wrapping_keeps_breaks_and_fills_the_last_split_line() {
+        let font = Font::load(FONT).expect("font");
+        let width = font.width("www", 10.0) + 0.01;
+        let lines = wrap(
+            &font,
+            &tokenize(&[Span::plain("wwww i\n\nend")]),
+            10.0,
+            width,
+        );
+        assert_eq!(lines[0][0].0, "www");
+        assert_eq!(
+            lines[1].iter().map(|w| w.0.as_str()).collect::<Vec<_>>(),
+            ["w", "i"]
+        );
+        assert!(lines[2].is_empty());
+        assert_eq!(lines[3][0].0, "end");
     }
 
     #[test]
