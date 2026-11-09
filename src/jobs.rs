@@ -2,6 +2,7 @@
 //! collision-free output names.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,9 @@ pub struct JobSpec {
 impl JobSpec {
     pub fn validate(&self) -> Result<(), JobError> {
         self.options.validate(self.tool)?;
+        if self.tool == Tool::AddSubtitles && self.options.edit.subtitle.is_none() {
+            return Err(PlanError::NoSubtitleFile.into());
+        }
         if self.tool == Tool::Download {
             let url = self.url.as_deref().ok_or(JobError::BadUrl)?;
             if !docs::is_web_url(url) {
@@ -82,6 +86,8 @@ pub enum JobError {
     Office(crate::office::OfficeError),
     Io(std::io::Error),
     BadUrl,
+    SubtitleMatchMissing(PathBuf),
+    SubtitleMatchAmbiguous(PathBuf),
     NoOutput,
     /// The screen recorder could not start; the message says why.
     Recorder(String),
@@ -111,6 +117,14 @@ impl fmt::Display for JobError {
             Self::Office(e) => e.fmt(f),
             Self::Io(e) => f.write_str(&trf("error.io", &[("error", e)])),
             Self::BadUrl => f.write_str(tr("error.bad_url")),
+            Self::SubtitleMatchMissing(path) => f.write_str(&trf(
+                "error.subtitle_match_missing",
+                &[("file", &path.display())],
+            )),
+            Self::SubtitleMatchAmbiguous(path) => f.write_str(&trf(
+                "error.subtitle_match_ambiguous",
+                &[("file", &path.display())],
+            )),
             Self::NoOutput => f.write_str(tr("error.no_output")),
             Self::Recorder(e) => f.write_str(e),
         }
@@ -322,6 +336,47 @@ pub struct Selection<'a> {
     pub options: &'a Options,
 }
 
+/// Match exact stems in each video's directory. Multiple formats with the same
+/// stem are ambiguous, so never pick a track based on directory iteration order.
+fn match_subtitles(files: &[PathBuf]) -> Result<Vec<PathBuf>, JobError> {
+    let mut directories: HashMap<PathBuf, HashMap<OsString, Vec<PathBuf>>> = HashMap::new();
+    let mut matches = Vec::with_capacity(files.len());
+    for video in files {
+        let dir = video.parent().unwrap_or(Path::new("."));
+        let subtitles = match directories.entry(dir.to_path_buf()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut subtitles: HashMap<OsString, Vec<PathBuf>> = HashMap::new();
+                for entry in std::fs::read_dir(dir).map_err(JobError::Io)? {
+                    let entry = entry.map_err(JobError::Io)?;
+                    let path = entry.path();
+                    if path.is_file()
+                        && path
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .is_some_and(|ext| {
+                                ["srt", "ass", "ssa", "vtt"]
+                                    .iter()
+                                    .any(|supported| supported.eq_ignore_ascii_case(ext))
+                            })
+                        && let Some(stem) = path.file_stem()
+                    {
+                        subtitles.entry(stem.to_os_string()).or_default().push(path);
+                    }
+                }
+                entry.insert(subtitles)
+            }
+        };
+        let candidates = video.file_stem().and_then(|stem| subtitles.get(stem));
+        match candidates.map(Vec::as_slice) {
+            Some([subtitle]) => matches.push(subtitle.clone()),
+            Some([_, _, ..]) => return Err(JobError::SubtitleMatchAmbiguous(video.clone())),
+            _ => return Err(JobError::SubtitleMatchMissing(video.clone())),
+        }
+    }
+    Ok(matches)
+}
+
 /// Groups the selection into job specs according to the tool's arity.
 ///
 /// Allocated output paths are added to `claimed` to avoid name collisions.
@@ -417,10 +472,17 @@ pub fn plan_jobs(
         InputArity::Exactly(n) if files.len() != n => return Err(count_error(n).into()),
         _ => vec![files.clone()],
     };
+    // Resolve the entire batch before claiming outputs or queueing any jobs.
+    let subtitles = if tool == Tool::AddSubtitles && sel.options.edit.match_subtitles {
+        Some(match_subtitles(&files)?)
+    } else {
+        None
+    };
     let mut allocator = OutputAllocator::new(claimed);
     Ok(groups
         .into_iter()
-        .filter_map(|inputs| {
+        .enumerate()
+        .filter_map(|(index, inputs)| {
             let first = inputs.first()?;
             let dir = sel
                 .output_dir
@@ -442,7 +504,12 @@ pub fn plan_jobs(
                 options::sanitize_name_tag(&sel.options.name_tag)
             );
             let output = allocator.allocate(&dir, &stem, &tag, ext, Path::exists);
-            Some(spec(inputs, None, output))
+            let mut job = spec(inputs, None, output);
+            if let Some(subtitles) = &subtitles {
+                job.options.edit.subtitle = Some(subtitles[index].clone());
+                job.options.edit.match_subtitles = false;
+            }
+            Some(job)
         })
         .collect())
 }
@@ -605,6 +672,86 @@ mod tests {
         .expect("jobs");
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].output, PathBuf::from("/o/x.flac"));
+    }
+
+    #[test]
+    fn subtitle_matching_resolves_each_job_and_survives_serialization() {
+        let root = tempfile::tempdir().unwrap();
+        let subdir = root.path().join("season");
+        std::fs::create_dir(&subdir).unwrap();
+        let videos = vec![root.path().join("one.mp4"), subdir.join("two.mkv")];
+        let subtitles = [root.path().join("one.SRT"), subdir.join("two.ass")];
+        for path in videos.iter().chain(subtitles.iter()) {
+            std::fs::write(path, b"").unwrap();
+        }
+        let mut opts = Options::default();
+        opts.edit.match_subtitles = true;
+        opts.edit.subtitle = Some(root.path().join("manual.srt"));
+        let jobs = plan_jobs(
+            &select(Tool::AddSubtitles, &videos, None, &opts),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+        let restored: Vec<JobSpec> =
+            serde_json::from_str(&serde_json::to_string(&jobs).unwrap()).unwrap();
+        assert_eq!(restored.len(), 2);
+        for (job, subtitle) in restored.iter().zip(subtitles) {
+            assert_eq!(job.options.edit.subtitle.as_ref(), Some(&subtitle));
+            assert!(!job.options.edit.match_subtitles);
+            job.validate().unwrap();
+            let input = crate::plan::Input {
+                path: job.inputs[0].clone(),
+                info: crate::probe::MediaInfo {
+                    has_video: true,
+                    ..Default::default()
+                },
+            };
+            let plan = crate::plan::build(job.tool, &[input], &job.output, &job.options).unwrap();
+            assert!(plan.args.contains(&crate::plan::input_url(&subtitle, None)));
+        }
+    }
+
+    #[test]
+    fn subtitle_matching_rejects_missing_and_ambiguous_without_claiming_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let videos = vec![root.path().join("one.mp4"), root.path().join("two.mp4")];
+        std::fs::write(root.path().join("one.srt"), b"").unwrap();
+        // A different case and a language suffix do not match the stem.
+        std::fs::write(root.path().join("Two.srt"), b"").unwrap();
+        std::fs::write(root.path().join("two.en.srt"), b"").unwrap();
+        let mut opts = Options::default();
+        opts.edit.match_subtitles = true;
+        let mut claimed = HashSet::new();
+        assert!(
+            matches!(plan_jobs(&select(Tool::AddSubtitles, &videos, None, &opts), &mut claimed), Err(JobError::SubtitleMatchMissing(path)) if path == videos[1])
+        );
+        assert!(claimed.is_empty());
+        // Remove the case-mismatch fixture first: on case-insensitive filesystems,
+        // writing `two.srt` over `Two.srt` preserves the original directory name.
+        std::fs::remove_file(root.path().join("Two.srt")).unwrap();
+        std::fs::write(root.path().join("two.srt"), b"").unwrap();
+        std::fs::write(root.path().join("two.vtt"), b"").unwrap();
+        assert!(
+            matches!(plan_jobs(&select(Tool::AddSubtitles, &videos, None, &opts), &mut claimed), Err(JobError::SubtitleMatchAmbiguous(path)) if path == videos[1])
+        );
+        assert!(claimed.is_empty());
+    }
+
+    #[test]
+    fn manual_subtitle_is_shared_by_all_jobs() {
+        let videos = vec![PathBuf::from("/a/one.mp4"), PathBuf::from("/a/two.mp4")];
+        let mut opts = Options::default();
+        opts.edit.subtitle = Some(PathBuf::from("/subs.srt"));
+        let jobs = plan_jobs(
+            &select(Tool::AddSubtitles, &videos, None, &opts),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(
+            jobs.iter()
+                .all(|job| job.options.edit.subtitle == opts.edit.subtitle)
+        );
     }
 
     #[test]

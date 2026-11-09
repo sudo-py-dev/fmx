@@ -1693,6 +1693,52 @@ mod e2e {
     }
 
     #[test]
+    fn matched_subtitle_batch_muxes_the_right_track() {
+        let Some(tb) = toolbox() else { return };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let videos: Vec<_> = ["first", "second"]
+            .iter()
+            .map(|name| {
+                let video = dir.path().join(format!("{name}.mp4"));
+                generate(
+                    ffmpeg,
+                    &video,
+                    &["-f", "lavfi", "-i", "color=size=64x64:rate=1", "-t", "1"],
+                );
+                std::fs::write(
+                    dir.path().join(format!("{name}.srt")),
+                    format!("1\n00:00:00,000 --> 00:00:00,900\n{name}\n"),
+                )
+                .unwrap();
+                video
+            })
+            .collect();
+        let mut opts = Options::default();
+        opts.edit.match_subtitles = true;
+        let outputs = run(
+            &tb,
+            Tool::AddSubtitles,
+            &videos,
+            &opts,
+            dir.path(),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(outputs.len(), 2);
+        for (output, expected) in outputs.iter().zip(["first", "second"]) {
+            let extracted = Command::new(ffmpeg)
+                .args(["-v", "error", "-i"])
+                .arg(output)
+                .args(["-map", "0:s:0", "-f", "srt", "-"])
+                .output()
+                .unwrap();
+            assert!(extracted.status.success());
+            assert!(String::from_utf8_lossy(&extracted.stdout).contains(expected));
+        }
+    }
+
+    #[test]
     fn added_lossless_audio_formats_round_trip() {
         let Some(tb) = toolbox() else { return };
         let ffmpeg = tb.get(External::Ffmpeg).expect("ffmpeg");
