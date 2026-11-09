@@ -58,6 +58,8 @@ impl SlideTransition {
         Self::SlideDown,
         Self::Random,
     ];
+
+    /// Returns the localized name for the transition selector.
     pub fn label(self) -> &'static str {
         tr(match self {
             Self::Cut => "slideshow.cut",
@@ -1201,6 +1203,7 @@ impl Options {
 }
 
 impl Default for Options {
+    /// Supplies initial settings for newly created jobs and saved preferences.
     fn default() -> Self {
         Self {
             media_tools: MediaToolOptions::default(),

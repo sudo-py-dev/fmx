@@ -3259,6 +3259,7 @@ impl FmxApp {
         self.capture_rx = Some(rx);
     }
 
+    /// Shows the controls for the selected tool and updates its saved options.
     fn options_ui(&mut self, ui: &mut egui::Ui) {
         let tool = self.tool;
         if matches!(tool, Tool::Record | Tool::RecordAudio | Tool::Screenshot) {

@@ -1395,6 +1395,9 @@ fn slide_is_photo(path: &Path) -> bool {
         })
 }
 
+/// Builds an MP4 slideshow in input order, looping photos and retaining clip audio.
+/// Transition overlaps are limited by adjacent durations and aligned to frames;
+/// missing audio is filled with silence when another clip has audio.
 fn slideshow(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {
     require_count(inputs, 1, false)?;
     validate_options(opts, Tool::Slideshow)?;
@@ -2110,6 +2113,7 @@ mod tests {
         joined(&build(tool, inputs, Path::new("/out/o"), opts).expect("plan"))
     }
 
+    /// Checks slideshow timing and rejects invalid options or unknown clip duration.
     #[test]
     fn slideshow_checks_inputs_and_timing() {
         let photo = input("photo.png", media(true, false, 0.0));

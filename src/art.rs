@@ -261,6 +261,7 @@ fn device(d: Device) -> Art {
     }
 }
 
+/// Chooses the icon and color used for a tool in the catalog.
 pub fn tool(t: Tool) -> Art {
     match t {
         Tool::ToVideo(f) => video(f),

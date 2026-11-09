@@ -472,6 +472,8 @@ fn run_plain(program: &Path, args: &[OsString], cancel: &AtomicBool) -> Result<(
     process::run(program, args, StopMode::Kill, cancel, |_| {}).map_err(JobError::Run)
 }
 
+/// Dispatches a job to its native implementation or an external program.
+/// Reports progress and details through the supplied callbacks.
 fn run_tool(
     spec: &JobSpec,
     toolbox: &Toolbox,
@@ -1794,6 +1796,7 @@ mod e2e {
         }
     }
 
+    /// Compares exported image corners with the preview for each rotation and flip.
     #[test]
     fn rotation_exports_match_preview_for_every_turn_and_flip() {
         let Some(tb) = toolbox() else { return };
@@ -1879,6 +1882,7 @@ mod e2e {
         }
     }
 
+    /// Checks mixed-slide exports with cuts, directional and random transitions, including audio.
     #[test]
     fn e2e_slideshow_mixes_photos_video_and_audio() {
         let Some(tb) = toolbox() else {

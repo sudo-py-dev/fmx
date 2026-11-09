@@ -91,6 +91,7 @@ impl Category {
             .as_slice()
     }
 
+    /// Builds the visible and secondary tool groups for this category.
     fn build_groups(self) -> Vec<ToolGroup> {
         let group = |key, tools| ToolGroup {
             key,
@@ -1019,6 +1020,7 @@ impl InputKind {
 }
 
 impl Tool {
+    /// Returns the localized name shown for this tool.
     pub fn label(self) -> &'static str {
         match self {
             Self::ToVideo(f) => f.label(),
@@ -1085,6 +1087,7 @@ impl Tool {
         }
     }
 
+    /// Returns the localized explanation shown in the tool editor.
     pub fn description(self) -> &'static str {
         match self {
             Self::ToVideo(_) => tr("desc.to_video"),
@@ -1151,6 +1154,7 @@ impl Tool {
         }
     }
 
+    /// Describes how selected inputs are grouped into jobs.
     pub fn arity(self) -> InputArity {
         match self {
             Self::ImagesToPdf | Self::Slideshow => InputArity::AllAtLeast(1),
@@ -1164,6 +1168,7 @@ impl Tool {
         }
     }
 
+    /// Identifies the input type accepted by the file picker and editor.
     pub fn input_kind(self) -> InputKind {
         match self {
             Self::Slideshow => InputKind::Slides,
@@ -1312,6 +1317,8 @@ mod tests {
 mod organization_tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// Checks that the catalog retains each tool once in its expected category.
     #[test]
     fn task_groups_keep_every_existing_tool_once() {
         let mut tools = HashSet::new();
