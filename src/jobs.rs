@@ -1,7 +1,7 @@
 //! Job specs, their errors, and turning a selection into jobs with
 //! collision-free output names.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -249,23 +249,55 @@ pub fn allocate_output(
     claimed: &mut HashSet<PathBuf>,
     exists: impl Fn(&Path) -> bool,
 ) -> PathBuf {
-    let name = |n: u32| {
-        let counter = if n == 0 {
-            String::new()
-        } else {
-            format!(" ({n})")
-        };
-        match ext {
-            Some(ext) => format!("{stem}{suffix}{counter}.{ext}"),
-            None => format!("{stem}{suffix}{counter}"),
+    OutputAllocator::new(claimed).allocate(dir, stem, suffix, ext, exists)
+}
+
+/// Remembers collision searches for one batch. Claims are retained for the
+/// entire batch, and every new candidate is still checked against disk.
+pub struct OutputAllocator<'a> {
+    claimed: &'a mut HashSet<PathBuf>,
+    next_suffix: HashMap<(PathBuf, Option<String>), u64>,
+}
+
+impl<'a> OutputAllocator<'a> {
+    pub fn new(claimed: &'a mut HashSet<PathBuf>) -> Self {
+        Self {
+            claimed,
+            next_suffix: HashMap::new(),
         }
-    };
-    let path = (0..)
-        .map(|n| dir.join(name(n)))
-        .find(|p| !claimed.contains(p) && !exists(p))
-        .unwrap_or_else(|| dir.join(name(0)));
-    claimed.insert(path.clone());
-    path
+    }
+
+    pub fn allocate(
+        &mut self,
+        dir: &Path,
+        stem: &str,
+        suffix: &str,
+        ext: Option<&str>,
+        exists: impl Fn(&Path) -> bool,
+    ) -> PathBuf {
+        let base = format!("{stem}{suffix}");
+        let next = self
+            .next_suffix
+            .entry((dir.join(&base), ext.map(str::to_owned)))
+            .or_default();
+        loop {
+            let counter = if *next == 0 {
+                String::new()
+            } else {
+                format!(" ({next})")
+            };
+            let name = match ext {
+                Some(ext) => format!("{base}{counter}.{ext}"),
+                None => format!("{base}{counter}"),
+            };
+            let path = dir.join(name);
+            *next += 1;
+            if !self.claimed.contains(&path) && !exists(&path) {
+                self.claimed.insert(path.clone());
+                return path;
+            }
+        }
+    }
 }
 
 /// Sortable local capture time, with milliseconds and filesystem-safe separators.
@@ -385,6 +417,7 @@ pub fn plan_jobs(
         InputArity::Exactly(n) if files.len() != n => return Err(count_error(n).into()),
         _ => vec![files.clone()],
     };
+    let mut allocator = OutputAllocator::new(claimed);
     Ok(groups
         .into_iter()
         .filter_map(|inputs| {
@@ -408,7 +441,7 @@ pub fn plan_jobs(
                 suffix(tool),
                 options::sanitize_name_tag(&sel.options.name_tag)
             );
-            let output = allocate_output(&dir, &stem, &tag, ext, claimed, Path::exists);
+            let output = allocator.allocate(&dir, &stem, &tag, ext, Path::exists);
             Some(spec(inputs, None, output))
         })
         .collect())
@@ -481,6 +514,54 @@ mod tests {
             |p| p == taken,
         );
         assert_eq!(second, PathBuf::from("/out/clip (2).mp4"));
+    }
+
+    #[test]
+    fn batch_allocation_does_not_rescan_collisions() {
+        use std::cell::Cell;
+
+        let mut claimed = HashSet::new();
+        let mut allocator = OutputAllocator::new(&mut claimed);
+        let dir = Path::new("/out");
+        let probes = Cell::new(0);
+        let existing: HashSet<_> = std::iter::once(dir.join("clip.mp4"))
+            .chain((1..1000).map(|n| dir.join(format!("clip ({n}).mp4"))))
+            .collect();
+        for n in 1000..2000 {
+            let output = allocator.allocate(dir, "clip", "", Some("mp4"), |p| {
+                probes.set(probes.get() + 1);
+                existing.contains(p)
+            });
+            assert_eq!(output, dir.join(format!("clip ({n}).mp4")));
+        }
+        assert_eq!(probes.get(), 2000);
+        assert_eq!(claimed.len(), 1000);
+    }
+
+    #[test]
+    fn batch_allocation_checks_overlapping_families_and_extensions() {
+        let dir = Path::new("/out");
+        let mut claimed = HashSet::from([dir.join("clip (2).mp4")]);
+        let mut allocator = OutputAllocator::new(&mut claimed);
+        let mut allocate =
+            |stem, suffix, ext| allocator.allocate(dir, stem, suffix, ext, |_| false);
+        assert_eq!(
+            allocate("clip (1)", "", Some("mp4")),
+            dir.join("clip (1).mp4")
+        );
+        assert_eq!(allocate("clip", "", Some("mp4")), dir.join("clip.mp4"));
+        assert_eq!(allocate("cli", "p", Some("mp4")), dir.join("clip (3).mp4"));
+        assert_eq!(allocate("clip", "", Some("png")), dir.join("clip.png"));
+        assert_eq!(allocate("clip", "", None), dir.join("clip"));
+        assert_eq!(
+            allocate("clip (3)", "", Some("mp4")),
+            dir.join("clip (3) (1).mp4")
+        );
+        assert_eq!(allocate("clip", "", Some("mp4")), dir.join("clip (4).mp4"));
+        assert_eq!(
+            allocator.allocate(Path::new("/other"), "clip", "", Some("mp4"), |_| false),
+            Path::new("/other/clip.mp4")
+        );
     }
 
     #[test]
