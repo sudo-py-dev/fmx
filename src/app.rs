@@ -56,6 +56,8 @@ const PROGRESS_WIDTH: f32 = 220.0;
 const EDITOR_MAX_WIDTH: f32 = 1320.0;
 /// Below this width the editor stacks its two panels and scrolls.
 const TWO_COLUMN_MIN_WIDTH: f32 = 760.0;
+/// Short editors scroll rather than squeezing controls into fixed-height cards.
+const PANEL_MIN_HEIGHT: f32 = 320.0;
 /// The least height the collage canvas and inspector get before the page scrolls.
 const COLLAGE_MIN_HEIGHT: f32 = 320.0;
 const PANEL_GAP: f32 = 14.0;
@@ -84,6 +86,8 @@ const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
 const SETTINGS_WIDTH: f32 = 820.0;
 const SETTINGS_HEIGHT: f32 = 540.0;
 const SETTINGS_NAV_WIDTH: f32 = 190.0;
+/// Below this width, settings use a section picker instead of a sidebar.
+const SETTINGS_COMPACT_WIDTH: f32 = 600.0;
 /// Space kept free around the Settings window on small screens.
 const SETTINGS_SCREEN_MARGIN: f32 = 80.0;
 /// Task-list files larger than this are refused.
@@ -2062,7 +2066,7 @@ impl FmxApp {
                                     );
                                 }
                             });
-                            ui.checkbox(&mut opts.grayscale, tr("option.grayscale"));
+                            dir::checkbox(ui, &mut opts.grayscale, tr("option.grayscale"));
                             ui.separator();
                             ui.label(tr("option.watermark"));
                             if let Some(path) = &opts.edit.watermark {
@@ -2155,11 +2159,23 @@ impl FmxApp {
         let input_done = self.input_missing().is_none();
         let size = ui.available_size();
         match self.settings_heading() {
-            None => step_panel(ui, size, 1, input_done, title, &help, |ui| {
-                self.input_ui(ui, true);
-            }),
+            None if size.y >= PANEL_MIN_HEIGHT => {
+                step_panel(ui, size, 1, input_done, title, &help, |ui| {
+                    self.input_ui(ui, true);
+                })
+            }
+            None => {
+                theme::page_scroll()
+                    .id_salt("editor_stacked")
+                    .show(ui, |ui| {
+                        step(ui, 1, input_done, title, &help, |ui| {
+                            self.input_ui(ui, false)
+                        });
+                    });
+            }
             Some((settings_title, settings_help))
                 if size.x >= TWO_COLUMN_MIN_WIDTH
+                    && size.y >= PANEL_MIN_HEIGHT
                     && self.tool.input_kind() != InputKind::Capture =>
             {
                 let preview = self.preview_mode();
@@ -3872,11 +3888,12 @@ impl FmxApp {
         }
         let eased = egui::emath::easing::cubic_out(shown);
         let screen = ctx.content_rect();
+        // `size` is the frame's inner size, so account for its margins.
         let size = egui::vec2(
-            SETTINGS_WIDTH.min(screen.width() - SETTINGS_SCREEN_MARGIN),
-            SETTINGS_HEIGHT.min(screen.height() - SETTINGS_SCREEN_MARGIN),
-        )
-        .max(egui::vec2(480.0, 320.0));
+            SETTINGS_WIDTH.min((screen.width() - SETTINGS_SCREEN_MARGIN).max(0.0)),
+            SETTINGS_HEIGHT.min((screen.height() - SETTINGS_SCREEN_MARGIN).max(0.0)),
+        ) - egui::vec2(32.0, 20.0);
+        let size = size.max(egui::Vec2::ZERO);
         let dark = ctx.global_style().visuals.dark_mode;
         let modal = egui::Modal::new(egui::Id::unique("settings_dialog"))
             .area(egui::Modal::default_area(egui::Id::unique("settings_dialog")).fade_in(false))
@@ -3968,67 +3985,104 @@ impl FmxApp {
     }
 
     fn settings_contents(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if ui.available_width() < SETTINGS_COMPACT_WIDTH {
+            ui.horizontal(|ui| {
+                ComboBox::from_id_salt("settings_sections_compact")
+                    .selected_text(self.settings_tab.label())
+                    .show_ui(ui, |ui| {
+                        dir::menu(ui, |ui| {
+                            for tab in SettingsTab::ALL {
+                                ui.selectable_value(&mut self.settings_tab, tab, tab.label());
+                            }
+                        });
+                    });
+                if widgets::icon_button(
+                    ui,
+                    icons::INFO,
+                    tr("welcome.reopen"),
+                    Kind::Ghost,
+                    Size::Regular,
+                )
+                .clicked()
+                {
+                    self.show_settings = false;
+                    self.welcome_step = Some(0);
+                }
+            });
+            ui.add_space(8.0);
+            self.settings_page_area(ui, ctx);
+            return;
+        }
         ui.horizontal_top(|ui| {
             // Section list on the start edge, like most apps' preferences.
             dir::vertical(ui, |ui| {
                 ui.set_width(SETTINGS_NAV_WIDTH);
                 ui.spacing_mut().item_spacing.y = 3.0;
-                widgets::nav_list(ui, "settings_sections", |ui| {
-                    let mut chosen = None;
-                    for (i, tab) in SettingsTab::ALL.into_iter().enumerate() {
-                        let news = tab == SettingsTab::Updates && self.update_news();
-                        let selected = self.settings_tab == tab;
-                        let item = widgets::nav_item(
-                            ui,
-                            Some(tab.art()),
-                            tab.label(),
-                            selected,
-                            false,
-                            news.then_some(1),
-                        );
-                        if selected {
-                            chosen = Some((i, item.rect));
+                theme::page_scroll()
+                    .id_salt("settings_navigation")
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        widgets::nav_list(ui, "settings_sections", |ui| {
+                            let mut chosen = None;
+                            for (i, tab) in SettingsTab::ALL.into_iter().enumerate() {
+                                let news = tab == SettingsTab::Updates && self.update_news();
+                                let selected = self.settings_tab == tab;
+                                let item = widgets::nav_item(
+                                    ui,
+                                    Some(tab.art()),
+                                    tab.label(),
+                                    selected,
+                                    false,
+                                    news.then_some(1),
+                                );
+                                if selected {
+                                    chosen = Some((i, item.rect));
+                                }
+                                if item.clicked() {
+                                    self.settings_tab = tab;
+                                }
+                            }
+                            chosen
+                        });
+                        // Keep help outside the preferences pages and visible while they scroll.
+                        ui.add_space((ui.available_height() - 58.0).max(12.0));
+                        ui.separator();
+                        if ui
+                            .add_sized(
+                                [SETTINGS_NAV_WIDTH, 44.0],
+                                egui::Button::new(icons::label(icons::INFO, tr("welcome.reopen")))
+                                    .frame(false)
+                                    .wrap(),
+                            )
+                            .clicked()
+                        {
+                            self.show_settings = false;
+                            self.welcome_step = Some(0);
                         }
-                        if item.clicked() {
-                            self.settings_tab = tab;
-                        }
-                    }
-                    chosen
-                });
-                // Keep help outside the preferences pages and visible while they scroll.
-                ui.add_space((ui.available_height() - 58.0).max(12.0));
-                ui.separator();
-                if ui
-                    .add_sized(
-                        [SETTINGS_NAV_WIDTH, 44.0],
-                        egui::Button::new(icons::label(icons::INFO, tr("welcome.reopen")))
-                            .frame(false)
-                            .wrap(),
-                    )
-                    .clicked()
-                {
-                    self.show_settings = false;
-                    self.welcome_step = Some(0);
-                }
+                    });
             });
             ui.add_space(12.0);
             let right_width = ui.available_width();
             dir::vertical(ui, |ui| {
                 ui.set_width(right_width);
                 ui.set_max_width(right_width);
-                // Each section fades and rises in.
-                let tab = self.settings_tab as u8;
-                widgets::navigation(ui, "settings", 0, tab.into(), tab, |ui, _| {
-                    theme::page_scroll()
-                        .id_salt(("settings_page", tab))
-                        .auto_shrink([false; 2])
-                        .show(ui, |ui| {
-                            ui.add_space(4.0);
-                            self.settings_page(ui, ctx);
-                            ui.add_space(8.0);
-                        });
-                });
+                self.settings_page_area(ui, ctx);
             });
+        });
+    }
+
+    fn settings_page_area(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Each section fades and rises in.
+        let tab = self.settings_tab as u8;
+        widgets::navigation(ui, "settings", 0, tab.into(), tab, |ui, _| {
+            theme::page_scroll()
+                .id_salt(("settings_page", tab))
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.add_space(4.0);
+                    self.settings_page(ui, ctx);
+                    ui.add_space(8.0);
+                });
         });
     }
 
@@ -5253,7 +5307,7 @@ fn step_panel(
 ) {
     let margin = 14;
     // The frame's margin and stroke on both sides.
-    let inner = size - egui::Vec2::splat(f32::from(margin) * 2.0 + 2.0);
+    let inner = (size - egui::Vec2::splat(f32::from(margin) * 2.0 + 2.0)).max(egui::Vec2::ZERO);
     ui.allocate_ui_with_layout(size, dir::column(), |ui| {
         card_frame(ui)
             .inner_margin(Margin::same(margin))

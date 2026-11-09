@@ -226,6 +226,19 @@ mod tests {
         assert_eq!(ru.get("language.name").map(String::as_str), Some("Русский"));
     }
 
+    #[test]
+    fn collage_translations_cover_all_languages() {
+        let en = &catalogs()[FALLBACK];
+        for ((code, _), map) in LOCALES.iter().zip(catalogs()).skip(1) {
+            for key in en.keys().filter(|key| {
+                key.starts_with("collage.")
+                    || matches!(key.as_str(), "join.grid2" | "join.grid3" | "join.featured")
+            }) {
+                assert!(map.contains_key(key), "{code}: missing {key}");
+            }
+        }
+    }
+
     /// Translations may lag behind, but must not invent keys or drop placeholders.
     #[test]
     fn translations_match_english_keys_and_placeholders() {
