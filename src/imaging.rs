@@ -1205,7 +1205,6 @@ mod security_tests {
 /// profiles are passed to the encoder. Apply EXIF orientation before discarding it.
 /// Only still JPEG, PNG, WebP and BMP files are accepted; no external fallback.
 pub fn remove_metadata(input: &Path, output: &Path) -> Result<(), ImageError> {
-    use image::ImageDecoder;
     use std::io::BufReader;
     let unsupported = || ImageError::Encode(crate::i18n::tr("photo.static_only").into());
     let metadata = std::fs::metadata(input)?;
@@ -1238,12 +1237,34 @@ pub fn remove_metadata(input: &Path, output: &Path) -> Result<(), ImageError> {
         image::ImageFormat::Jpeg | image::ImageFormat::Bmp => {}
         _ => return Err(unsupported()),
     }
-    reader.limits(limits);
-    let mut decoder = reader.into_decoder()?;
+    reader.limits(limits.clone());
+    let image = decode_metadata_image(reader.into_decoder()?, limits)?;
+    write_image(&image, output, ImageFormat::Png, &Options::default(), None)
+}
+
+fn decode_metadata_image(
+    mut decoder: impl image::ImageDecoder,
+    mut limits: image::Limits,
+) -> Result<DynamicImage, ImageError> {
+    use image::metadata::Orientation;
     let orientation = decoder.orientation()?;
+    let output_bytes = decoder.total_bytes();
+    // Match ImageReader::decode: output and decoder buffers share one budget.
+    limits.reserve(output_bytes)?;
+    // Quarter turns allocate a second pixel buffer; the other transforms are in place.
+    if matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    ) {
+        limits.reserve(output_bytes)?;
+    }
+    decoder.set_limits(limits)?;
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
-    write_image(&image, output, ImageFormat::Png, &Options::default(), None)
+    Ok(image)
 }
 
 #[cfg(test)]
@@ -1343,6 +1364,49 @@ mod privacy_tests {
                 let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
                 assert!([b"IHDR".as_slice(), b"IDAT", b"IEND"].contains(&&png[at + 4..at + 8]));
                 at += len + 12;
+            }
+        }
+    }
+
+    #[test]
+    fn privacy_decode_accounts_for_pixels_and_orientation_copy() {
+        // A small compressed PNG exercises the same accounting without large allocations.
+        let pixels = image::RgbImage::new(32, 16);
+        for exif_orientation in 1..=8 {
+            let mut exif = private_exif();
+            exif[18..20].copy_from_slice(&(exif_orientation as u16).to_le_bytes());
+            let mut png = Vec::new();
+            let mut encoder = image::codecs::png::PngEncoder::new(&mut png);
+            encoder.set_exif_metadata(exif).unwrap();
+            encoder
+                .write_image(pixels.as_raw(), 32, 16, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            let output_bytes = 32 * 16 * 3;
+            for budget in [output_bytes - 1, output_bytes, output_bytes * 2] {
+                let mut limits = image::Limits::default();
+                limits.max_alloc = Some(budget);
+                let decoder =
+                    ImageReader::with_format(std::io::Cursor::new(&png), image::ImageFormat::Png)
+                        .into_decoder()
+                        .unwrap();
+                let result = decode_metadata_image(decoder, limits);
+                let required = output_bytes * if exif_orientation >= 5 { 2 } else { 1 };
+                if budget < required {
+                    assert!(matches!(
+                        result,
+                        Err(ImageError::Codec(image::ImageError::Limits(_)))
+                    ));
+                } else {
+                    let image = result.unwrap();
+                    assert_eq!(
+                        (image.width(), image.height()),
+                        if exif_orientation >= 5 {
+                            (16, 32)
+                        } else {
+                            (32, 16)
+                        }
+                    );
+                }
             }
         }
     }
