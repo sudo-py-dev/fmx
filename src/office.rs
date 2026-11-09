@@ -20,6 +20,8 @@ const MAX_PART_BYTES: u64 = 64 << 20;
 const MAX_TEXT_BYTES: u64 = 32 << 20;
 /// Spreadsheet rows rendered per sheet.
 const MAX_SHEET_ROWS: usize = 5_000;
+/// Maximum dense area and number of stored cells per streamed worksheet.
+const MAX_SHEET_CELLS: usize = 1_000_000;
 
 #[derive(Debug)]
 pub enum OfficeError {
@@ -444,7 +446,10 @@ fn spreadsheet_blocks(path: &Path) -> Result<Vec<Block>, OfficeError> {
     let mut workbook = open_workbook_auto(path).map_err(corrupt)?;
     let mut blocks = Vec::new();
     for name in workbook.sheet_names() {
-        let range = workbook.worksheet_range(&name).map_err(corrupt)?;
+        let range = match &mut workbook {
+            calamine::Sheets::Xlsx(xlsx) => bounded_xlsx_range(xlsx, &name)?,
+            _ => workbook.worksheet_range(&name).map_err(corrupt)?,
+        };
         let rows: Vec<Vec<String>> = range
             .rows()
             .take(MAX_SHEET_ROWS)
@@ -468,6 +473,47 @@ fn spreadsheet_blocks(path: &Path) -> Result<Vec<Block>, OfficeError> {
         }
     }
     Ok(blocks)
+}
+
+/// Check actual cells before Calamine allocates their bounding rectangle.
+/// Declared XML dimensions can be missing or false, so never use them as a guard.
+fn bounded_xlsx_range(
+    workbook: &mut calamine::Xlsx<std::io::BufReader<File>>,
+    name: &str,
+) -> Result<calamine::Range<calamine::Data>, OfficeError> {
+    use calamine::{Cell, Data, DataRef, Range, XlsxError};
+
+    let mut reader = match workbook.worksheet_cells_reader(name) {
+        Ok(reader) => reader,
+        // Match Calamine's handling of chart sheets.
+        Err(XlsxError::NotAWorksheet(_)) => return Ok(Range::empty()),
+        Err(e) => return Err(corrupt(e)),
+    };
+    let mut cells = Vec::new();
+    let (mut min_row, mut min_col) = (u32::MAX, u32::MAX);
+    let (mut max_row, mut max_col) = (0, 0);
+    while let Some(cell) = reader.next_cell().map_err(corrupt)? {
+        if matches!(cell.get_value(), DataRef::Empty) {
+            continue;
+        }
+        let (row, col) = cell.get_position();
+        min_row = min_row.min(row);
+        min_col = min_col.min(col);
+        max_row = max_row.max(row);
+        max_col = max_col.max(col);
+        // Widen before arithmetic, including on 32-bit targets.
+        let height = u64::from(max_row) - u64::from(min_row) + 1;
+        let width = u64::from(max_col) - u64::from(min_col) + 1;
+        if height > MAX_SHEET_CELLS as u64
+            || width > MAX_SHEET_CELLS as u64
+            || height * width > MAX_SHEET_CELLS as u64
+            || cells.len() >= MAX_SHEET_CELLS
+        {
+            return Err(corrupt("Spreadsheet exceeds the cell allocation limit"));
+        }
+        cells.push(Cell::new((row, col), Data::from(cell.get_value().clone())));
+    }
+    Ok(Range::from_sparse(cells))
 }
 
 /// Paragraphs separated by blank lines; single newlines are kept.
@@ -840,6 +886,93 @@ pub fn text_pages(text: &str) -> Vec<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spreadsheet_fixture(xml: &str, ext: &str) -> tempfile::NamedTempFile {
+        let file = tempfile::Builder::new().suffix(ext).tempfile().unwrap();
+        let mut zip = zip::ZipWriter::new(file.reopen().unwrap());
+        for (name, content) in [
+            (
+                "_rels/.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            ("xl/worksheets/sheet1.xml", xml),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        file
+    }
+
+    #[test]
+    fn spreadsheet_rejects_sparse_area_before_allocation() {
+        // The dimension is deliberately false (or absent); only actual cells count.
+        for dimension in ["", r#"<dimension ref="A1"/>"#] {
+            for cells in [
+                r#"<c r="A1"><v>1</v></c><c r="XFD1048576"><v>2</v></c>"#,
+                r#"<c r="XFD1048576"><v>2</v></c><c r="A1"><v>1</v></c>"#,
+                r#"<c r="A1"><v>1</v></c><c r="GS5000"><v>2</v></c>"#,
+            ] {
+                for ext in [".xlsx", ".xlsm"] {
+                    let xml = format!(
+                        "<worksheet>{dimension}<sheetData><row>{cells}</row></sheetData></worksheet>"
+                    );
+                    let file = spreadsheet_fixture(&xml, ext);
+                    let error = read_document(file.path()).unwrap_err();
+                    assert!(
+                        matches!(error, OfficeError::Corrupt(ref s) if s.contains("cell allocation limit")),
+                        "{error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spreadsheet_preserves_offsets_gaps_and_values() {
+        let file = spreadsheet_fixture(
+            r#"<worksheet><dimension ref="A1:XFD1048576"/><sheetData>
+            <row r="3"><c r="C3"><v>42</v></c><c r="E3" t="inlineStr"><is><t>hello</t></is></c></row>
+            <row r="5"><c r="D5"><v>1.5</v></c></row>
+            </sheetData></worksheet>"#,
+            ".xlsx",
+        );
+        assert_eq!(
+            read_document(file.path()).unwrap(),
+            vec![
+                Block::Heading(2, "Sheet".into()),
+                Block::Table(vec![
+                    vec!["42".into(), "".into(), "hello".into()],
+                    vec!["".into(), "1.5".into(), "".into()],
+                ]),
+            ]
+        );
+    }
+
+    #[test]
+    fn spreadsheet_keeps_rendered_row_limit() {
+        let file = spreadsheet_fixture(
+            r#"<worksheet><sheetData><row><c r="A1"><v>1</v></c></row>
+            <row><c r="A5001"><v>2</v></c></row></sheetData></worksheet>"#,
+            ".xlsx",
+        );
+        assert_eq!(
+            read_document(file.path()).unwrap(),
+            vec![
+                Block::Heading(2, "Sheet".into()),
+                Block::Table(vec![vec!["1".into()]]),
+            ]
+        );
+    }
 
     const DOCX_XML: &str = r#"<w:document xmlns:w="w"><w:body>
 <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title &amp; more</w:t></w:r></w:p>
