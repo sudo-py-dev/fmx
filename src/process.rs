@@ -393,18 +393,27 @@ mod tests {
     }
 
     #[test]
-    fn child_address_space_is_limited_before_exec() {
+    fn child_address_space_is_limited_before_exec_or_launch_is_refused() {
         let mut lines = Vec::new();
-        run_limited(
+        let result = run_limited(
             Path::new("/bin/sh"),
             &sh("ulimit -v"),
             StopMode::Kill,
             Some(128 * 1024 * 1024),
             &AtomicBool::new(false),
             |line| lines.push(line.to_owned()),
-        )
-        .unwrap();
-        assert!(lines[0].parse::<usize>().unwrap() <= 128 * 1024);
+        );
+        match result {
+            Ok(()) => assert!(lines[0].parse::<usize>().unwrap() <= 128 * 1024),
+            // Darwin refuses to lower RLIMIT_AS below the forked process's
+            // current VM size (before exec replaces the parent's mappings).
+            // Refusing launch preserves the memory limit: never retry uncapped.
+            #[cfg(target_os = "macos")]
+            Err(RunError::Spawn(_, error)) if error.raw_os_error() == Some(libc::EINVAL) => {
+                assert!(lines.is_empty());
+            }
+            other => panic!("unexpected limited launch result: {other:?}"),
+        }
     }
 
     #[test]
