@@ -102,6 +102,15 @@ fn renderer() -> eframe::Renderer {
 
 fn main() {
     let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if args.first().is_some_and(|a| a == "--install-deb-update") {
+        let result = update::install_deb_update(&args);
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let restarting = take_flag(&mut args, "--restart-after-update");
     let debug = take_flag(&mut args, DEBUG_FLAG);
     let self_test = take_flag(&mut args, SELF_TEST_FLAG);

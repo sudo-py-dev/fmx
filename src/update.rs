@@ -395,6 +395,10 @@ pub fn download(
     )?;
     let target = dir.join(&release.asset);
     tmp.persist(&target).map_err(|e| UpdateError::Io(e.error))?;
+    if release.kind == InstallKind::Deb {
+        // Untrusted until the elevated installer verifies its protected copy.
+        std::fs::write(target.with_extension("deb.minisig"), signature_text)?;
+    }
     Ok(target)
 }
 
@@ -431,7 +435,7 @@ pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError>
             Ok(Installed::FinishInInstaller)
         }
         InstallKind::Deb => {
-            install_deb(file)?;
+            install_deb(release, file)?;
             Ok(Installed::Restart)
         }
         InstallKind::LinuxPortable => {
@@ -445,9 +449,11 @@ pub fn install(release: &Release, file: &Path) -> Result<Installed, UpdateError>
 /// Installs a verified `.deb` over the current one, asking for the password
 /// through the desktop's own prompt. Blocks until the package manager is done,
 /// so callers run it off the UI thread.
-fn install_deb(file: &Path) -> Result<(), UpdateError> {
-    let status = std::process::Command::new("pkexec")
-        .args(["apt-get", "install", "-y", "--allow-downgrades"])
+fn install_deb(release: &Release, file: &Path) -> Result<(), UpdateError> {
+    let status = std::process::Command::new("/usr/bin/pkexec")
+        // Always elevate the system-installed binary, never a user-controlled executable.
+        .args(["/usr/bin/fmx", "--install-deb-update"])
+        .arg(release.version.to_string())
         .arg(file)
         .stdin(std::process::Stdio::null())
         .status()?;
@@ -457,6 +463,78 @@ fn install_deb(file: &Path) -> Result<(), UpdateError> {
         tracing::info!(%status, "package manager did not install the update");
         Err(UpdateError::NotInstalled)
     }
+}
+
+/// Handles the privileged entry point before logging, settings or GUI startup.
+#[cfg(target_os = "linux")]
+pub fn install_deb_update(args: &[std::ffi::OsString]) -> Result<(), UpdateError> {
+    if args.len() != 3 || unsafe { libc::geteuid() } != 0 {
+        return Err(UpdateError::Unsupported);
+    }
+    let version = args[1]
+        .to_str()
+        .and_then(Version::parse)
+        .filter(|v| *v > Version::current())
+        .ok_or(UpdateError::BadRelease)?;
+    let file = Path::new(&args[2]);
+    let mut text = String::new();
+    std::fs::File::open(file.with_extension("deb.minisig"))?
+        .take(MAX_SIGNATURE_BYTES + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > MAX_SIGNATURE_BYTES {
+        return Err(UpdateError::TooLarge);
+    }
+    let asset = InstallKind::Deb.asset_name(version);
+    let key = release_key()?;
+    let signature = checked_signature(&text, &key, &trusted_comment(version, &asset))?;
+    // Explicit system location: never honor TMPDIR from the invoking user.
+    // The directory is explicitly created with mode 0700 and owned by root.
+    let dir = protected_update_dir()?;
+    let protected = dir.path().join(asset);
+    copy_verified_package(file, &protected, &key, &signature)?;
+    // Only these verified bytes are reachable by apt, including after its child
+    // processes start. The source pathname is never passed to the package manager.
+    let status = std::process::Command::new("/usr/bin/apt-get")
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .current_dir("/")
+        .args(["install", "-y"])
+        .arg(&protected)
+        .stdin(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(UpdateError::NotInstalled)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn protected_update_dir() -> Result<tempfile::TempDir, UpdateError> {
+    use std::os::unix::fs::PermissionsExt;
+    Ok(tempfile::Builder::new()
+        .prefix("fmx-update-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in("/var/tmp")?)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_verified_package(
+    source: &Path,
+    protected: &Path,
+    key: &PublicKey,
+    signature: &Signature,
+) -> Result<(), UpdateError> {
+    let mut dest = std::fs::File::create_new(protected)?;
+    download_signed(
+        std::fs::File::open(source)?,
+        &mut dest,
+        key,
+        signature,
+        MAX_PACKAGE_BYTES,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )
 }
 
 /// Where an archive entry goes: the program itself (top level or inside the
@@ -651,6 +729,33 @@ mod tests {
         // A signature from a different key is refused even with the right comment.
         let release = release_key().expect("release key");
         assert!(checked_signature(TEST_SIGNATURE, &release, TEST_COMMENT).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn protected_package_rejects_replacement_and_survives_source_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = protected_update_dir().expect("protected directory");
+        assert_eq!(
+            dir.path().metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("update.deb");
+        let protected = dir.path().join("update.deb");
+        let key = PublicKey::decode(TEST_KEY).unwrap();
+        let signature = checked_signature(TEST_SIGNATURE, &key, TEST_COMMENT).unwrap();
+        std::fs::write(&source, b"replacement before elevation").unwrap();
+        assert!(matches!(
+            copy_verified_package(&source, &protected, &key, &signature),
+            Err(UpdateError::Signature)
+        ));
+        std::fs::remove_file(&protected).unwrap();
+        std::fs::write(&source, TEST_PAYLOAD).unwrap();
+        copy_verified_package(&source, &protected, &key, &signature).unwrap();
+        std::fs::remove_file(&source).unwrap();
+        std::fs::write(&source, b"replacement after verification").unwrap();
+        assert_eq!(std::fs::read(&protected).unwrap(), TEST_PAYLOAD);
     }
 
     fn archive_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
