@@ -16,6 +16,8 @@ use crate::pdfgen::{Block, Span};
 
 /// Largest XML part read from a document package (guards against zip bombs).
 const MAX_PART_BYTES: u64 = 64 << 20;
+/// Cumulative decompressed slide XML retained as text in a presentation.
+const MAX_PPTX_CONTENT_BYTES: usize = 128 << 20;
 /// Largest plain-text input read whole.
 const MAX_TEXT_BYTES: u64 = 32 << 20;
 /// Bound nested DOCX table state and total bytes copied while flattening tables.
@@ -411,6 +413,10 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
 
 /// One page per slide; the first text box becomes the slide's heading.
 fn pptx_blocks(path: &Path) -> Result<Vec<Block>, OfficeError> {
+    pptx_blocks_with_limit(path, MAX_PPTX_CONTENT_BYTES)
+}
+
+fn pptx_blocks_with_limit(path: &Path, mut remaining: usize) -> Result<Vec<Block>, OfficeError> {
     let mut archive = zip::ZipArchive::new(File::open(path)?).map_err(corrupt)?;
     let mut slides: Vec<(u32, String)> = archive
         .file_names()
@@ -427,8 +433,13 @@ fn pptx_blocks(path: &Path) -> Result<Vec<Block>, OfficeError> {
         archive
             .by_name(name)
             .map_err(corrupt)?
-            .take(MAX_PART_BYTES)
+            // Read one extra byte to detect exhaustion without decompressing an
+            // entire additional slide. Keep the existing per-part limit.
+            .take(MAX_PART_BYTES.min(remaining as u64 + 1))
             .read_to_string(&mut xml)?;
+        remaining = remaining
+            .checked_sub(xml.len())
+            .ok_or_else(|| corrupt("PPTX decoded content limit exceeded"))?;
         if i > 0 {
             blocks.push(Block::PageBreak);
         }
@@ -917,6 +928,39 @@ pub fn text_pages(text: &str) -> Vec<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pptx_content_budget_counts_all_slides() {
+        let file = tempfile::Builder::new().suffix(".pptx").tempfile().unwrap();
+        let slide = "<p><t>Hello</t></p>";
+        let mut zip = zip::ZipWriter::new(file.reopen().unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for number in [2, 1] {
+            zip.start_file(format!("ppt/slides/slide{number}.xml"), options)
+                .unwrap();
+            zip.write_all(slide.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let expected = vec![
+            Block::Heading(2, "Hello".into()),
+            Block::PageBreak,
+            Block::Heading(2, "Hello".into()),
+        ];
+        assert_eq!(read_document(file.path()).unwrap(), expected);
+        assert_eq!(
+            pptx_blocks_with_limit(file.path(), slide.len() * 2).unwrap(),
+            expected
+        );
+        for budget in [0, slide.len(), slide.len() * 2 - 1] {
+            assert!(matches!(
+                pptx_blocks_with_limit(file.path(), budget),
+                Err(OfficeError::Corrupt(message))
+                    if message == "PPTX decoded content limit exceeded"
+            ));
+        }
+    }
 
     fn spreadsheet_fixture(xml: &str, ext: &str) -> tempfile::NamedTempFile {
         let file = tempfile::Builder::new().suffix(ext).tempfile().unwrap();
