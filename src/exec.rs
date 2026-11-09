@@ -1958,7 +1958,9 @@ mod e2e {
                 assert!(
                     sound
                         .stdout
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .any(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs() > 100)
                 );
             }
