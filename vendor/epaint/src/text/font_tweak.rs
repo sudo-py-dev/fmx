@@ -86,7 +86,7 @@ impl Default for FontTweak {
 /// makes text crisp at small sizes / low dpi, at the cost of slightly distorting
 /// the designer's outlines. At high dpi it matters little.
 ///
-/// This only has an effect if the font is actually hinted — either it ships
+/// This only has an effect if the font is actually hinted - either it ships
 /// TrueType instructions, or it was auto-hinted (see [`FontTweak::hinting`]).
 ///
 /// Used by [`FontTweak::hinting_target`].
@@ -160,7 +160,7 @@ pub struct SmoothHinting {
     /// in a way that changes spacing).
     ///
     /// `true` keeps inter-glyph spacing identical to the unhinted font, so
-    /// layout never depends on hinting — but it also prevents horizontal
+    /// layout never depends on hinting - but it also prevents horizontal
     /// grid-fitting, leaving vertical stems softer on low-dpi screens.
     ///
     /// `false` lets the (auto)hinter snap horizontally for crisper stems.

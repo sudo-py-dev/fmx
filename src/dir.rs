@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn mixed_text_stays_on_the_pixel_grid() {
         let rows = layout(
-            "\u{200F}ספרים (EPUB, FB2) ל-PDF או TXT — מובנה",
+            "\u{200F}ספרים (EPUB, FB2) ל-PDF או TXT - מובנה",
             f32::INFINITY,
         );
         for (c, x) in &rows[0] {

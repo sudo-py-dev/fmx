@@ -60,7 +60,7 @@ pub enum CompletionSound {
     Victory,
     /// A user-supplied audio file (see `sound::CUSTOM_EXTENSIONS`).
     Custom(PathBuf),
-    /// Silent — do not play anything.
+    /// Silent - do not play anything.
     Off,
 }
 

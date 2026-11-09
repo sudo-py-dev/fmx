@@ -126,7 +126,7 @@ Turn auto-check off, or hit **Check now**, in **Settings → Updates**.
 
 ## 🚀 Making a release
 
-1. Bump `version` in `Cargo.toml` (the only place — installers and the updater read it from there).
+1. Bump `version` in `Cargo.toml` (the only place - installers and the updater read it from there).
 2. Rewrite the **What's new** section at the top of `packaging/release-notes.md` for this
    release. It becomes the release's notes on GitHub, and FMX shows it in
    **Settings → Updates** before people update.

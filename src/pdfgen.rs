@@ -609,7 +609,7 @@ mod tests {
                     bold: true,
                     italic: false,
                 },
-                Span::plain(" region — including Zürich and Москва."),
+                Span::plain(" region - including Zürich and Москва."),
             ]),
             Block::ListItem(vec![Span::plain("First point")]),
             Block::Table(vec![

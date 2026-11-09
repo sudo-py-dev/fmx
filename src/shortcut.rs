@@ -35,7 +35,7 @@ pub fn create(tool: Tool) -> io::Result<PathBuf> {
     let exe = launch_exe()?;
     let id = tool_id(tool);
     let name = format!(
-        "FMX — {} ({})",
+        "FMX - {} ({})",
         tool.label().replace(['\n', '\r', '\u{200f}'], ""),
         tool.category()
             .label()
@@ -176,7 +176,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let id = tool_id(Tool::RecordAudio);
         let exe = Path::new("/opt/my app/fmx");
-        let path = write_launcher(dir.path(), exe, &id, "FMX — Record audio").unwrap();
+        let path = write_launcher(dir.path(), exe, &id, "FMX - Record audio").unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains(&format!("Exec=\"/opt/my app/fmx\" --tool {id}\n")));
         assert!(contents.contains("Terminal=false\n"));
@@ -185,7 +185,7 @@ mod tests {
             0o755
         );
         assert_eq!(
-            write_launcher(dir.path(), exe, &id, "FMX — Record audio").unwrap(),
+            write_launcher(dir.path(), exe, &id, "FMX - Record audio").unwrap(),
             path
         );
     }

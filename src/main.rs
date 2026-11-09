@@ -1,4 +1,4 @@
-//! FMX — a lightweight, fast media converter.
+//! FMX - a lightweight, fast media converter.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

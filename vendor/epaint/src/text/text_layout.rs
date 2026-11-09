@@ -238,7 +238,7 @@ struct TextRun {
 ///
 /// When a cluster maps multiple characters to fewer glyphs (e.g. flag emojis,
 /// ligatures), zero-width "continuation" glyphs are emitted for the extra
-/// characters so that `glyphs.len() == char_count` — an invariant that all
+/// characters so that `glyphs.len() == char_count` - an invariant that all
 /// cursor and selection code relies on.
 fn layout_shaped_run(
     fonts: &mut FontsImpl,
@@ -251,7 +251,7 @@ fn layout_shaped_run(
 ) {
     let px_scale = face_metrics.px_scale_factor;
 
-    // Reset cluster tracking — cluster values are byte offsets within run_text,
+    // Reset cluster tracking - cluster values are byte offsets within run_text,
     // so they are not comparable across runs.
     ctx.prev_cluster = None;
 
@@ -272,7 +272,7 @@ fn layout_shaped_run(
             .and_then(|s| s.chars().next())
             .unwrap_or('\u{FFFD}'); // Unicode Replacement Character
 
-        // Tab is a layout concept, not a glyph — the shaper doesn't know about tab stops.
+        // Tab is a layout concept, not a glyph - the shaper doesn't know about tab stops.
         // Override the advance width using the font's configured tab size.
         if chr == '\t' {
             let tweak = fonts.face(run.font_key).map(|face| face.tweak());
@@ -388,7 +388,7 @@ fn layout_shaped_run(
                 },
             );
 
-            // Apply shaper y_offset — this varies per glyph instance so it
+            // Apply shaper y_offset - this varies per glyph instance so it
             // is not part of the cached ShapedGlyph / GlyphAllocation.
             glyph_alloc.uv_rect.offset.y += y_offset_px / ctx.pixels_per_point;
 
@@ -571,7 +571,7 @@ fn layout_section(
     };
     let mut runs = Vec::new();
 
-    // Process each paragraph segment (split on newlines — the shaper can't handle them).
+    // Process each paragraph segment (split on newlines - the shaper can't handle them).
     for (seg_idx, segment) in SplitOrWhole::new(section_text, job.break_on_newline).enumerate() {
         if 0 < seg_idx {
             paragraph = out_paragraphs.push_mut(Paragraph::from_section_index(section_index));
@@ -2462,7 +2462,7 @@ mod tests {
     fn test_combining_diacritics() {
         // ɔ̃ = U+0254 (LATIN SMALL LETTER OPEN O) + U+0303 (COMBINING TILDE)
         // With text shaping, the combining tilde should NOT produce a separate
-        // advance — it should be positioned above ɔ via GPOS anchors.
+        // advance - it should be positioned above ɔ via GPOS anchors.
         // Note: the default fonts don't contain U+0254, so the `.notdef` glyph
         // is used. The key test is that the combining mark does NOT add extra width.
         let pixels_per_point = 1.0;

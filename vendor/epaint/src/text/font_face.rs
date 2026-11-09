@@ -330,7 +330,7 @@ pub struct FontFace {
     subpixel_binning: bool,
 
     /// Cached `harfrust` shaper data (parsed GSUB/GPOS tables).
-    /// `ShaperData` is `Copy` — lives outside the `self_cell`.
+    /// `ShaperData` is `Copy` - lives outside the `self_cell`.
     shaper_data: harfrust::ShaperData,
 
     /// Location-independent: `char → GlyphId | Invisible`.

@@ -419,7 +419,7 @@ fn parse_fb2(xml: &str) -> Result<Book, OfficeError> {
                 "title" if st.in_heading => {
                     st.end_paragraph();
                     st.in_heading = false;
-                    let heading = std::mem::take(&mut st.heading).join(" — ");
+                    let heading = std::mem::take(&mut st.heading).join(" - ");
                     if !heading.is_empty() {
                         let level = st.depth.clamp(1, 4) as u8;
                         st.blocks.push(Block::Heading(level, heading));
