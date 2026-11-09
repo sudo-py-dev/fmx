@@ -25,6 +25,8 @@ const VERSION: u8 = 1;
 const PLAIN_FLAG: u32 = 0x8000_0000;
 /// Blocks compressed in parallel per batch (8 MiB of input).
 const BATCH_BLOCKS: usize = 4096;
+/// Maximum decoded bytes retained per decompression batch.
+const DECODE_BATCH_BYTES: usize = 8 << 20;
 /// Largest block size we accept when reading foreign files.
 const MAX_BLOCK_SIZE: u32 = 1 << 20;
 
@@ -223,24 +225,24 @@ pub fn decompress(
     }
     let offset = |entry: u32| u64::from(entry & !PLAIN_FLAG) << header.align;
     let block_size = header.block_size as usize;
+    let batch_blocks = (DECODE_BATCH_BYTES / block_size).clamp(1, BATCH_BLOCKS);
 
     let dir = output.parent().unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     {
         let mut out = BufWriter::new(tmp.as_file_mut());
         let mut position = reader.stream_position()?;
-        for (batch_no, window) in index
-            .windows(2)
-            .collect::<Vec<_>>()
-            .chunks(BATCH_BLOCKS)
-            .enumerate()
-        {
+        for first in (0..index.len() - 1).step_by(batch_blocks) {
             if cancel.load(Ordering::Relaxed) {
                 return Err(CsoError::Cancelled);
             }
-            let first = batch_no * BATCH_BLOCKS;
-            let mut raw_blocks = Vec::with_capacity(window.len());
-            for pair in window {
+            let end = (first + batch_blocks).min(index.len() - 1);
+            let window = &index[first..=end];
+            let mut raw_blocks = Vec::with_capacity(window.len() - 1);
+            for pair in window.windows(2) {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(CsoError::Cancelled);
+                }
                 let (start, end) = (offset(pair[0]), offset(pair[1]));
                 if end < start
                     || end > file_len
@@ -259,6 +261,9 @@ pub fn decompress(
                 .par_iter()
                 .enumerate()
                 .map(|(i, (data, plain))| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(CsoError::Cancelled);
+                    }
                     let block_no = (first + i) as u64;
                     let want = (header.total - block_no * u64::from(header.block_size))
                         .min(header.block_size as u64) as usize;
@@ -278,9 +283,12 @@ pub fn decompress(
                 })
                 .collect();
             for block in expanded {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(CsoError::Cancelled);
+                }
                 out.write_all(&block?)?;
             }
-            on_progress(((first + window.len()) as f32 / blocks.max(1) as f32).min(1.0));
+            on_progress((end as f32 / blocks.max(1) as f32).min(1.0));
         }
         out.flush()?;
     }
@@ -384,6 +392,61 @@ mod tests {
             ));
             assert!(!output.exists());
         }
+    }
+
+    #[test]
+    fn foreign_large_blocks_are_batched_and_cancellable() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("large.cso");
+        let output = dir.path().join("large.iso");
+        let size = MAX_BLOCK_SIZE as usize;
+        let blocks = DECODE_BATCH_BYTES / size + 1;
+        let total = (blocks - 1) * size + 123;
+        let mut file = File::create(&input).unwrap();
+        file.write_all(MAGIC).unwrap();
+        file.write_all(&HEADER_SIZE.to_le_bytes()).unwrap();
+        file.write_all(&(total as u64).to_le_bytes()).unwrap();
+        file.write_all(&MAX_BLOCK_SIZE.to_le_bytes()).unwrap();
+        file.write_all(&[VERSION, 0, 0, 0]).unwrap();
+        let mut offset = HEADER_SIZE + (blocks as u32 + 1) * 4;
+        let mut payload = Vec::new();
+        for i in 0..blocks {
+            let data = vec![i as u8; if i == blocks - 1 { 123 } else { size }];
+            let plain = i % 2 == 0;
+            file.write_all(&(offset | if plain { PLAIN_FLAG } else { 0 }).to_le_bytes())
+                .unwrap();
+            let data = if plain {
+                data
+            } else {
+                deflate(&data, 9).unwrap()
+            };
+            offset += data.len() as u32;
+            payload.extend(data);
+        }
+        file.write_all(&offset.to_le_bytes()).unwrap();
+        file.write_all(&payload).unwrap();
+        drop(file);
+
+        let cancel = AtomicBool::new(false);
+        let mut progress = Vec::new();
+        decompress(&input, &output, &cancel, |p| progress.push(p)).unwrap();
+        assert_eq!(
+            progress,
+            vec![(blocks - 1) as f32 / blocks as f32, 1.0, 1.0]
+        );
+        let decoded = std::fs::read(&output).unwrap();
+        assert_eq!(decoded.len(), total);
+        for (i, block) in decoded.chunks(size).enumerate() {
+            assert!(block.iter().all(|&byte| byte == i as u8));
+        }
+
+        std::fs::write(&output, b"existing output").unwrap();
+        let result = decompress(&input, &output, &cancel, |_| {
+            cancel.store(true, Ordering::Relaxed);
+        });
+        assert!(matches!(result, Err(CsoError::Cancelled)));
+        assert_eq!(std::fs::read(&output).unwrap(), b"existing output");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]
