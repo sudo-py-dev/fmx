@@ -2,28 +2,38 @@
 
 <img src="packaging/icons/fmx-128.png" alt="FMX icon" width="80" align="right" />
 
-Convert video, audio, images, documents and discs in one desktop app for Windows,
-macOS and Linux. Pick a format, add your files and let FMX handle the queue.
-FFmpeg and yt-dlp are included for common conversions and video downloads.
+FMX is a free, open-source desktop app for converting video, audio, images,
+documents and discs on Windows, macOS and Linux. Add your files, choose a format
+and let the queue do the work. FFmpeg and yt-dlp are included for common
+conversions and video downloads.
 
-[**Download the latest release**](https://github.com/sudo-py-dev/fmx/releases/latest)
-· [Getting started](#-your-first-conversion)
-· [Build and contribute](DEVELOPMENT.md)
-· [Report a problem](https://github.com/sudo-py-dev/fmx/issues)
+[**Visit the FMX website**](https://fmx-dun.vercel.app/) ·
+[Download the latest release](https://github.com/sudo-py-dev/fmx/releases/latest) ·
+[Getting started](#-your-first-conversion) ·
+[Build and contribute](DEVELOPMENT.md) ·
+[Report a problem](https://github.com/sudo-py-dev/fmx/issues)
 
 [![Release](https://img.shields.io/github/v/release/sudo-py-dev/fmx?style=flat-square&color=3584e4)](https://github.com/sudo-py-dev/fmx/releases/latest)
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](#-license)
 
 ![FMX main window](assets/screenshot.png)
 
-- Queue files or folders and process several jobs in parallel.
-- Use device presets, or adjust output settings and edit before converting.
-- Browse tools grouped by task, search across every category, and pin frequently used tools to Favorites.
-- Clean up recordings, edit music tags and cover art, and remove personal metadata from photos.
-- Convert from the file manager's right-click menu on Windows and Linux.
-- Choose light or dark mode and one of six languages: English, Español, Français,
-  Deutsch, עברית or Русский, with a mirrored layout for Hebrew.
-- Free and open source, with no ads or account required.
+## Highlights
+
+- **Convert in batches:** Queue files or folders and process several jobs in parallel.
+- **Make it yours:** Use device presets or adjust output settings and edit before converting.
+- **Find tools quickly:** Browse by task, search all categories and pin favorites.
+- **Edit and clean up:** Improve recordings, edit music tags and cover art, and remove photo metadata.
+- **Work from your file manager:** Convert using the right-click menu on Windows and Linux.
+- **Choose your look and language:** Use light or dark mode and select English, Español, Français, Deutsch, עברית or Русский. Hebrew uses a mirrored layout.
+- **Get started freely:** No ads or account required.
+
+## Contents
+
+- [Download and install](#-download-and-install) · [Your first conversion](#-your-first-conversion)
+- [Conversion and editing tools](#-conversion-and-editing-tools) · [Video downloader](#-video-downloader) · [Right-click conversion](#%EF%B8%8F-convert-with-a-right-click)
+- [Appearance](#-appearance) · [Updates](#-updates) · [Optional programs](#-optional-programs)
+- [Troubleshooting](#%EF%B8%8F-troubleshooting) · [License](#-license)
 
 ## 📦 Download and install
 
@@ -200,7 +210,9 @@ FMX checks for updates once a day. A blue dot on **Settings** means an update is
 
 You can also check manually or turn off automatic checks on that page.
 
-Every update is digitally signed, so FMX only installs genuine releases from this page.
+Updates are digitally signed, so FMX only installs genuine releases from this page.
+
+<a id="-optional-extras"></a>
 
 ---
 
@@ -219,7 +231,9 @@ requirements are missing; supported codecs also depend on the FFmpeg build.
 | Convert old `.doc` / `.ppt` files | LibreOffice |
 | Create APE audio files | Monkey’s Audio |
 
-You can check what's installed in **Settings → Programs**.
+Open **Settings → Programs** to see which programs FMX detects.
+
+<a id="-something-went-wrong"></a>
 
 ---
 
