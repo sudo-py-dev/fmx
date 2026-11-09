@@ -207,23 +207,16 @@ pub fn run(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(f32),
 ) -> Result<(), RunError> {
-    process::run_limited(
-        ffmpeg,
-        &plan.args,
-        plan.stop,
-        plan.memory_limit,
-        cancel,
-        |line| {
-            // The clock stops just short of the full length; the end marker means done.
-            if line == "progress=end" {
-                on_progress(1.0);
-            } else if let (Some(done), Some(total)) = (progress_seconds(line), plan.expected_secs)
-                && total > 0.0
-            {
-                on_progress((done / total).clamp(0.0, 1.0) as f32);
-            }
-        },
-    )
+    process::run(ffmpeg, &plan.args, plan.stop, cancel, |line| {
+        // The clock stops just short of the full length; the end marker means done.
+        if line == "progress=end" {
+            on_progress(1.0);
+        } else if let (Some(done), Some(total)) = (progress_seconds(line), plan.expected_secs)
+            && total > 0.0
+        {
+            on_progress((done / total).clamp(0.0, 1.0) as f32);
+        }
+    })
 }
 
 #[cfg(test)]

@@ -865,50 +865,6 @@ mod e2e {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn reversal_rejects_compressed_audio_exceeding_memory_budget() {
-        let Some(tb) = toolbox() else { return };
-        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("constant.flac");
-        let status = Command::new(ffmpeg)
-            .args([
-                "-v",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "aevalsrc=0.25|0.25:s=192000:d=1800",
-                "-c:a",
-                "flac",
-            ])
-            .arg(&source)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        assert!(std::fs::metadata(&source).unwrap().len() < 10 * 1024 * 1024);
-        for tool in [Tool::Reverse, Tool::TrimSilence] {
-            let output = dir.path().join(format!("{tool:?}.mkv"));
-            let input = Input {
-                path: source.clone(),
-                // Deliberately false metadata: the runtime limit must still work.
-                info: crate::probe::MediaInfo {
-                    has_audio: true,
-                    duration_s: Some(0.01),
-                    ..Default::default()
-                },
-            };
-            let plan = plan::build(tool, &[input], &output, &Options::default()).unwrap();
-            let started = Instant::now();
-            let result = ffmpeg::run(ffmpeg, &plan, &AtomicBool::new(false), |_| {});
-            assert!(
-                matches!(result, Err(RunError::Failed { .. })),
-                "{tool:?}: {result:?}"
-            );
-            assert!(started.elapsed() < Duration::from_secs(30));
-        }
-    }
-
-    #[test]
     fn media_tools_execute_with_valid_streams_and_metadata() {
         let Some(tb) = toolbox() else { return };
         let ffmpeg = tb.get(External::Ffmpeg).unwrap();

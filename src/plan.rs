@@ -31,8 +31,6 @@ pub struct Plan {
     /// Length of the output, used to turn ffmpeg's clock into a percentage.
     pub expected_secs: Option<f64>,
     pub stop: StopMode,
-    /// Aggregate memory ceiling for buffering filters, enforced before decoding.
-    pub memory_limit: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -181,7 +179,6 @@ impl PendingPlan {
             args: self.0,
             expected_secs: secs,
             stop: StopMode::Kill,
-            memory_limit: None,
         }
     }
 }
