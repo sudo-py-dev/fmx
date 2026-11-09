@@ -21,6 +21,8 @@ use crate::pdfgen::{self, Block, Span};
 
 /// Largest FB2 file read.
 const MAX_FB2_BYTES: u64 = 128 << 20;
+/// Cumulative decoded chapter bytes, including repeated spine references.
+const MAX_EPUB_CONTENT_BYTES: usize = 128 << 20;
 /// Chapters read from one EPUB, at most.
 const MAX_CHAPTERS: usize = 5_000;
 
@@ -111,6 +113,10 @@ struct Package {
 }
 
 fn read_epub(path: &Path) -> Result<Book, OfficeError> {
+    read_epub_with_limit(path, MAX_EPUB_CONTENT_BYTES)
+}
+
+fn read_epub_with_limit(path: &Path, mut remaining: usize) -> Result<Book, OfficeError> {
     let mut zip = zip::ZipArchive::new(File::open(path)?).map_err(corrupt)?;
     let container = zip_text(&mut zip, "META-INF/container.xml")?;
     let opf_path = rootfile(&container)?;
@@ -124,6 +130,11 @@ fn read_epub(path: &Path) -> Result<Book, OfficeError> {
         let Ok(html) = zip_text(&mut zip, &resolve(base, href)) else {
             continue;
         };
+        // Charge every occurrence before parsing or retaining it, even when it
+        // produces no blocks. Lossy UTF-8 expansion counts toward the budget.
+        remaining = remaining
+            .checked_sub(html.len())
+            .ok_or_else(|| corrupt("EPUB decoded content limit exceeded"))?;
         let chapter = office::html_blocks(&html);
         if chapter.is_empty() {
             continue;
@@ -881,6 +892,42 @@ mod tests {
         let bytes = std::fs::read(&path).expect("bytes");
         assert_eq!(&bytes[30..38], b"mimetype");
         assert_eq!(&bytes[38..58], b"application/epub+zip");
+    }
+
+    /// One compressed chapter can occur many times in the reading order.
+    #[test]
+    fn epub_content_budget_counts_every_spine_reference() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repeated.epub");
+        let chapter = "<p>Hello</p>";
+        let mut zip = zip::ZipWriter::new(File::create(&path).expect("create"));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in [
+            (
+                "META-INF/container.xml",
+                "<container><rootfile full-path=\"book.opf\"/></container>",
+            ),
+            (
+                "book.opf",
+                "<package><manifest><item id=\"a\" href=\"a.xhtml\"/></manifest><spine><itemref idref=\"a\"/><itemref idref=\"a\"/></spine></package>",
+            ),
+            ("a.xhtml", chapter),
+        ] {
+            zip.start_file(name, options).expect("entry");
+            zip.write_all(content.as_bytes()).expect("content");
+        }
+        zip.finish().expect("finish");
+
+        let book = read_epub_with_limit(&path, chapter.len() * 2).expect("exact budget");
+        assert_eq!(texts(&book.blocks), ["Hello", "Hello"]);
+        assert_eq!(book.blocks[1], Block::PageBreak);
+        for budget in [0, chapter.len(), chapter.len() * 2 - 1] {
+            assert!(matches!(
+                read_epub_with_limit(&path, budget),
+                Err(OfficeError::Corrupt(message)) if message == "EPUB decoded content limit exceeded"
+            ));
+        }
     }
 
     #[test]
