@@ -187,6 +187,114 @@ struct PresetDialog {
     name: String,
 }
 
+/// A file selection in progress, tied to the editor session that opened it.
+struct InputPicker {
+    generation: u64,
+    in_editor: bool,
+    kind: InputKind,
+    valid: bool,
+    state: InputPickerState,
+}
+
+enum InputPickerState {
+    Dialog {
+        future: std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<PathBuf>>>>>,
+        scan_folder: bool,
+    },
+    Scanning(mpsc::Receiver<Vec<PathBuf>>),
+}
+
+/// Repaint when the native dialog or a folder scan is ready.
+struct PickerWake(Notifier);
+
+impl std::task::Wake for PickerWake {
+    fn wake(self: Arc<Self>) {
+        (self.0)();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        (self.0)();
+    }
+}
+
+impl InputPicker {
+    /// Polls without waiting and discards results from an older editor session.
+    fn poll(
+        &mut self,
+        generation: u64,
+        in_editor: bool,
+        kind: InputKind,
+        notify: &Notifier,
+    ) -> Option<Option<Vec<PathBuf>>> {
+        self.valid &=
+            self.generation == generation && self.in_editor == in_editor && self.kind == kind;
+        match &mut self.state {
+            InputPickerState::Dialog {
+                future,
+                scan_folder,
+            } => {
+                let waker = std::task::Waker::from(Arc::new(PickerWake(Arc::clone(notify))));
+                let mut context = std::task::Context::from_waker(&waker);
+                match future.as_mut().poll(&mut context) {
+                    std::task::Poll::Pending => None,
+                    std::task::Poll::Ready(paths) if !self.valid || paths.is_none() => Some(None),
+                    std::task::Poll::Ready(Some(paths)) if *scan_folder => {
+                        let Some(root) = paths.into_iter().next() else {
+                            return Some(None);
+                        };
+                        let (tx, rx) = mpsc::channel();
+                        let kind = self.kind;
+                        let notify = Arc::clone(notify);
+                        std::thread::spawn(move || {
+                            let _ = tx.send(scan_input_folder(&root, kind));
+                            notify();
+                        });
+                        self.state = InputPickerState::Scanning(rx);
+                        None
+                    }
+                    std::task::Poll::Ready(paths) => Some(paths),
+                }
+            }
+            InputPickerState::Scanning(rx) => match rx.try_recv() {
+                Ok(paths) => Some(self.valid.then_some(paths)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(None),
+            },
+        }
+    }
+}
+
+/// Finds supported files in sorted order without following directory links.
+fn scan_input_folder(root: &Path, kind: InputKind) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t)
+                    if t.is_file()
+                        && (kind.extensions().is_empty()
+                            || path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                                kind.extensions().contains(&e.to_ascii_lowercase().as_str())
+                            })) =>
+                {
+                    found.push(path)
+                }
+                _ => {}
+            }
+        }
+        if found.len() >= MAX_SCAN_FILES {
+            break;
+        }
+    }
+    found.sort();
+    found
+}
+
 /// What happens once the whole queue has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterDone {
@@ -256,6 +364,8 @@ pub struct FmxApp {
     probe_tx: mpsc::Sender<(u64, PathBuf, Option<crate::probe::MediaInfo>)>,
     probe_rx: mpsc::Receiver<(u64, PathBuf, Option<crate::probe::MediaInfo>)>,
     probe_generation: u64,
+    input_picker: Option<InputPicker>,
+    input_picker_generation: u64,
     tag_editor: tag_editor::TagEditor,
     after_done: AfterDone,
     /// The theme last given to the window frame.
@@ -364,6 +474,8 @@ impl FmxApp {
             preview_index: 0,
             details: HashMap::new(),
             probe_generation: 0,
+            input_picker: None,
+            input_picker_generation: 0,
             tag_editor: tag_editor::TagEditor::default(),
             probe_tx,
             probe_rx,
@@ -640,6 +752,7 @@ impl FmxApp {
     }
 
     fn select_tool(&mut self, tool: Tool) {
+        self.input_picker_generation = self.input_picker_generation.wrapping_add(1);
         if tool.input_kind() != self.tool.input_kind() {
             self.files.clear();
         }
@@ -818,50 +931,82 @@ impl FmxApp {
     }
 
     fn pick_files(&mut self) {
-        let kind = self.tool.input_kind();
-        let dialog = rfd::FileDialog::new();
-        let picked = if kind.picks_folders() {
-            dialog.pick_folders()
-        } else {
-            let exts = kind.extensions();
-            let dialog = if exts.is_empty() {
-                dialog
-            } else {
-                dialog.add_filter(tr("filter.supported"), exts)
-            };
-            dialog.add_filter(tr("filter.all"), &["*"]).pick_files()
-        };
-        if let Some(paths) = picked {
-            self.add_files(paths);
-        }
+        self.start_input_picker(false);
     }
 
     /// Adds every matching file under a folder, recursively.
     fn add_folder(&mut self) {
-        let Some(root) = rfd::FileDialog::new().pick_folder() else {
+        self.start_input_picker(true);
+    }
+
+    /// Opens the shared input chooser without blocking the GUI.
+    fn start_input_picker(&mut self, scan_folder: bool) {
+        if self.input_picker.is_some() {
+            return;
+        }
+        let kind = self.tool.input_kind();
+        let dialog = rfd::AsyncFileDialog::new();
+        // macOS creates the native sheet when this future is constructed.
+        let future: std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<PathBuf>>>>> =
+            if scan_folder {
+                let picked = dialog.pick_folder();
+                Box::pin(async move { picked.await.map(|h| vec![h.path().to_path_buf()]) })
+            } else if kind.picks_folders() {
+                let picked = dialog.pick_folders();
+                Box::pin(async move {
+                    picked.await.map(|handles| {
+                        handles
+                            .into_iter()
+                            .map(|h| h.path().to_path_buf())
+                            .collect()
+                    })
+                })
+            } else {
+                let exts = kind.extensions();
+                let dialog = if exts.is_empty() {
+                    dialog
+                } else {
+                    dialog.add_filter(tr("filter.supported"), exts)
+                };
+                let picked = dialog.add_filter(tr("filter.all"), &["*"]).pick_files();
+                Box::pin(async move {
+                    picked.await.map(|handles| {
+                        handles
+                            .into_iter()
+                            .map(|h| h.path().to_path_buf())
+                            .collect()
+                    })
+                })
+            };
+        self.input_picker = Some(InputPicker {
+            generation: self.input_picker_generation,
+            in_editor: self.in_editor,
+            kind,
+            valid: true,
+            state: InputPickerState::Dialog {
+                future,
+                scan_folder,
+            },
+        });
+        // The first poll starts the dialog on Linux and Windows.
+        (self.notifier)();
+    }
+
+    fn poll_input_picker(&mut self) {
+        let Some(result) = self.input_picker.as_mut().and_then(|picker| {
+            picker.poll(
+                self.input_picker_generation,
+                self.in_editor,
+                self.tool.input_kind(),
+                &self.notifier,
+            )
+        }) else {
             return;
         };
-        let mut found = Vec::new();
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                // file_type() does not follow symlinks, so link loops are skipped.
-                match entry.file_type() {
-                    Ok(t) if t.is_dir() => stack.push(path),
-                    Ok(t) if t.is_file() && self.accepts(&path) => found.push(path),
-                    _ => {}
-                }
-            }
-            if found.len() >= MAX_SCAN_FILES {
-                break;
-            }
+        self.input_picker = None;
+        if let Some(paths) = result {
+            self.add_files(paths);
         }
-        found.sort();
-        self.add_files(found);
     }
 
     fn enqueue(&mut self) {
@@ -890,6 +1035,7 @@ impl FmxApp {
         };
         match planned {
             Ok(specs) => {
+                self.input_picker_generation = self.input_picker_generation.wrapping_add(1);
                 // Downloads are listed under the video's title once it is known.
                 let title = match self.link.as_ref().map(|l| (&l.url, &l.state)) {
                     Some((url, LinkState::Ready(info)))
@@ -3001,6 +3147,7 @@ impl FmxApp {
                 .clicked()
             {
                 self.files.clear();
+                self.input_picker_generation = self.input_picker_generation.wrapping_add(1);
             }
         });
         if has_files {
@@ -6803,6 +6950,7 @@ impl eframe::App for FmxApp {
         self.check_after_done(&ctx);
         self.poll_update(&ctx);
         self.poll_link(&ctx);
+        self.poll_input_picker();
         self.poll_details();
         let p = theme::palette(ui);
 
@@ -6937,6 +7085,125 @@ impl eframe::App for FmxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_picker_polls_and_rejects_stale_results() {
+        use std::sync::Mutex;
+        use std::task::Poll;
+        let make_picker = |kind| {
+            let (tx, rx) = mpsc::channel();
+            let waker: Arc<Mutex<Option<std::task::Waker>>> = Arc::default();
+            let future_waker = Arc::clone(&waker);
+            let future = std::future::poll_fn(move |cx| match rx.try_recv() {
+                Ok(paths) => Poll::Ready(paths),
+                Err(mpsc::TryRecvError::Disconnected) => Poll::Ready(None),
+                Err(mpsc::TryRecvError::Empty) => {
+                    *future_waker.lock().unwrap() = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            });
+            (
+                tx,
+                waker,
+                InputPicker {
+                    generation: 4,
+                    in_editor: true,
+                    kind,
+                    valid: true,
+                    state: InputPickerState::Dialog {
+                        future: Box::pin(future),
+                        scan_folder: false,
+                    },
+                },
+            )
+        };
+        let wake_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&wake_count);
+        let notify: Notifier = Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        for kind in [InputKind::Slides, InputKind::Media, InputKind::Folder] {
+            let (tx, waker, mut picker) = make_picker(kind);
+            assert_eq!(picker.poll(4, true, kind, &notify), None);
+            let paths = vec![PathBuf::from("first"), PathBuf::from("second")];
+            tx.send(Some(paths.clone())).unwrap();
+            waker.lock().unwrap().take().unwrap().wake();
+            assert_eq!(picker.poll(4, true, kind, &notify), Some(Some(paths)));
+        }
+        assert_eq!(wake_count.load(Ordering::SeqCst), 3);
+        for (generation, in_editor, kind) in [
+            (5, true, InputKind::Slides),
+            (4, false, InputKind::Slides),
+            (4, true, InputKind::Media),
+        ] {
+            let (tx, _, mut picker) = make_picker(InputKind::Slides);
+            assert_eq!(picker.poll(generation, in_editor, kind, &notify), None);
+            tx.send(Some(vec![PathBuf::from("stale.jpg")])).unwrap();
+            assert_eq!(picker.poll(4, true, InputKind::Slides, &notify), Some(None));
+        }
+        let (tx, _, mut picker) = make_picker(InputKind::Slides);
+        tx.send(None).unwrap();
+        assert_eq!(picker.poll(4, true, InputKind::Slides, &notify), Some(None));
+        let (tx, _, mut picker) = make_picker(InputKind::Slides);
+        drop(tx);
+        assert_eq!(picker.poll(4, true, InputKind::Slides, &notify), Some(None));
+    }
+
+    #[test]
+    fn input_folder_scan_sorts_and_filters_nested_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let photo = temp.path().join("a.JPG");
+        let video = nested.join("b.mp4");
+        let audio = nested.join("c.mp3");
+        for path in [&photo, &video, &audio] {
+            std::fs::write(path, b"").unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(temp.path(), nested.join("loop")).unwrap();
+        assert_eq!(
+            scan_input_folder(temp.path(), InputKind::Slides),
+            vec![photo, video.clone()]
+        );
+        assert_eq!(
+            scan_input_folder(temp.path(), InputKind::Media),
+            vec![video, audio]
+        );
+    }
+
+    #[test]
+    fn input_picker_scans_folders_and_discards_stale_scans() {
+        let temp = tempfile::tempdir().unwrap();
+        let photo = temp.path().join("slide.png");
+        std::fs::write(&photo, b"").unwrap();
+        let (wakeup_tx, wakeup_rx) = mpsc::channel();
+        let notify: Notifier = Arc::new(move || {
+            let _ = wakeup_tx.send(());
+        });
+        let mut picker = InputPicker {
+            generation: 1,
+            in_editor: true,
+            kind: InputKind::Slides,
+            valid: true,
+            state: InputPickerState::Dialog {
+                future: Box::pin(std::future::ready(Some(vec![temp.path().to_path_buf()]))),
+                scan_folder: true,
+            },
+        };
+        assert_eq!(picker.poll(1, true, InputKind::Slides, &notify), None);
+        wakeup_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            picker.poll(1, true, InputKind::Slides, &notify),
+            Some(Some(vec![photo]))
+        );
+
+        let (tx, rx) = mpsc::channel();
+        picker.state = InputPickerState::Scanning(rx);
+        assert_eq!(picker.poll(2, true, InputKind::Slides, &notify), None);
+        tx.send(vec![PathBuf::from("stale.png")]).unwrap();
+        assert_eq!(picker.poll(1, true, InputKind::Slides, &notify), Some(None));
+    }
 
     #[test]
     fn search_stays_inside_sidebar_while_typing_and_clearing() {
