@@ -691,9 +691,12 @@ fn decode_entities(s: &str) -> String {
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         let after = &rest[amp + 1..];
+        // Entity names are at most 10 bytes. Bound the search before scanning;
+        // bytes also let the window end inside UTF-8 without slicing a str.
         match after
-            .find(';')
-            .filter(|&i| i <= 10)
+            .bytes()
+            .take(11)
+            .position(|b| b == b';')
             .and_then(|i| entity(&after[..i]).map(|c| (c, i)))
         {
             Some((c, i)) => {
@@ -1144,6 +1147,42 @@ mod tests {
             rows,
             vec![vec!["a", "b, c", "say \"hi\""], vec!["1", "2", "3"]]
         );
+    }
+
+    #[test]
+    fn entity_decoding_preserves_limits_and_malformed_text() {
+        assert_eq!(
+            decode_entities("&amp;&lt;&gt;&quot;&apos;&nbsp;&#65;&#x1F600;"),
+            "&<>\"'\u{a0}A😀"
+        );
+        assert_eq!(decode_entities("&#000000065;"), "A"); // 10-byte name
+        for text in [
+            "&#0000000065;", // 11-byte name
+            "&unknown;",
+            "&#xD800;",
+            "&#1114112;",
+            "&amp",
+            "&;",
+            "&123456789é;",
+            "&12345678😀;",
+            "&éééééé;",
+        ] {
+            assert_eq!(decode_entities(text), text);
+        }
+        assert_eq!(decode_entities("&&amp; &bad;&lt;"), "&& &bad;<");
+    }
+
+    #[test]
+    fn html_handles_many_unterminated_entities() {
+        let text = "&".repeat(1_000_000);
+        for suffix in ["", ";", "&amp;"] {
+            let html = format!("<p>{text}{suffix}</p>");
+            let expected = format!("{text}{}", if suffix == "&amp;" { "&" } else { suffix });
+            assert_eq!(
+                html_blocks(&html),
+                vec![Block::Paragraph(vec![Span::plain(expected)])]
+            );
+        }
     }
 
     #[test]
