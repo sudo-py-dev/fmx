@@ -26,6 +26,21 @@ use crate::settings::Preset;
 /// Lists what was written by the last registration, and for which program
 /// and language; missing when the menu is off.
 const MARKER: &str = "shell-menu";
+/// Keep signature data separate from deletion targets, including embedded newlines.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MenuMarker {
+    signature: String,
+    written: Vec<PathBuf>,
+}
+
+impl MenuMarker {
+    fn read(path: &Path) -> Option<Self> {
+        // Legacy line-delimited markers cannot distinguish path characters from
+        // records. Never use their contents as deletion targets.
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    }
+}
+
 /// The command-line switch the menu entries use.
 pub const CONVERT_FLAG: &str = "--convert";
 /// The command-line switch preset entries use, followed by the preset's id.
@@ -284,12 +299,11 @@ pub fn register(presets: &[Preset]) -> io::Result<()> {
     let written = platform::register(&exe, presets)?;
     let marker = marker_path().ok_or_else(|| io::Error::other("no data folder"))?;
     fs::create_dir_all(marker.parent().expect("marker has a folder"))?;
-    let mut contents = signature(&exe, presets);
-    for path in written {
-        contents.push('\n');
-        contents.push_str(&path.to_string_lossy());
-    }
-    fs::write(marker, contents)?;
+    let contents = MenuMarker {
+        signature: signature(&exe, presets),
+        written,
+    };
+    fs::write(marker, serde_json::to_vec(&contents)?)?;
     tracing::info!(exe = %exe.display(), "right-click menu added");
     Ok(())
 }
@@ -299,8 +313,8 @@ pub fn unregister() -> io::Result<()> {
     let Some(marker) = marker_path() else {
         return Ok(());
     };
-    let written: Vec<PathBuf> = fs::read_to_string(&marker)
-        .map(|s| s.lines().skip(1).map(PathBuf::from).collect())
+    let written = MenuMarker::read(&marker)
+        .map(|m| m.written)
         .unwrap_or_default();
     platform::unregister(&written)?;
     match fs::remove_file(&marker) {
@@ -317,10 +331,10 @@ pub fn refresh(presets: &[Preset]) {
     let (Some(marker), Ok(exe)) = (marker_path(), std::env::current_exe()) else {
         return;
     };
-    let Ok(contents) = fs::read_to_string(marker) else {
+    if !marker.exists() {
         return;
-    };
-    if contents.lines().next() != Some(signature(&exe, presets).as_str())
+    }
+    if MenuMarker::read(&marker).map(|m| m.signature) != Some(signature(&exe, presets))
         && let Err(e) = register(presets)
     {
         tracing::warn!(error = %e, "could not update the right-click menu");
@@ -530,6 +544,60 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn marker_preserves_path_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(MARKER);
+        let victim = dir.path().join("unrelated");
+        fs::write(&victim, "keep").unwrap();
+        let artifact = dir.path().join("menu\nwith-newline");
+        fs::write(&artifact, "menu").unwrap();
+        let original = MenuMarker {
+            signature: signature(
+                Path::new(&format!("/portable\n{}\n/fmx", victim.display())),
+                &[],
+            ),
+            written: vec![artifact.clone()],
+        };
+        fs::write(&marker, serde_json::to_vec(&original).unwrap()).unwrap();
+        let decoded = MenuMarker::read(&marker).unwrap();
+        assert_eq!(decoded.signature, original.signature);
+        assert_eq!(decoded.written, vec![artifact.clone()]);
+        #[cfg(not(windows))]
+        {
+            platform::unregister(&decoded.written).unwrap();
+            assert!(!artifact.exists());
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+        }
+    }
+
+    #[test]
+    fn legacy_and_malformed_markers_never_supply_cleanup_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join(MARKER);
+        let victim = dir.path().join("unrelated");
+        fs::write(&victim, "keep").unwrap();
+        for contents in [
+            format!(
+                "version language hash /portable\n{}\n/fmx",
+                victim.display()
+            ),
+            format!(r#"{{"signature":"ok","written":["{}"]"#, victim.display()),
+        ] {
+            fs::write(&marker, contents).unwrap();
+            assert!(MenuMarker::read(&marker).is_none());
+            #[cfg(not(windows))]
+            platform::unregister(
+                &MenuMarker::read(&marker)
+                    .map(|m| m.written)
+                    .unwrap_or_default(),
+            )
+            .unwrap();
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+        }
+    }
 
     #[test]
     fn targets_fit_the_file_type() {

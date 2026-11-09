@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 use crate::i18n::{tr, trf};
 
+#[path = "process_memory.rs"]
+mod memory_limit;
+
 /// How often a running job checks for cancellation.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Lines of stderr kept for the error message.
@@ -177,13 +180,54 @@ pub fn run_watching(
     cancel: &AtomicBool,
     on_line: impl FnMut(&str),
 ) -> Result<(), RunError> {
+    run_with_limit(program, args, stop, watch, None, cancel, on_line)
+}
+
+/// Runs a buffering conversion with an OS-enforced aggregate child memory limit.
+pub fn run_limited(
+    program: &Path,
+    args: &[OsString],
+    stop: StopMode,
+    memory_limit: Option<usize>,
+    cancel: &AtomicBool,
+    on_line: impl FnMut(&str),
+) -> Result<(), RunError> {
+    run_with_limit(
+        program,
+        args,
+        stop,
+        Watch::Stdout,
+        memory_limit,
+        cancel,
+        on_line,
+    )
+}
+
+fn run_with_limit(
+    program: &Path,
+    args: &[OsString],
+    stop: StopMode,
+    watch: Watch,
+    memory_limit: Option<usize>,
+    cancel: &AtomicBool,
+    on_line: impl FnMut(&str),
+) -> Result<(), RunError> {
     let name = program_name(program);
     tracing::debug!(program = %name, ?args, "running");
     let mut cmd = command(program);
     if stop == StopMode::Quit {
         cmd.stdin(Stdio::piped());
     }
+    if let Some(limit) = memory_limit {
+        memory_limit::prepare(&mut cmd, limit).map_err(|e| RunError::Spawn(name.clone(), e))?;
+    }
     let mut child = spawn(cmd.args(args), &name)?;
+    // On Windows the child starts suspended; assign the job before resuming it.
+    // Keep the job alive until supervision finishes. Any setup error kills child.
+    let _budget = memory_limit
+        .map(|limit| memory_limit::attach(&child.0, limit))
+        .transpose()
+        .map_err(|e| RunError::Spawn(name.clone(), e))?;
     let quit = match stop {
         StopMode::Kill => None,
         StopMode::Quit => {
@@ -346,6 +390,21 @@ mod tests {
 
     fn sh(script: &str) -> Vec<OsString> {
         vec!["-c".into(), script.into()]
+    }
+
+    #[test]
+    fn child_address_space_is_limited_before_exec() {
+        let mut lines = Vec::new();
+        run_limited(
+            Path::new("/bin/sh"),
+            &sh("ulimit -v"),
+            StopMode::Kill,
+            Some(128 * 1024 * 1024),
+            &AtomicBool::new(false),
+            |line| lines.push(line.to_owned()),
+        )
+        .unwrap();
+        assert!(lines[0].parse::<usize>().unwrap() <= 128 * 1024);
     }
 
     #[test]

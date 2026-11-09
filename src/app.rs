@@ -27,7 +27,7 @@ use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
 use crate::icons;
 use crate::instance;
-use crate::jobs::{JobSpec, Selection, allocate_output, plan_jobs};
+use crate::jobs::{JobSpec, OutputAllocator, Selection, plan_jobs};
 use crate::options::{
     self, Channels, Corner, DownloadKind, Edit, FrameMode, HwAccel, MixLayout, Options, Quality,
     Rect, Resolution, Rotation,
@@ -1146,8 +1146,9 @@ impl FmxApp {
                     }
                 }
                 let mut claimed: HashSet<PathBuf> = self.queue.claimed_outputs().cloned().collect();
+                let mut allocator = OutputAllocator::new(&mut claimed);
                 for mut spec in specs {
-                    spec.output = fresh_output(&spec, &mut claimed);
+                    spec.output = fresh_output(&spec, &mut allocator);
                     self.queue.push(spec);
                 }
             }
@@ -5619,7 +5620,7 @@ fn preset_takes(tool: Tool, path: &Path) -> bool {
 }
 
 /// Gives a loaded job an output name that doesn't overwrite anything.
-fn fresh_output(spec: &JobSpec, claimed: &mut HashSet<PathBuf>) -> PathBuf {
+fn fresh_output(spec: &JobSpec, allocator: &mut OutputAllocator<'_>) -> PathBuf {
     if spec.tool == Tool::Download {
         return spec.output.clone();
     }
@@ -5633,7 +5634,7 @@ fn fresh_output(spec: &JobSpec, claimed: &mut HashSet<PathBuf>) -> PathBuf {
         .output
         .extension()
         .map(|e| e.to_string_lossy().into_owned());
-    allocate_output(dir, &stem, "", ext.as_deref(), claimed, Path::exists)
+    allocator.allocate(dir, &stem, "", ext.as_deref(), Path::exists)
 }
 
 /// A drive as the picker lists it: "HL-DT-ST DVDRAM GH24 (/dev/sr0)".
