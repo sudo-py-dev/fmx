@@ -30,7 +30,7 @@ use crate::instance;
 use crate::jobs::{JobSpec, OutputAllocator, Selection, plan_jobs};
 use crate::options::{
     self, Channels, Corner, DownloadKind, Edit, FrameMode, HwAccel, MixLayout, Options, Quality,
-    Rect, Resolution, Rotation,
+    Rect, Resolution, Rotation, SlideTransition,
 };
 use crate::preview::{Mode as PreviewMode, Preview};
 use crate::process::spawn_detached;
@@ -782,7 +782,9 @@ impl FmxApp {
                 detail.probed = true;
             }
         }
-        if self.tool.input_kind() != InputKind::Media || added.is_empty() {
+        if !matches!(self.tool.input_kind(), InputKind::Media | InputKind::Slides)
+            || added.is_empty()
+        {
             return;
         }
         let ffmpeg = ffmpeg.to_path_buf();
@@ -2866,7 +2868,8 @@ impl FmxApp {
         let glow = ui
             .ctx()
             .animate_bool_with_time(Id::unique("drop_glow"), hovering, MOTION);
-        let probeable = kind == InputKind::Media && self.toolbox.get(External::Ffmpeg).is_some();
+        let probeable = matches!(kind, InputKind::Media | InputKind::Slides)
+            && self.toolbox.get(External::Ffmpeg).is_some();
         let inline = self.preview_mode().is_some();
         let row = RowContext {
             count: self.files.len(),
@@ -3263,6 +3266,37 @@ impl FmxApp {
         }
         let opts = &mut self.settings.options;
         match tool {
+            Tool::Slideshow => {
+                row(ui, tr("slideshow.photo_duration"), |ui| {
+                    ui.add(
+                        DragValue::new(&mut opts.slide_duration)
+                            .range(1.0..=60.0)
+                            .speed(0.1)
+                            .suffix(" s"),
+                    );
+                });
+                row(ui, tr("slideshow.transition"), |ui| {
+                    combo(
+                        ui,
+                        "slide_transition",
+                        &mut opts.slide_transition,
+                        &SlideTransition::ALL,
+                        |t| t.label().to_owned(),
+                    );
+                });
+                if opts.slide_transition != SlideTransition::Cut {
+                    row(ui, tr("slideshow.transition_duration"), |ui| {
+                        ui.add(
+                            DragValue::new(&mut opts.slide_transition_duration)
+                                .range(0.1..=5.0)
+                                .speed(0.1)
+                                .suffix(" s"),
+                        );
+                    });
+                }
+                ui.label(tr("slideshow.details"));
+                quality_row(ui, &mut opts.quality);
+            }
             Tool::ToVideo(_) | Tool::JoinVideo | Tool::VideoMix => {
                 quality_row(ui, &mut opts.quality);
                 resolution_row(ui, &mut opts.resolution);
@@ -5447,7 +5481,12 @@ fn file_art(path: &Path, kind: InputKind) -> art::Art {
         (InputKind::Folder, _) => (glyph::HARD_DRIVE, hue::SLATE),
         (InputKind::Disc, _) | (_, "iso" | "cso") => (glyph::DISC, hue::VIOLET),
         _ if catalog::AUDIO_EXTENSIONS.contains(&ext) => (glyph::FILE_AUDIO, hue::PINK),
-        (InputKind::Media, _) => (glyph::FILE_VIDEO, hue::BLUE),
+        (InputKind::Slides, _)
+            if catalog::InputKind::Images.extensions().contains(&ext) && ext != "gif" =>
+        {
+            (glyph::FILE_IMAGE, hue::GREEN)
+        }
+        (InputKind::Media | InputKind::Slides, _) => (glyph::FILE_VIDEO, hue::BLUE),
         (InputKind::Images, _) => (glyph::FILE_IMAGE, hue::GREEN),
         (_, "pdf") => (glyph::FILE_PDF, hue::RED),
         (_, "docx" | "doc" | "odt" | "rtf") => (glyph::FILE_DOC, hue::INDIGO),

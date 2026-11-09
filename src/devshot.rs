@@ -60,6 +60,7 @@ pub fn wants_tool() -> Option<crate::catalog::Tool> {
         "waveform_video" => Some(Tool::WaveformVideo),
         "edit_tags" => Some(Tool::EditTags),
         "collage" => Some(Tool::JoinImages),
+        "slideshow" => Some(Tool::Slideshow),
         "privacy" => Some(Tool::RemoveImageMetadata),
         "info" => Some(Tool::MediaInfo),
         "record" => Some(Tool::Record),

@@ -140,6 +140,7 @@ impl Category {
                     group(
                         "tools.frames_animation",
                         vec![
+                            Tool::Slideshow,
                             Tool::ExtractFrames,
                             Tool::ThumbnailSheet,
                             Tool::ToVideo(VideoFormat::Gif),
@@ -900,6 +901,7 @@ pub enum Tool {
     IsoToCso,
     CsoToIso,
     JoinVideo,
+    Slideshow,
     JoinAudio,
     Mux,
     AudioMix,
@@ -958,6 +960,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputKind {
     Media,
+    Slides,
     Images,
     Photos,
     Pdf,
@@ -983,6 +986,11 @@ impl InputKind {
                 "mts", "m2ts", "ogv", "3gp", "gif", "vob", "rmvb", "rm", "asf", "swf", "mp3",
                 "aac", "m4a", "flac", "wav", "ogg", "opus", "wma", "aiff", "aif", "ac3", "amr",
                 "ape", "mka", "wv", "mp2", "mmf", "m4r", "caf", "au", "snd",
+            ],
+            Self::Slides => &[
+                "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "mp4", "m4v", "mkv", "webm",
+                "mov", "avi", "flv", "wmv", "mpg", "mpeg", "ts", "mts", "m2ts", "ogv", "3gp",
+                "gif",
             ],
             Self::Images => &[
                 "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "ico", "tga", "qoi",
@@ -1042,6 +1050,7 @@ impl Tool {
             Self::IsoToCso => tr("tool.iso_to_cso"),
             Self::CsoToIso => tr("tool.cso_to_iso"),
             Self::JoinVideo => tr("tool.join_video"),
+            Self::Slideshow => tr("tool.slideshow"),
             Self::JoinAudio => tr("tool.join_audio"),
             Self::Mux => tr("tool.mux"),
             Self::AudioMix => tr("tool.audio_mix"),
@@ -1107,6 +1116,7 @@ impl Tool {
             Self::IsoToCso => tr("desc.iso_to_cso"),
             Self::CsoToIso => tr("desc.cso_to_iso"),
             Self::JoinVideo => tr("desc.join_video"),
+            Self::Slideshow => tr("desc.slideshow"),
             Self::JoinAudio => tr("desc.join_audio"),
             Self::Mux => tr("desc.mux"),
             Self::AudioMix => tr("desc.audio_mix"),
@@ -1143,7 +1153,7 @@ impl Tool {
 
     pub fn arity(self) -> InputArity {
         match self {
-            Self::ImagesToPdf => InputArity::AllAtLeast(1),
+            Self::ImagesToPdf | Self::Slideshow => InputArity::AllAtLeast(1),
             Self::JoinImages => InputArity::AllAtLeast(2),
             Self::JoinVideo | Self::JoinAudio | Self::AudioMix | Self::PdfMerge => {
                 InputArity::AllAtLeast(2)
@@ -1156,6 +1166,7 @@ impl Tool {
 
     pub fn input_kind(self) -> InputKind {
         match self {
+            Self::Slideshow => InputKind::Slides,
             Self::ToImage(_) | Self::ImagesToPdf | Self::JoinImages => InputKind::Images,
             Self::PdfToImages
             | Self::PdfToText
@@ -1231,7 +1242,7 @@ impl Tool {
     pub fn required_encoder(self) -> Option<&'static str> {
         match self {
             Self::ToVideo(f) => Some(f.required_encoder()),
-            Self::ToDevice(_) => Some("libx264"),
+            Self::ToDevice(_) | Self::Slideshow => Some("libx264"),
             Self::ToAudio(f) => Some(f.required_encoder()),
             Self::ToImage(ImageFormat::Avif) => Some("libaom-av1"),
             Self::ToImage(ImageFormat::Jxl) => Some("libjxl"),
@@ -1315,9 +1326,9 @@ mod organization_tests {
                 }
             }
         }
-        // Inventory before this navigation change: 67 format/device presets
-        // and 54 task tools. Reorganization must not silently remove a tool.
-        assert_eq!(tools.len(), 121);
+        // 67 format/device presets and 55 task tools.
+        assert_eq!(tools.len(), 122);
+        assert!(tools.contains(&Tool::Slideshow));
         for format in VideoFormat::ALL {
             assert!(tools.contains(&Tool::ToVideo(format)));
         }

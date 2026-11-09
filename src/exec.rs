@@ -676,7 +676,14 @@ fn run_tool(
                     })
                 })
                 .collect::<Result<Vec<_>, JobError>>()?;
-            let plan = plan::build(tool, &inputs, out, opts)?;
+            let mut job_options = opts.clone();
+            if tool == Tool::Slideshow {
+                job_options.slide_random_seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+            }
+            let plan = plan::build(tool, &inputs, out, &job_options)?;
             if matches!(tool, Tool::ExtractFrames | Tool::Split) {
                 std::fs::create_dir_all(out).map_err(JobError::Io)?;
             }
@@ -1868,6 +1875,92 @@ mod e2e {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn e2e_slideshow_mixes_photos_video_and_audio() {
+        let Some(tb) = toolbox() else {
+            eprintln!("FMX_FFMPEG not set; skipping");
+            return;
+        };
+        let ffmpeg = tb.get(External::Ffmpeg).unwrap();
+        let fx = fixture(ffmpeg);
+        for transition in [
+            crate::options::SlideTransition::Cut,
+            crate::options::SlideTransition::SlideLeft,
+            crate::options::SlideTransition::Random,
+        ] {
+            let output = fx.root.join(format!("slide-{transition:?}.mp4"));
+            let options = Options {
+                slide_duration: 1.0,
+                slide_transition_duration: 0.5,
+                slide_transition: transition,
+                ..Options::default()
+            };
+            let spec = JobSpec {
+                tool: Tool::Slideshow,
+                inputs: vec![fx.images[0].clone(), fx.video.clone(), fx.images[1].clone()],
+                url: None,
+                output: output.clone(),
+                options,
+            };
+            execute(&spec, &tb, &AtomicBool::new(false), |_| {}).expect("slideshow export");
+            let info = ffmpeg::probe(ffmpeg, &output, None).expect("probe slideshow");
+            assert!(info.has_video && info.has_audio);
+            assert_eq!((info.width, info.height), (Some(1280), Some(720)));
+            let expected = if transition == crate::options::SlideTransition::Cut {
+                5.0
+            } else {
+                4.0
+            };
+            assert!(
+                (info.duration_s.unwrap() - expected).abs() < 0.15,
+                "{info:?}"
+            );
+            if transition == crate::options::SlideTransition::SlideLeft {
+                let frame = |at: &str| {
+                    let decoded = Command::new(ffmpeg)
+                        .args(["-v", "error", "-ss", at, "-i"])
+                        .arg(&output)
+                        .args([
+                            "-vf",
+                            "scale=1:1",
+                            "-frames:v",
+                            "1",
+                            "-pix_fmt",
+                            "rgb24",
+                            "-f",
+                            "rawvideo",
+                            "pipe:1",
+                        ])
+                        .output()
+                        .unwrap();
+                    assert!(decoded.status.success() && decoded.stdout.len() == 3);
+                    decoded.stdout
+                };
+                let first = frame("0.2");
+                let last = frame("3.8");
+                assert!(
+                    last[1] > first[1] + 20,
+                    "photos should appear in list order: {first:?}, {last:?}"
+                );
+                let sound = Command::new(ffmpeg)
+                    .args(["-v", "error", "-ss", "2", "-i"])
+                    .arg(&output)
+                    .args([
+                        "-t", "0.2", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1",
+                    ])
+                    .output()
+                    .unwrap();
+                assert!(sound.status.success());
+                assert!(
+                    sound
+                        .stdout
+                        .chunks_exact(2)
+                        .any(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs() > 100)
+                );
             }
         }
     }

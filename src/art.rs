@@ -289,6 +289,7 @@ pub fn tool(t: Tool) -> Art {
         Tool::IsoToCso => art(glyph::FILE_ZIP, hue::TEAL),
         Tool::CsoToIso => art(glyph::FILE_ARCHIVE, hue::TEAL),
         Tool::JoinVideo => art(glyph::LINK, hue::BLUE),
+        Tool::Slideshow => art(glyph::IMAGES, hue::BLUE),
         Tool::JoinAudio => art(glyph::LINK, hue::PINK),
         Tool::Mux => art(glyph::MERGE, hue::VIOLET),
         Tool::AudioMix => art(glyph::SLIDERS, hue::PINK),
