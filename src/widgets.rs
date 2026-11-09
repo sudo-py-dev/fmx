@@ -1051,7 +1051,12 @@ pub fn pref_row(
         .data(|d| d.get_temp(id))
         .unwrap_or(Vec2::new(160.0, BUTTON_HEIGHT));
     let controls_width = controls_size.x;
-    let text_width = (width - ROW_PAD * 2.0 - ROW_GAP - controls_width).max(120.0);
+    let stacked = width < ROW_PAD * 2.0 + ROW_GAP + controls_width + 120.0;
+    let text_width = if stacked {
+        (width - ROW_PAD * 2.0).max(1.0)
+    } else {
+        width - ROW_PAD * 2.0 - ROW_GAP - controls_width
+    };
     let body = TextStyle::Body.resolve(ui.style());
     let small = TextStyle::Small.resolve(ui.style());
     let wrapped = |text: &str, font: FontId, color: Color32| {
@@ -1061,9 +1066,13 @@ pub fn pref_row(
     let title_g = wrapped(title, body, p.text);
     let sub_g = (!subtitle.is_empty()).then(|| wrapped(subtitle, small, p.text_weak));
     let text_height = title_g.size().y + sub_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y);
-    let height = (text_height + 24.0)
-        .max(controls_size.y + 16.0)
-        .max(ROW_MIN_HEIGHT);
+    let height = if stacked {
+        (text_height + controls_size.y + 28.0).max(ROW_MIN_HEIGHT)
+    } else {
+        (text_height + 24.0)
+            .max(controls_size.y + 16.0)
+            .max(ROW_MIN_HEIGHT)
+    };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     if !first {
         ui.painter().hline(
@@ -1072,7 +1081,11 @@ pub fn pref_row(
             Stroke::new(1.0, ink(ui).gamma_multiply(0.08)),
         );
     }
-    let mut y = rect.center().y - text_height / 2.0;
+    let mut y = if stacked {
+        rect.top() + 12.0
+    } else {
+        rect.center().y - text_height / 2.0
+    };
     let x = |w: f32| dir::mirror_x(rect, rect.left() + ROW_PAD, w);
     let title_w = title_g.size().x;
     let title_h = title_g.size().y;
@@ -1088,11 +1101,13 @@ pub fn pref_row(
     // starting height, so a stack of controls would run off the row.
     let area = rect.shrink2(Vec2::new(ROW_PAD, 0.0));
     let x = dir::mirror_x(area, area.right() - controls_width, controls_width);
+    let center_y = if stacked {
+        rect.bottom() - 8.0 - controls_size.y / 2.0
+    } else {
+        area.center().y
+    };
     let half = controls_size.y.min(area.height()) / 2.0;
-    let slot = Rect::from_x_y_ranges(
-        x..=x + controls_width,
-        area.center().y - half..=area.center().y + half,
-    );
+    let slot = Rect::from_x_y_ranges(x..=x + controls_width, center_y - half..=center_y + half);
     let mut end = ui.new_child(egui::UiBuilder::new().max_rect(slot).layout(dir::column()));
     let used = end.horizontal(controls).response.rect.size();
     if (used - controls_size).abs().max_elem() > 0.5 {
@@ -1620,6 +1635,64 @@ fn paint_section_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preference_controls_fit_below_wrapped_text_in_narrow_rows() {
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        for frame in 0..3 {
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(240.0, 300.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        let mut control = Rect::NOTHING;
+                        let title = "A preference with a long title that wraps";
+                        let subtitle = "A longer explanation for this preference.";
+                        let row = pref_row(ui, title, subtitle, |ui| {
+                            control = ui
+                                .add_sized([180.0, 32.0], egui::Button::new("Control"))
+                                .rect;
+                        })
+                        .rect;
+                        let width = row.width() - ROW_PAD * 2.0;
+                        let title_height = ui
+                            .painter()
+                            .layout(
+                                title.to_owned(),
+                                TextStyle::Body.resolve(ui.style()),
+                                Color32::WHITE,
+                                width,
+                            )
+                            .size()
+                            .y;
+                        let subtitle_height = ui
+                            .painter()
+                            .layout(
+                                subtitle.to_owned(),
+                                TextStyle::Small.resolve(ui.style()),
+                                Color32::WHITE,
+                                width,
+                            )
+                            .size()
+                            .y;
+                        if frame > 0 {
+                            assert!(
+                                control.top()
+                                    >= row.top() + 12.0 + title_height + 2.0 + subtitle_height
+                            );
+                            assert!(
+                                row.contains_rect(control),
+                                "control {control:?} outside row {row:?}"
+                            );
+                        }
+                    },
+                );
+            })
+            .textures_delta
+            .clear();
+        }
+    }
 
     #[test]
     fn collapsible_section_runs_in_context() {
