@@ -144,6 +144,50 @@ fn find_program(names: &[&str]) -> Option<PathBuf> {
     })
 }
 
+/// The Document Foundation's Linux packages can install into a versioned
+/// /opt/libreoffice... directory without an unversioned command on PATH.
+#[cfg(target_os = "linux")]
+fn find_linux_libreoffice(usr: &Path, opt: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let executable = |path: &Path| {
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    for path in [
+        usr.join("bin/soffice"),
+        usr.join("bin/libreoffice"),
+        usr.join("lib/libreoffice/program/soffice"),
+    ] {
+        if executable(&path) {
+            return Some(path);
+        }
+    }
+
+    std::fs::read_dir(opt)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let suffix = name.to_str()?.strip_prefix("libreoffice")?;
+            let version = if suffix.is_empty() {
+                Vec::new()
+            } else {
+                suffix
+                    .split('.')
+                    .map(|part| {
+                        (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+                            .then(|| part.parse::<u64>().ok())
+                            .flatten()
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            };
+            let path = entry.path().join("program/soffice");
+            executable(&path).then_some((version, path))
+        })
+        .max()
+        .map(|(_, path)| path)
+}
+
 /// Located external programs plus what the found ffmpeg can encode.
 #[derive(Clone, Debug, Default)]
 pub struct Toolbox {
@@ -163,6 +207,9 @@ impl Toolbox {
             .filter_map(|ext| {
                 let found = match (ext, override_path.as_deref()) {
                     (External::Ffmpeg, Some(path)) => path.is_file().then(|| path.to_path_buf()),
+                    #[cfg(target_os = "linux")]
+                    (External::Soffice, _) => find_program(ext.binaries())
+                        .or_else(|| find_linux_libreoffice(Path::new("/usr"), Path::new("/opt"))),
                     _ => find_program(ext.binaries()),
                 };
                 found.map(|p| (ext, p))
@@ -237,5 +284,31 @@ mod tests {
         let tb = Toolbox::detect(Some(Path::new("/definitely/not/here/ffmpeg")));
         assert!(tb.get(External::Ffmpeg).is_none());
         assert_eq!(tb.missing(&[External::Ffmpeg]), Some(External::Ffmpeg));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_debian_libreoffice_layouts_and_prefers_system_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let usr = dir.path().join("usr");
+        let opt = dir.path().join("opt");
+        let install = |path: &Path, mode| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        assert_eq!(find_linux_libreoffice(&usr, &opt), None);
+        let old = opt.join("libreoffice7.9/program/soffice");
+        let new = opt.join("libreoffice7.10/program/soffice");
+        install(&old, 0o755);
+        install(&new, 0o755);
+        install(&opt.join("libreoffice99.0/program/soffice"), 0o644);
+        install(&opt.join("libreoffice-backup/program/soffice"), 0o755);
+        assert_eq!(find_linux_libreoffice(&usr, &opt), Some(new));
+        let system = usr.join("bin/soffice");
+        install(&system, 0o755);
+        assert_eq!(find_linux_libreoffice(&usr, &opt), Some(system));
     }
 }
