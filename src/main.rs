@@ -177,6 +177,10 @@ fn main() {
         }
     }
 
+    if primary && single_instance {
+        update::start_update_cleanup();
+    }
+
     let renderer = renderer();
     tracing::info!(?renderer, self_test, "opening the window");
     let launch = app::Launch {
