@@ -9,7 +9,8 @@ use crate::catalog::{AudioFormat, Device, Tool, VideoEncoder, VideoFormat};
 use crate::i18n::{tr, trf};
 use crate::options::{
     self, Corner, Edit, FrameMode, HwAccel, MixLayout, Options, Quality, RecordArea, RecordFormat,
-    RecordOptions, Rect, ScreenRect, ScreenshotOptions, ShotFormat, parse_timestamp,
+    RecordOptions, Rect, ScreenRect, ScreenshotOptions, ShotFormat, SlideTransition,
+    parse_timestamp,
 };
 use crate::probe::MediaInfo;
 use crate::process::StopMode;
@@ -745,6 +746,20 @@ pub fn validate_options(opts: &Options, tool: Tool) -> Result<(), PlanError> {
     opts.edit.validate(None)?;
     media_tools::validate(tool, &opts.media_tools)?;
     match tool {
+        Tool::Slideshow => {
+            if !opts.slide_duration.is_finite() || !(1.0..=60.0).contains(&opts.slide_duration) {
+                return Err(PlanError::InvalidValue(
+                    tr("slideshow.photo_duration").to_owned(),
+                ));
+            }
+            if !opts.slide_transition_duration.is_finite()
+                || !(0.1..=5.0).contains(&opts.slide_transition_duration)
+            {
+                return Err(PlanError::InvalidValue(
+                    tr("slideshow.transition_duration").to_owned(),
+                ));
+            }
+        }
         Tool::Crop => {
             let rect = opts.edit.crop.ok_or(PlanError::NoCropArea)?;
             if rect.w < 2 || rect.h < 2 {
@@ -1179,6 +1194,7 @@ pub fn build(
         }
         Tool::Split => split(single(inputs)?, output, opts),
         Tool::JoinVideo => join_video(inputs, output, opts),
+        Tool::Slideshow => slideshow(inputs, output, opts),
         Tool::JoinAudio => join_audio(inputs, output, opts),
         Tool::AudioMix => audio_mix(inputs, output, opts),
         Tool::VideoMix => video_mix(inputs, output, opts),
@@ -1367,6 +1383,130 @@ fn split(input: &Input, output_dir: &Path, opts: &Options) -> Result<Plan, PlanE
         .flag("-reset_timestamps", "1")
         .output(&pattern)
         .expect(Some(duration)))
+}
+
+/// Still images are looped; animated GIFs are treated as video clips.
+fn slide_is_photo(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| {
+            ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"]
+                .contains(&ext.to_ascii_lowercase().as_str())
+        })
+}
+
+/// Builds an MP4 slideshow in input order, looping photos and retaining clip audio.
+/// Transition overlaps are limited by adjacent durations and aligned to frames;
+/// missing audio is filled with silence when another clip has audio.
+fn slideshow(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {
+    require_count(inputs, 1, false)?;
+    validate_options(opts, Tool::Slideshow)?;
+    inputs.iter().try_for_each(|i| with_video(i).map(drop))?;
+    // Frame-aligned lengths make the xfade offsets and audio overlaps agree.
+    let durations = inputs
+        .iter()
+        .map(|input| {
+            let seconds = if slide_is_photo(&input.path) {
+                f64::from(opts.slide_duration)
+            } else {
+                input.info.duration_s.ok_or(PlanError::UnknownDuration)?
+            };
+            if !seconds.is_finite() || seconds < 2.0 / f64::from(JOIN_FPS) {
+                return Err(PlanError::UnknownDuration);
+            }
+            Ok((seconds * f64::from(JOIN_FPS)).floor() / f64::from(JOIN_FPS))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let with_audio = inputs
+        .iter()
+        .any(|i| i.info.has_audio && !slide_is_photo(&i.path));
+    let mut args = base().flag("-filter_complex_threads", "1");
+    let mut graph = String::new();
+    for (i, input) in inputs.iter().enumerate() {
+        if slide_is_photo(&input.path) {
+            args = args
+                .flag("-loop", "1")
+                .flag("-framerate", "30")
+                .input(&input.path);
+        } else {
+            args = args.input(&input.path);
+        }
+        let d = durations[i];
+        graph.push_str(&format!("[{i}:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={JOIN_FPS},trim=duration={d:.6},settb=1/{JOIN_FPS},setpts=PTS-STARTPTS,format=yuv420p[v{i}];"));
+        if with_audio {
+            if input.info.has_audio && !slide_is_photo(&input.path) {
+                graph.push_str(&format!("[{i}:a:0]aresample={JOIN_SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration={d:.6},asetpts=PTS-STARTPTS[a{i}];"));
+            } else {
+                graph.push_str(&format!("anullsrc=r={JOIN_SAMPLE_RATE}:cl=stereo,atrim=duration={d:.6},asetpts=PTS-STARTPTS[a{i}];"));
+            }
+        }
+    }
+    let mut elapsed = durations[0];
+    let mut video = "v0".to_owned();
+    let mut audio = "a0".to_owned();
+    let choices = ["fade", "slideleft", "slideright", "slideup", "slidedown"];
+    let mut seed = opts.slide_random_seed;
+    for i in 1..inputs.len() {
+        let next_video = format!("outv{i}");
+        let next_audio = format!("outa{i}");
+        if opts.slide_transition == SlideTransition::Cut {
+            graph.push_str(&format!("[{video}][v{i}]concat=n=2:v=1:a=0[{next_video}];"));
+            if with_audio {
+                graph.push_str(&format!("[{audio}][a{i}]concat=n=2:v=0:a=1[{next_audio}];"));
+            }
+            elapsed += durations[i];
+        } else {
+            let overlap = ((f64::from(opts.slide_transition_duration)
+                .min(durations[i - 1] / 2.0)
+                .min(durations[i] / 2.0)
+                * f64::from(JOIN_FPS))
+            .floor()
+            .max(1.0))
+                / f64::from(JOIN_FPS);
+            let transition = match opts.slide_transition {
+                SlideTransition::Fade => "fade",
+                SlideTransition::SlideLeft => "slideleft",
+                SlideTransition::SlideRight => "slideright",
+                SlideTransition::SlideUp => "slideup",
+                SlideTransition::SlideDown => "slidedown",
+                SlideTransition::Random => {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    choices[((seed >> 32) as usize) % choices.len()]
+                }
+                SlideTransition::Cut => unreachable!(),
+            };
+            let offset = elapsed - overlap;
+            graph.push_str(&format!("[{video}][v{i}]xfade=transition={transition}:duration={overlap:.6}:offset={offset:.6}[{next_video}];"));
+            if with_audio {
+                graph.push_str(&format!(
+                    "[{audio}][a{i}]acrossfade=d={overlap:.6}[{next_audio}];"
+                ));
+            }
+            elapsed += durations[i] - overlap;
+        }
+        video = next_video;
+        audio = next_audio;
+    }
+    graph.pop(); // trailing semicolon
+    args = args
+        .flag("-filter_complex", graph)
+        .flag("-map", format!("[{video}]"));
+    if with_audio {
+        args = args.flag("-map", format!("[{audio}]"));
+    }
+    // The slideshow always outputs standard H.264 at its normalized frame rate.
+    let mut encode_opts = opts.clone();
+    encode_opts.video = Default::default();
+    Ok(args
+        .extend(video_codec(VideoFormat::Mp4, &encode_opts))
+        .extend(if with_audio {
+            audio_codec_for_video(VideoFormat::Mp4, &encode_opts)
+        } else {
+            strings(&["-an"])
+        })
+        .extend(strings(&["-movflags", "+faststart"]))
+        .output(output)
+        .expect(Some(elapsed)))
 }
 
 fn join_video(inputs: &[Input], output: &Path, opts: &Options) -> Result<Plan, PlanError> {
@@ -1971,6 +2111,52 @@ mod tests {
 
     fn plan(tool: Tool, inputs: &[Input], opts: &Options) -> String {
         joined(&build(tool, inputs, Path::new("/out/o"), opts).expect("plan"))
+    }
+
+    /// Checks slideshow timing and rejects invalid options or unknown clip duration.
+    #[test]
+    fn slideshow_checks_inputs_and_timing() {
+        let photo = input("photo.png", media(true, false, 0.0));
+        let clip = input("clip.mp4", media(true, true, 3.0));
+        let opts = Options {
+            slide_duration: 2.0,
+            slide_transition_duration: 1.0,
+            slide_transition: SlideTransition::SlideRight,
+            ..Options::default()
+        };
+        let p = build(
+            Tool::Slideshow,
+            &[photo.clone(), clip.clone()],
+            Path::new("/out.mp4"),
+            &opts,
+        )
+        .unwrap();
+        let cmd = joined(&p);
+        assert!(cmd.contains("-loop 1 -framerate 30 -i file:/in/photo.png"));
+        assert!(cmd.contains("xfade=transition=slideright:duration=1.000000:offset=1.000000"));
+        assert!(cmd.contains("anullsrc") && cmd.contains("acrossfade"));
+        assert_eq!(p.expected_secs, Some(4.0));
+        let invalid = Options {
+            slide_duration: f32::NAN,
+            ..opts.clone()
+        };
+        assert!(build(Tool::Slideshow, &[photo], Path::new("/out.mp4"), &invalid).is_err());
+        let no_duration = input(
+            "missing.mp4",
+            MediaInfo {
+                duration_s: None,
+                ..clip.info
+            },
+        );
+        assert_eq!(
+            build(
+                Tool::Slideshow,
+                &[no_duration],
+                Path::new("/out.mp4"),
+                &opts
+            ),
+            Err(PlanError::UnknownDuration)
+        );
     }
 
     #[test]

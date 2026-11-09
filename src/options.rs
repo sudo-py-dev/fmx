@@ -35,6 +35,44 @@ impl Quality {
     }
 }
 
+/// Transition between consecutive slideshow items.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlideTransition {
+    Cut,
+    #[default]
+    Fade,
+    SlideLeft,
+    SlideRight,
+    SlideUp,
+    SlideDown,
+    Random,
+}
+
+impl SlideTransition {
+    pub const ALL: [Self; 7] = [
+        Self::Cut,
+        Self::Fade,
+        Self::SlideLeft,
+        Self::SlideRight,
+        Self::SlideUp,
+        Self::SlideDown,
+        Self::Random,
+    ];
+
+    /// Returns the localized name for the transition selector.
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            Self::Cut => "slideshow.cut",
+            Self::Fade => "slideshow.fade",
+            Self::SlideLeft => "slideshow.left",
+            Self::SlideRight => "slideshow.right",
+            Self::SlideUp => "slideshow.up",
+            Self::SlideDown => "slideshow.down",
+            Self::Random => "slideshow.random",
+        })
+    }
+}
+
 /// Output height cap. Videos are never upscaled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Resolution {
@@ -1083,6 +1121,11 @@ impl Default for CollagePhotoEdit {
 #[serde(default)]
 pub struct Options {
     pub media_tools: MediaToolOptions,
+    pub slide_duration: f32,
+    pub slide_transition: SlideTransition,
+    pub slide_transition_duration: f32,
+    /// Seed assigned when the job runs.
+    pub slide_random_seed: u64,
     pub quality: Quality,
     pub resolution: Resolution,
     pub video: VideoSettings,
@@ -1160,9 +1203,14 @@ impl Options {
 }
 
 impl Default for Options {
+    /// Supplies initial settings for newly created jobs and saved preferences.
     fn default() -> Self {
         Self {
             media_tools: MediaToolOptions::default(),
+            slide_duration: 4.0,
+            slide_transition: SlideTransition::default(),
+            slide_transition_duration: 1.0,
+            slide_random_seed: 0,
             quality: Quality::Medium,
             resolution: Resolution::Original,
             video: VideoSettings::default(),
