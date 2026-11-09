@@ -95,6 +95,38 @@ const SELF_TEST_FRAMES: u32 = 30;
 /// Progress below this is too early to estimate time left.
 const MIN_PROGRESS_FOR_ETA: f32 = 0.03;
 
+/// A Linux input picker runs away from the window event loop.
+#[cfg(target_os = "linux")]
+struct InputPicker {
+    generation: u64,
+    rx: mpsc::Receiver<Option<Vec<PathBuf>>>,
+}
+
+#[cfg(target_os = "linux")]
+impl InputPicker {
+    fn start(
+        generation: u64,
+        notify: Notifier,
+        work: impl FnOnce() -> Option<Vec<PathBuf>> + Send + 'static,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+            notify();
+        });
+        Self { generation, rx }
+    }
+
+    /// None means still open; Some(None) means cancelled, stale, or failed.
+    fn poll(&self, generation: u64) -> Option<Option<Vec<PathBuf>>> {
+        match self.rx.try_recv() {
+            Ok(paths) if self.generation == generation => Some(paths),
+            Ok(_) | Err(mpsc::TryRecvError::Disconnected) => Some(None),
+            Err(mpsc::TryRecvError::Empty) => None,
+        }
+    }
+}
+
 /// What a pasted link points to, fetched with yt-dlp before downloading.
 struct LinkPreview {
     url: String,
@@ -213,6 +245,10 @@ pub struct FmxApp {
     toolbox: Toolbox,
     tool: Tool,
     files: Vec<PathBuf>,
+    #[cfg(target_os = "linux")]
+    input_picker: Option<InputPicker>,
+    #[cfg(target_os = "linux")]
+    input_generation: u64,
     url: String,
     toasts: Toasts,
     shortcut_result: Option<std::sync::mpsc::Receiver<std::io::Result<std::path::PathBuf>>>,
@@ -335,6 +371,10 @@ impl FmxApp {
             queue: Queue::new(),
             toolbox,
             files: Vec::new(),
+            #[cfg(target_os = "linux")]
+            input_picker: None,
+            #[cfg(target_os = "linux")]
+            input_generation: 0,
             url: String::new(),
             toasts: Toasts::default(),
             shortcut_result: None,
@@ -644,6 +684,8 @@ impl FmxApp {
             self.files.clear();
         }
         if tool != self.tool {
+            #[cfg(target_os = "linux")]
+            self.invalidate_input_picker();
             self.preview = None;
             self.preview_index = 0;
         }
@@ -715,17 +757,7 @@ impl FmxApp {
     }
 
     fn accepts(&self, path: &Path) -> bool {
-        let kind = self.tool.input_kind();
-        if kind.picks_folders() && path.is_dir() {
-            return true;
-        }
-        let exts = kind.extensions();
-        path.is_file()
-            && (exts.is_empty()
-                || path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| exts.contains(&e.to_ascii_lowercase().as_str())))
+        accepts_input(self.tool.input_kind(), path)
     }
 
     fn add_files(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
@@ -817,51 +849,90 @@ impl FmxApp {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn invalidate_input_picker(&mut self) {
+        self.input_generation = self.input_generation.wrapping_add(1);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn start_input_picker(&mut self, work: impl FnOnce() -> Option<Vec<PathBuf>> + Send + 'static) {
+        if self.input_picker.is_none() {
+            self.input_picker = Some(InputPicker::start(
+                self.input_generation,
+                Arc::clone(&self.notifier),
+                work,
+            ));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn poll_input_picker(&mut self) {
+        if let Some(result) = self
+            .input_picker
+            .as_ref()
+            .and_then(|picker| picker.poll(self.input_generation))
+        {
+            self.input_picker = None;
+            if let Some(paths) = result {
+                self.add_files(paths);
+            }
+        }
+    }
+
     fn pick_files(&mut self) {
         let kind = self.tool.input_kind();
-        let dialog = rfd::FileDialog::new();
-        let picked = if kind.picks_folders() {
-            dialog.pick_folders()
-        } else {
-            let exts = kind.extensions();
-            let dialog = if exts.is_empty() {
-                dialog
+        // Translations are captured before the background thread starts.
+        let supported = tr("filter.supported");
+        let all = tr("filter.all");
+        let pick = move || {
+            let dialog = rfd::FileDialog::new();
+            if kind.picks_folders() {
+                dialog.pick_folders()
             } else {
-                dialog.add_filter(tr("filter.supported"), exts)
-            };
-            dialog.add_filter(tr("filter.all"), &["*"]).pick_files()
+                let exts = kind.extensions();
+                let dialog = if exts.is_empty() {
+                    dialog
+                } else {
+                    dialog.add_filter(supported, exts)
+                };
+                dialog.add_filter(all, &["*"]).pick_files()
+            }
         };
-        if let Some(paths) = picked {
+        #[cfg(target_os = "linux")]
+        self.start_input_picker(pick);
+        #[cfg(not(target_os = "linux"))]
+        if let Some(paths) = pick() {
             self.add_files(paths);
         }
     }
 
     /// Adds every matching file under a folder, recursively.
     fn add_folder(&mut self) {
-        let Some(root) = rfd::FileDialog::new().pick_folder() else {
-            return;
+        let kind = self.tool.input_kind();
+        let pick = move || {
+            let root = rfd::FileDialog::new().pick_folder()?;
+            Some(scan_input_folder(root, kind))
         };
-        let mut found = Vec::new();
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                // file_type() does not follow symlinks, so link loops are skipped.
-                match entry.file_type() {
-                    Ok(t) if t.is_dir() => stack.push(path),
-                    Ok(t) if t.is_file() && self.accepts(&path) => found.push(path),
-                    _ => {}
-                }
-            }
-            if found.len() >= MAX_SCAN_FILES {
-                break;
-            }
+        #[cfg(target_os = "linux")]
+        self.start_input_picker(pick);
+        #[cfg(not(target_os = "linux"))]
+        if let Some(paths) = pick() {
+            self.add_files(paths);
         }
-        found.sort();
-        self.add_files(found);
+    }
+
+    fn pick_iso_files(&mut self) {
+        let pick = || {
+            rfd::FileDialog::new()
+                .add_filter("ISO", &["iso"])
+                .pick_files()
+        };
+        #[cfg(target_os = "linux")]
+        self.start_input_picker(pick);
+        #[cfg(not(target_os = "linux"))]
+        if let Some(paths) = pick() {
+            self.add_files(paths);
+        }
     }
 
     fn enqueue(&mut self) {
@@ -903,6 +974,8 @@ impl FmxApp {
                     .into_iter()
                     .for_each(|s| self.queue.push_titled(s, title.clone()));
                 self.files.clear();
+                #[cfg(target_os = "linux")]
+                self.invalidate_input_picker();
                 self.tag_editor = tag_editor::TagEditor::default();
                 self.url.clear();
                 self.settings.options.edit = Edit::default();
@@ -2966,11 +3039,8 @@ impl FmxApp {
                     Size::Regular,
                 )
                 .clicked()
-                && let Some(paths) = rfd::FileDialog::new()
-                    .add_filter("ISO", &["iso"])
-                    .pick_files()
             {
-                self.add_files(paths);
+                self.pick_iso_files();
             }
             if !kind.picks_folders()
                 && widgets::button(
@@ -3001,6 +3071,8 @@ impl FmxApp {
                 .clicked()
             {
                 self.files.clear();
+                #[cfg(target_os = "linux")]
+                self.invalidate_input_picker();
             }
         });
         if has_files {
@@ -5501,6 +5573,46 @@ fn file_art(path: &Path, kind: InputKind) -> art::Art {
     art::Art { glyph, hue }
 }
 
+/// Whether a path is a valid input for this kind of tool.
+fn accepts_input(kind: InputKind, path: &Path) -> bool {
+    if kind.picks_folders() && path.is_dir() {
+        return true;
+    }
+    let exts = kind.extensions();
+    path.is_file()
+        && (exts.is_empty()
+            || path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.contains(&e.to_ascii_lowercase().as_str())))
+}
+
+/// Finds supported files without following symlinked directories.
+fn scan_input_folder(root: PathBuf, kind: InputKind) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(t) if (t.is_file() || t.is_symlink()) && accepts_input(kind, &path) => {
+                    found.push(path)
+                }
+                _ => {}
+            }
+        }
+        if found.len() >= MAX_SCAN_FILES {
+            break;
+        }
+    }
+    found.sort();
+    found
+}
+
 /// A file size such as `12.4 MB` (decimal units, like file managers).
 fn human_size(bytes: u64) -> String {
     download::human_bytes(bytes as f64)
@@ -6803,6 +6915,8 @@ impl eframe::App for FmxApp {
         self.check_after_done(&ctx);
         self.poll_update(&ctx);
         self.poll_link(&ctx);
+        #[cfg(target_os = "linux")]
+        self.poll_input_picker();
         self.poll_details();
         let p = theme::palette(ui);
 
@@ -6937,6 +7051,75 @@ impl eframe::App for FmxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn input_picker_keeps_the_caller_free_and_discards_stale_results() {
+        let (resume, wait) = mpsc::channel();
+        let (notified, notification) = mpsc::channel();
+        let picker = InputPicker::start(
+            4,
+            Arc::new(move || {
+                let _ = notified.send(());
+            }),
+            move || {
+                wait.recv().unwrap();
+                Some(vec![PathBuf::from("photo.png")])
+            },
+        );
+        assert_eq!(picker.poll(4), None);
+        resume.send(()).unwrap();
+        notification.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(picker.poll(5), Some(None));
+
+        let (notified, notification) = mpsc::channel();
+        let picker = InputPicker::start(
+            7,
+            Arc::new(move || {
+                let _ = notified.send(());
+            }),
+            || Some(vec![PathBuf::from("photo.png"), PathBuf::from("video.mp4")]),
+        );
+        notification.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            picker.poll(7),
+            Some(Some(vec![
+                PathBuf::from("photo.png"),
+                PathBuf::from("video.mp4")
+            ]))
+        );
+
+        let (notified, notification) = mpsc::channel();
+        let picker = InputPicker::start(
+            8,
+            Arc::new(move || {
+                let _ = notified.send(());
+            }),
+            || None,
+        );
+        notification.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(picker.poll(8), Some(None));
+    }
+
+    #[test]
+    fn input_folder_scan_keeps_supported_files_in_sorted_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let image = dir.path().join("photo.PNG");
+        let video = nested.join("clip.mp4");
+        std::fs::write(&image, []).unwrap();
+        std::fs::write(&video, []).unwrap();
+        std::fs::write(dir.path().join("other.txt"), []).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path(), nested.join("loop")).unwrap();
+        let mut expected = vec![image, video];
+        expected.sort();
+        assert_eq!(
+            scan_input_folder(dir.path().to_path_buf(), InputKind::Slides),
+            expected
+        );
+    }
 
     #[test]
     fn search_stays_inside_sidebar_while_typing_and_clearing() {
