@@ -6579,9 +6579,7 @@ fn job_controls(
     remove: &mut Option<JobId>,
 ) {
     let icon = |ui: &mut egui::Ui, icon: &str, hint: &str| {
-        widgets::icon_button(ui, icon, hint, Kind::Ghost, Size::Small)
-            .on_hover_text(hint)
-            .clicked()
+        widgets::icon_button(ui, icon, hint, Kind::Ghost, Size::Small).clicked()
     };
     match &job.state {
         JobState::Running {
