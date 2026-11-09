@@ -1,23 +1,25 @@
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:dfd4f5e266a7a059abc3e3e41b42a4a26f3812870a9899bf50003256f22bcfbf -->
+
 ## What's new
 
-### Saved presets
-- Save a tool with its current settings as a named preset.
-- Run presets from Favorites, the presets button, or a file's right-click menu.
-- Start a preset from the command line with `--preset <id>`.
+### Photo and video slideshows
+- Combine photos and video clips into a 1280 × 720 MP4, preserving video audio.
+- Choose photo duration, output quality, and cut, fade, slide, or random transitions.
 
-### Lossy WebP output
-- Export lossy WebP images, keeping transparency.
+### Batch subtitle matching
+- Match SRT, ASS, SSA, or VTT subtitles to videos by filename when adding subtitles in a batch.
+- FMX reports missing or ambiguous matches before adding jobs to the queue.
 
-### Smoother screen recording
-- The timer shows the real elapsed time instead of lagging behind.
-- On Wayland, recordings keep their real length and stay in sync with the sound.
-- A "Dropping frames" warning appears when the recording falls well below the chosen frame rate.
+### Security and reliability
+- Limit resource use when processing large or malformed media and documents.
+- Verify a protected copy of Debian updates before installation and harden desktop menu cleanup.
+- Improve cancellation during CSO decompression and speed up output naming for large batches.
 
-### Fixes
-- Collage layout thumbnails no longer overlap in right-to-left languages, and the editor fits in short windows.
-- Desktop shortcuts keep working after FMX is updated or replaced.
-- Previews use a bounded amount of memory.
-- Queue rows show the full running status on hover.
+
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Download
 
