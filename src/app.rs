@@ -5599,7 +5599,9 @@ fn scan_input_folder(root: PathBuf, kind: InputKind) -> Vec<PathBuf> {
             let path = entry.path();
             match entry.file_type() {
                 Ok(t) if t.is_dir() => stack.push(path),
-                Ok(t) if t.is_file() && accepts_input(kind, &path) => found.push(path),
+                Ok(t) if (t.is_file() || t.is_symlink()) && accepts_input(kind, &path) => {
+                    found.push(path)
+                }
                 _ => {}
             }
         }
