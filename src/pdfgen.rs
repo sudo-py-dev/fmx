@@ -24,6 +24,38 @@ const PARA_GAP: f32 = 6.0;
 const LIST_INDENT: f32 = 18.0;
 const CELL_PAD: f32 = 4.0;
 const ITALIC_SKEW: f32 = 0.2;
+// Include absent cells: ragged tables are rendered as rectangular grids.
+const MAX_TABLE_COLUMNS: usize = 256;
+const MAX_TABLE_ROWS: usize = 100_000;
+const MAX_TABLE_CELLS: usize = 100_000;
+const MAX_TABLE_BUFFER_BYTES: usize = 32 << 20;
+
+fn table_limit_error() -> PdfError {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "PDF table rendering limit exceeded",
+    )
+    .into()
+}
+
+/// Check the entire document before any rectangular scans or allocations.
+fn check_tables(blocks: &[Block]) -> Result<(), PdfError> {
+    let mut remaining = MAX_TABLE_CELLS;
+    for block in blocks {
+        if let Block::Table(rows) = block {
+            if rows.len() > MAX_TABLE_ROWS {
+                return Err(table_limit_error());
+            }
+            let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+            if cols > MAX_TABLE_COLUMNS {
+                return Err(table_limit_error());
+            }
+            let cells = rows.len().checked_mul(cols).ok_or_else(table_limit_error)?;
+            remaining = remaining.checked_sub(cells).ok_or_else(table_limit_error)?;
+        }
+    }
+    Ok(())
+}
 /// Line width for the "fill and stroke" render mode that fakes bold.
 const BOLD_STROKE: f32 = 0.035;
 
@@ -205,6 +237,7 @@ struct Layout<'f> {
     font: &'f Font<'f>,
     pages: Vec<String>,
     page: String,
+    completed_bytes: usize,
     y: f32,
     used: BTreeMap<u16, char>,
 }
@@ -215,6 +248,7 @@ impl<'f> Layout<'f> {
             font,
             pages: Vec::new(),
             page: String::new(),
+            completed_bytes: 0,
             y: PAGE_H - MARGIN,
             used: BTreeMap::new(),
         }
@@ -225,6 +259,7 @@ impl<'f> Layout<'f> {
     }
 
     fn new_page(&mut self) {
+        self.completed_bytes = self.completed_bytes.saturating_add(self.page.len());
         self.pages.push(std::mem::take(&mut self.page));
         self.y = PAGE_H - MARGIN;
     }
@@ -312,10 +347,10 @@ impl<'f> Layout<'f> {
         );
     }
 
-    fn table(&mut self, rows: &[Vec<String>]) {
+    fn table(&mut self, rows: &[Vec<String>]) -> Result<(), PdfError> {
         let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
         if cols == 0 {
-            return;
+            return Ok(());
         }
         let total = Self::content_width();
         // Share the width by each column's longest text, with a floor.
@@ -379,9 +414,15 @@ impl<'f> Layout<'f> {
                 }
                 x += widths[c];
             }
+            // A row has bounded columns and lines. Check after each row so
+            // completed page streams cannot accumulate without a bound.
+            if self.completed_bytes.saturating_add(self.page.len()) > MAX_TABLE_BUFFER_BYTES {
+                return Err(table_limit_error());
+            }
             self.y = top - height;
         }
         self.y -= PARA_GAP * 2.0;
+        Ok(())
     }
 
     fn finish(mut self) -> (Vec<String>, BTreeMap<u16, char>) {
@@ -455,6 +496,7 @@ fn to_unicode_cmap(used: &BTreeMap<u16, char>) -> String {
 
 /// Lays out `blocks` on A4 pages and writes the PDF to `output` atomically.
 pub fn render(blocks: &[Block], output: &Path) -> Result<(), PdfError> {
+    check_tables(blocks)?;
     let font = Font::load(FONT)?;
     let mut layout = Layout::new(&font);
     for block in blocks {
@@ -462,7 +504,7 @@ pub fn render(blocks: &[Block], output: &Path) -> Result<(), PdfError> {
             Block::Heading(level, text) => layout.heading(*level, text),
             Block::Paragraph(spans) => layout.paragraph(spans, BODY_SIZE, 0.0, false),
             Block::ListItem(spans) => layout.paragraph(spans, BODY_SIZE, LIST_INDENT, true),
-            Block::Table(rows) => layout.table(rows),
+            Block::Table(rows) => layout.table(rows)?,
             Block::PageBreak => layout.new_page(),
         }
     }
@@ -577,6 +619,57 @@ mod tests {
             Block::PageBreak,
             Block::Paragraph(vec![Span::plain("x".repeat(400))]),
         ]
+    }
+
+    #[test]
+    fn rejects_ragged_expansion_without_replacing_output() {
+        // About 1 KB of CSV would otherwise expand to 100,200 cells.
+        let csv = format!("{}\n{}", ",".repeat(199), "x\n".repeat(500));
+        let rows = crate::office::parse_delimited(&csv, ',');
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("existing.pdf");
+        std::fs::write(&out, b"existing").unwrap();
+        assert!(
+            matches!(render(&[Block::Table(rows)], &out), Err(PdfError::Io(e))
+            if e.kind() == std::io::ErrorKind::InvalidData)
+        );
+        assert_eq!(std::fs::read(out).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn table_limits_include_all_tables_and_empty_rows() {
+        let table = Block::Table(vec![vec![String::new(); 100]; 500]);
+        assert!(check_tables(&[table.clone(), table.clone()]).is_ok());
+        assert!(check_tables(&[table.clone(), table.clone(), table]).is_err());
+        assert!(check_tables(&[Block::Table(vec![vec![]; MAX_TABLE_ROWS + 1])]).is_err());
+        assert!(
+            check_tables(&[Block::Table(vec![vec![
+                String::new();
+                MAX_TABLE_COLUMNS + 1
+            ]])])
+            .is_err()
+        );
+        assert!(check_tables(&[Block::Table(vec![])]).is_ok());
+    }
+
+    #[test]
+    fn table_buffer_limit_counts_completed_pages() {
+        let font = Font::load(FONT).unwrap();
+        let mut layout = Layout::new(&font);
+        layout.page = " ".repeat(MAX_TABLE_BUFFER_BYTES);
+        layout.new_page();
+        assert!(layout.table(&[vec!["cell".into()]]).is_err());
+    }
+
+    #[test]
+    fn small_ragged_table_preserves_rectangular_borders() {
+        let font = Font::load(FONT).unwrap();
+        let mut layout = Layout::new(&font);
+        layout
+            .table(&[vec!["a".into(), "b".into()], vec!["c".into()]])
+            .unwrap();
+        let (pages, _) = layout.finish();
+        assert_eq!(pages[0].matches(" re S").count(), 4);
     }
 
     #[test]
