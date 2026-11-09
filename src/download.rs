@@ -21,6 +21,8 @@ const PROGRESS_TEMPLATE: &str = "download:FMX|%(progress.downloaded_bytes)s|%(pr
 const MAX_INFO_BYTES: u64 = 32 << 20;
 const INFO_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_THUMBNAIL_BYTES: u64 = 8 << 20;
+const MAX_THUMBNAIL_DIMENSION: u32 = 2048;
+const MAX_THUMBNAIL_ALLOC: u64 = 16 << 20;
 const MAX_COOKIES_BYTES: u64 = 4 << 20;
 // Keep both entry points isolated from local executable plugin/config content.
 const ISOLATION_ARGS: &[&str] = &[
@@ -693,7 +695,18 @@ pub fn fetch_thumbnail(url: &str) -> Result<image::RgbaImage, String> {
         .limit(MAX_THUMBNAIL_BYTES)
         .read_to_vec()
         .map_err(|e| e.to_string())?;
-    let image = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    decode_thumbnail(&bytes).map_err(|e| e.to_string())
+}
+
+fn decode_thumbnail(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    // Bound pixel work even for decoders whose allocation limit is best-effort.
+    limits.max_image_width = Some(MAX_THUMBNAIL_DIMENSION);
+    limits.max_image_height = Some(MAX_THUMBNAIL_DIMENSION);
+    limits.max_alloc = Some(MAX_THUMBNAIL_ALLOC);
+    reader.limits(limits);
+    let image = reader.decode()?;
     // Small is enough for the card and keeps the texture light.
     Ok(image.thumbnail(480, 270).into_rgba8())
 }
@@ -701,6 +714,43 @@ pub fn fetch_thumbnail(url: &str) -> Result<image::RgbaImage, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbnail_decode_rejects_oversized_headers_before_reading_pixels() {
+        // No pixel payload: a decoding error would mean the limit was checked too late.
+        for header in [
+            "P6\n2049 1\n255\n",
+            "P6\n1 2049\n255\n",
+            // Dimensions fit, but 16-bit RGB output exceeds the allocation budget.
+            "P6\n2048 2048\n65535\n",
+        ] {
+            assert!(matches!(
+                decode_thumbnail(header.as_bytes()),
+                Err(image::ImageError::Limits(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn thumbnail_decode_bounds_compressed_images_and_preserves_previews() {
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            let image = image::DynamicImage::new_rgb8(960, 540);
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, format).unwrap();
+            let preview = decode_thumbnail(bytes.get_ref()).unwrap();
+            assert_eq!(preview.dimensions(), (480, 270));
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_luma8(4096, 4096)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        assert!(bytes.get_ref().len() < MAX_THUMBNAIL_BYTES as usize);
+        assert!(matches!(
+            decode_thumbnail(bytes.get_ref()),
+            Err(image::ImageError::Limits(_))
+        ));
+        assert!(decode_thumbnail(b"not an image").is_err());
+    }
 
     const VALID_COOKIES: &str =
         "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tsession\tvalue\n";
