@@ -7223,6 +7223,81 @@ mod tests {
     }
 
     #[test]
+    fn settings_dialog_switches_navigation_between_narrow_and_wide_windows() {
+        let ctx = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = FmxApp::new(
+            &cc,
+            Launch {
+                request: instance::Request::Focus,
+                self_test: true,
+                single_instance: false,
+            },
+        );
+        app.show_settings = true;
+        theme::apply(&ctx, ThemeChoice::Light, true);
+        ctx.enable_accesskit();
+
+        // Reuse the context to cover resizing in both directions.
+        for (size, compact) in [
+            ([360.0, 480.0], true),
+            ([900.0, 700.0], false),
+            ([360.0, 480.0], true),
+        ] {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            for frame in 0..4 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        ..Default::default()
+                    },
+                    |ui| app.settings_window(ui.ctx()),
+                );
+                output.textures_delta.clear();
+                if frame != 3 {
+                    continue;
+                }
+                let dialog = ctx
+                    .memory(|memory| memory.area_rect(Id::unique("settings_dialog")))
+                    .expect("settings dialog is rendered");
+                assert!(
+                    screen.contains_rect(dialog),
+                    "{dialog:?} outside {screen:?}"
+                );
+
+                let tree = output.platform_output.accesskit_update.unwrap();
+                let nodes: Vec<_> = tree.nodes.iter().map(|(_, node)| node).collect();
+                let section_picker = nodes.iter().any(|node| {
+                    node.role() == egui::Role::ComboBox
+                        && node.value() == Some(app.settings_tab.label())
+                });
+                assert_eq!(section_picker, compact, "window size {size:?}");
+                let tabs: Vec<_> = nodes
+                    .iter()
+                    .filter(|node| node.role() == egui::Role::Tab)
+                    .collect();
+                assert_eq!(tabs.len(), if compact { 0 } else { SettingsTab::ALL.len() });
+                for tab in SettingsTab::ALL {
+                    assert_eq!(
+                        tabs.iter().any(|node| node.label() == Some(tab.label())),
+                        !compact,
+                        "sidebar section {} at {size:?}",
+                        tab.label(),
+                    );
+                }
+                // The language selector proves the preferences page also rendered.
+                assert_eq!(
+                    nodes
+                        .iter()
+                        .filter(|node| node.role() == egui::Role::ComboBox)
+                        .count(),
+                    if compact { 2 } else { 1 },
+                );
+            }
+        }
+    }
+
+    #[test]
     fn welcome_pages_fit_small_and_large_windows() {
         for size in [[360.0, 480.0], [900.0, 700.0]] {
             for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
