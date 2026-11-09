@@ -9,7 +9,7 @@ repository = "https://github.com/sudo-py-dev/fmx"
 homepage = "https://github.com/sudo-py-dev/fmx"
 
 [dependencies]
-calamine = "0.37.0"
+calamine = "0.38.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "7"
 # Old FB2 books are often windows-1251; already built in through calamine.
