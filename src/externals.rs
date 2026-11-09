@@ -207,13 +207,10 @@ impl Toolbox {
             .filter_map(|ext| {
                 let found = match (ext, override_path.as_deref()) {
                     (External::Ffmpeg, Some(path)) => path.is_file().then(|| path.to_path_buf()),
-                    _ => find_program(ext.binaries()).or_else(|| {
-                        #[cfg(target_os = "linux")]
-                        if ext == External::Soffice {
-                            return find_linux_libreoffice(Path::new("/usr"), Path::new("/opt"));
-                        }
-                        None
-                    }),
+                    #[cfg(target_os = "linux")]
+                    (External::Soffice, _) => find_program(ext.binaries())
+                        .or_else(|| find_linux_libreoffice(Path::new("/usr"), Path::new("/opt"))),
+                    _ => find_program(ext.binaries()),
                 };
                 found.map(|p| (ext, p))
             })
