@@ -1,25 +1,13 @@
-<!-- coderabbit-ai-generated:v1 -->
-
-<!-- coderabbit-ai-generated-section:v1:dfd4f5e266a7a059abc3e3e41b42a4a26f3812870a9899bf50003256f22bcfbf -->
-
 ## What's new
 
-### Photo and video slideshows
-- Combine photos and video clips into a 1280 × 720 MP4, preserving video audio.
-- Choose photo duration, output quality, and cut, fade, slide, or random transitions.
+### Compact layouts and translations
+- Improve compact editor and settings layouts.
+- Complete collage translations.
 
-### Batch subtitle matching
-- Match SRT, ASS, SSA, or VTT subtitles to videos by filename when adding subtitles in a batch.
-- FMX reports missing or ambiguous matches before adding jobs to the queue.
-
-### Security and reliability
-- Limit resource use when processing large or malformed media and documents.
-- Verify a protected copy of Debian updates before installation and harden desktop menu cleanup.
-- Improve cancellation during CSO decompression and speed up output naming for large batches.
-
-
-
-<!-- /coderabbit-ai-generated:v1 -->
+### Linux reliability and packaging
+- Detect LibreOffice installations outside PATH for document conversion.
+- Add compact UI regression tests and test the optimized Linux application before packaging.
+- Improve compression of the portable Linux download.
 
 ## Download
 
