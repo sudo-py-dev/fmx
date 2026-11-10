@@ -49,6 +49,7 @@ rm -rf "$root/debian"
 # ── Installed-size (in kB) ───────────────────────────────────────────────────
 size="$(du -sk "$root" | cut -f1)"
 
+# libxkbcommon-x11 is loaded dynamically, so dpkg-shlibdeps misses it.
 # ── DEBIAN/control ───────────────────────────────────────────────────────────
 mkdir -p "$root/DEBIAN"
 cat > "$root/DEBIAN/control" <<CONTROL
@@ -59,7 +60,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: sudo-py-dev <https://github.com/sudo-py-dev/fmx>
 Installed-Size: $size
-Depends: ${depends:-libc6}
+Depends: ${depends:-libc6}, libxkbcommon-x11-0
 Suggests: poppler-utils, ghostscript, xorriso, calibre
 Homepage: https://github.com/sudo-py-dev/fmx
 Description: Free Media Xpress - all-in-one media, document and disc converter
