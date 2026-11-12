@@ -190,7 +190,6 @@ impl CollageEditor {
                         Kind::Ghost,
                         Size::Small,
                     )
-                    .on_hover_text(tr("collage.undo"))
                     .clicked()
                 })
                 .inner;
@@ -203,7 +202,6 @@ impl CollageEditor {
                         Kind::Ghost,
                         Size::Small,
                     )
-                    .on_hover_text(tr("collage.redo"))
                     .clicked()
                 })
                 .inner;
@@ -239,7 +237,6 @@ impl CollageEditor {
                     Kind::Secondary,
                     Size::Small,
                 )
-                .on_hover_text(tr("collage.rotate_left"))
                 .clicked()
                 {
                     edit.turns = (edit.turns + 3) % 4;
@@ -251,7 +248,6 @@ impl CollageEditor {
                     Kind::Secondary,
                     Size::Small,
                 )
-                .on_hover_text(tr("collage.rotate"))
                 .clicked()
                 {
                     edit.turns = (edit.turns + 1) % 4;
@@ -662,7 +658,6 @@ impl CollageEditor {
                     Kind::Secondary,
                     Size::Regular,
                 )
-                .on_hover_text(tr("collage.rotate_left"))
                 .clicked()
                 {
                     edit.turns = (edit.turns + 3) % 4;
@@ -680,7 +675,6 @@ impl CollageEditor {
                     Kind::Secondary,
                     Size::Regular,
                 )
-                .on_hover_text(tr("collage.rotate"))
                 .clicked()
                 {
                     edit.turns = (edit.turns + 1) % 4;

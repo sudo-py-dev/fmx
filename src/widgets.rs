@@ -1636,6 +1636,47 @@ fn paint_section_header(
 mod tests {
     use super::*;
 
+    /// `icon_button` already shows its label as a tooltip; a second
+    /// `on_hover_text` stacks another tooltip under it.
+    #[test]
+    fn icon_buttons_do_not_add_a_second_tooltip() {
+        let mut doubled = Vec::new();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut stack = vec![std::path::PathBuf::from(dir)];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (at, marker) in text.match_indices("icon_button(") {
+                    let rest = &text[at + marker.len()..];
+                    let mut depth = 1usize;
+                    let Some(end) = rest.char_indices().find_map(|(i, c)| {
+                        match c {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        (depth == 0).then_some(i)
+                    }) else {
+                        continue;
+                    };
+                    if rest[end + 1..].trim_start().starts_with(".on_hover_text(") {
+                        let line = text[..at].lines().count();
+                        doubled.push(format!("{}:{line}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(doubled.is_empty(), "duplicate tooltips at {doubled:?}");
+    }
+
     #[test]
     fn preference_controls_fit_below_wrapped_text_in_narrow_rows() {
         let ctx = egui::Context::default();
