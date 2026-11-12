@@ -861,7 +861,6 @@ impl Preview {
                 Kind::Ghost,
                 Size::Regular,
             )
-            .on_hover_text(tr("preview.set_start_hint"))
             .clicked()
             {
                 edit.trim_start = compact_timestamp(self.time);
@@ -878,7 +877,6 @@ impl Preview {
                 Kind::Ghost,
                 Size::Regular,
             )
-            .on_hover_text(tr("preview.set_end_hint"))
             .clicked()
             {
                 edit.trim_end = compact_timestamp(self.time);
@@ -891,7 +889,6 @@ impl Preview {
                     Kind::Ghost,
                     Size::Regular,
                 )
-                .on_hover_text(tr("preview.clear"))
                 .clicked()
             {
                 edit.trim_start.clear();

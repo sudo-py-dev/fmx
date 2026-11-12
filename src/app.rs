@@ -2265,7 +2265,6 @@ impl FmxApp {
             Kind::Ghost,
             Size::Regular,
         )
-        .on_hover_text(trf("hint.back_to", &[("category", &self.browse_label())]))
         .clicked()
         {
             self.in_editor = false;
@@ -2340,7 +2339,6 @@ impl FmxApp {
                 Kind::Ghost,
                 Size::Regular,
             )
-            .on_hover_text(tr("drive.refresh"))
             .clicked()
         };
         let mut look_again = false;
@@ -3159,7 +3157,6 @@ impl FmxApp {
                                     widgets::icon_button(ui, icon, hint, Kind::Ghost, Size::Small)
                                 })
                                 .inner
-                                .on_hover_text(hint)
                                 .on_disabled_hover_text(hint)
                                 .clicked()
                             {
@@ -4169,7 +4166,6 @@ impl FmxApp {
                                 Kind::Ghost,
                                 Size::Regular,
                             )
-                            .on_hover_text(tr("settings.open_logs"))
                             .clicked()
                                 && let Some(dir) = diagnostics::logs_dir()
                             {
@@ -4311,7 +4307,6 @@ impl FmxApp {
                 Kind::Ghost,
                 Size::Regular,
             )
-            .on_hover_text(tr("settings.sound_test"))
             .clicked()
         {
             sound::play(
@@ -4327,7 +4322,6 @@ impl FmxApp {
                 Kind::Ghost,
                 Size::Regular,
             )
-            .on_hover_text(path.display().to_string())
             .clicked()
             && let Some(file) = pick_sound_file()
         {
@@ -4377,7 +4371,6 @@ impl FmxApp {
                     Kind::Ghost,
                     Size::Small,
                 )
-                .on_hover_text(tr("action.rescan"))
                 .clicked()
                 {
                     self.toolbox = Toolbox::detect(self.settings.ffmpeg_path.as_deref());
@@ -4422,7 +4415,6 @@ impl FmxApp {
                     Kind::Ghost,
                     Size::Regular,
                 )
-                .on_hover_text(tr("action.browse"))
                 .clicked()
                     && let Some(path) = rfd::FileDialog::new().pick_file()
                 {
@@ -6683,7 +6675,6 @@ fn file_slot(ui: &mut egui::Ui, slot: &mut Option<PathBuf>, exts: &[&str]) {
         ui.label(file_name(path))
             .on_hover_text(path.display().to_string());
         if widgets::icon_button(ui, icons::X, tr("action.remove"), Kind::Ghost, Size::Small)
-            .on_hover_text(tr("action.remove"))
             .clicked()
         {
             *slot = None;

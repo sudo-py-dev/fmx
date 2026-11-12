@@ -1,26 +1,30 @@
 'use strict';
-const preferredLanguages = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
-const language = preferredLanguages.map(value => {
-  const code = value.toLowerCase().split(/[-_]/)[0];
-  return code === 'iw' ? 'he' : code;
-}).find(code => Object.hasOwn(translations, code)) || 'en';
+// Each language has its own server-rendered page; the page's lang attribute is the source of truth.
+const language = Object.hasOwn(translations, document.documentElement.lang) ? document.documentElement.lang : 'en';
 const messages = translations[language];
-const markupKeys = new Set(['heroTitle', 'mediaTypes', 'featureTitle', 'featureIntro', 'faqTitle']);
-function translatePage() {
-  document.documentElement.lang = language;
-  document.documentElement.dir = language === 'he' ? 'rtl' : 'ltr';
-  document.querySelectorAll('[data-i18n]').forEach(element => {
-    const key = element.dataset.i18n;
-    if (!Object.hasOwn(messages, key)) return;
-    if (markupKeys.has(key)) element.innerHTML = messages[key];
-    else element.textContent = messages[key];
-  });
-  document.querySelectorAll('[data-i18n-attr]').forEach(element => {
-    const [key, attribute] = element.dataset.i18nAttr.split(':');
-    if (Object.hasOwn(messages, key)) element.setAttribute(attribute, messages[key]);
-  });
+const choiceKey = 'fmx-language';
+const redirectedKey = 'fmx-language-redirected';
+function readStorage(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
 }
-translatePage();
+function writeStorage(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* Storage can be unavailable; the links still work. */ }
+}
+function preferredLanguage() {
+  const preferred = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
+  return preferred.map(value => {
+    const code = value.toLowerCase().split(/[-_]/)[0];
+    return code === 'iw' ? 'he' : code;
+  }).find(code => Object.hasOwn(translations, code)) || 'en';
+}
+document.querySelectorAll('[data-language]').forEach(link => link.addEventListener('click', () => writeStorage(choiceKey, link.dataset.language)));
+// Send first-time visitors of the English home page to their language once; an explicit choice always wins.
+// The automatic redirect is recorded separately so returning to / later keeps the English page.
+const redirectTo = location.pathname === '/' && language === 'en' && !readStorage(choiceKey) && !readStorage(redirectedKey) && preferredLanguage();
+if (redirectTo && redirectTo !== 'en') {
+  writeStorage(redirectedKey, redirectTo);
+  location.replace(`/${redirectTo}/${location.hash}`);
+}
 const repository = 'sudo-py-dev/fmx';
 const patterns = {
   windows: /windows.*setup\.exe$/i,
