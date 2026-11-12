@@ -3,11 +3,12 @@
 const language = Object.hasOwn(translations, document.documentElement.lang) ? document.documentElement.lang : 'en';
 const messages = translations[language];
 const choiceKey = 'fmx-language';
-function storedLanguage() {
-  try { return localStorage.getItem(choiceKey); } catch { return null; }
+const redirectedKey = 'fmx-language-redirected';
+function readStorage(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
 }
-function rememberLanguage(code) {
-  try { localStorage.setItem(choiceKey, code); } catch { /* Storage can be unavailable; the links still work. */ }
+function writeStorage(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* Storage can be unavailable; the links still work. */ }
 }
 function preferredLanguage() {
   const preferred = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
@@ -16,10 +17,14 @@ function preferredLanguage() {
     return code === 'iw' ? 'he' : code;
   }).find(code => Object.hasOwn(translations, code)) || 'en';
 }
-document.querySelectorAll('[data-language]').forEach(link => link.addEventListener('click', () => rememberLanguage(link.dataset.language)));
+document.querySelectorAll('[data-language]').forEach(link => link.addEventListener('click', () => writeStorage(choiceKey, link.dataset.language)));
 // Send first-time visitors of the English home page to their language once; an explicit choice always wins.
-const redirectTo = location.pathname === '/' && language === 'en' && !storedLanguage() && preferredLanguage();
-if (redirectTo && redirectTo !== 'en') location.replace(`/${redirectTo}/${location.hash}`);
+// The automatic redirect is recorded separately so returning to / later keeps the English page.
+const redirectTo = location.pathname === '/' && language === 'en' && !readStorage(choiceKey) && !readStorage(redirectedKey) && preferredLanguage();
+if (redirectTo && redirectTo !== 'en') {
+  writeStorage(redirectedKey, redirectTo);
+  location.replace(`/${redirectTo}/${location.hash}`);
+}
 const repository = 'sudo-py-dev/fmx';
 const patterns = {
   windows: /windows.*setup\.exe$/i,

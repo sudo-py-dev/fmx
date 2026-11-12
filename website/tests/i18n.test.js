@@ -8,7 +8,7 @@ const root = path.join(__dirname, '..', 'static');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const code = ['translations.js', 'app.js'].map(file => fs.readFileSync(path.join(root, file), 'utf8')).join('\n');
 
-async function visit(languages, release, {lang = 'en', pathname = '/', stored = null} = {}) {
+async function visit(languages, release, {lang = 'en', pathname = '/', stored = null, storage: shared} = {}) {
   const elements = [...html.matchAll(/data-i18n="([^"]+)"/g)].map(([, key]) => ({dataset: {i18n: key}}));
   const attributes = [...html.matchAll(/data-i18n-attr="([^"]+)"/g)].map(([, attr]) => ({dataset: {i18nAttr: attr}, setAttribute(name, value) { this[name] = value; }}));
   const link = () => ({replaceChildren(node) { this.text = node.textContent; }, append(node) { this.text += node.textContent; }});
@@ -16,7 +16,7 @@ async function visit(languages, release, {lang = 'en', pathname = '/', stored = 
   const switcher = [{dataset: {language: 'de'}, addEventListener(type, handler) { this[type] = handler; }}];
   const primary = {};
   const status = {};
-  const storage = new Map(stored ? [['fmx-language', stored]] : []);
+  const storage = shared ?? new Map(stored ? [['fmx-language', stored]] : []);
   const location = {pathname, hash: '', replace(url) { this.redirected = url; }};
   const document = {
     documentElement: {lang},
@@ -58,6 +58,11 @@ test('home page sends first-time visitors to their preferred language once', asy
   }
   assert.equal((await visit(['fr-FR'], null, {stored: 'en'})).location.redirected, undefined);
   assert.equal((await visit(['fr-FR'], null, {lang: 'de', pathname: '/de/'})).location.redirected, undefined);
+  const storage = new Map();
+  assert.equal((await visit(['fr-FR'], null, {storage})).location.redirected, '/fr/');
+  assert.equal(storage.get('fmx-language-redirected'), 'fr');
+  assert.equal(storage.get('fmx-language'), undefined, 'an automatic redirect is not an explicit choice');
+  assert.equal((await visit(['fr-FR'], null, {storage})).location.redirected, undefined, 'returning to / stays on English');
   const page = await visit(['en'], null);
   page.switcher[0].click();
   assert.equal(page.storage.get('fmx-language'), 'de');
