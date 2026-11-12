@@ -10,7 +10,7 @@ From this directory:
 cargo run --release
 ```
 
-Edit `static/index.html`, `static/style.css`, and `static/app.js`, then rebuild. Commit both source and `dist` changes. The build works from any current directory with `cargo run --manifest-path /path/to/website/Cargo.toml`.
+Edit `static/index.html`, `static/style.css`, `static/app.js`, and `static/translations.js`, then rebuild. The build writes the English page to `dist/index.html` and a translated, server-rendered page for each other language to `dist/<code>/index.html`, with `hreflang` links, a language switcher, and `dist/sitemap.xml`. On a first visit to `/`, the browser's preferred language redirects once to its page; choosing a language in the footer is remembered. Run the tests with `node --test tests/i18n.test.js`. Commit both source and `dist` changes. The build works from any current directory with `cargo run --manifest-path /path/to/website/Cargo.toml`.
 
 ## Preview
 
@@ -28,4 +28,4 @@ Import the repository into Vercel. Set **Root Directory** to `website`. Select *
 
 The page reads the public GitHub API for `sudo-py-dev/fmx` and links to matching Windows setup, macOS DMG, Debian package, Linux archive, and Android APK assets in the latest release. If the API fails, is rate-limited, or lacks a matching asset, desktop buttons retain links to the release page. Android retains its development-source link. No fake installer links or package sizes are shown. When a production Android APK is published, update the development-status copy in `static/index.html` and rebuild.
 
-The site uses local app artwork and screenshots copied from FMX. Google Fonts is optional; system sans-serif fallbacks work offline. JavaScript is progressive enhancement: navigation, release links, and FAQs work without it.
+The site uses local app artwork and screenshots copied from FMX. All fonts, images, and scripts are served from this site; the page loads nothing from Google or other font CDNs. JavaScript is progressive enhancement: navigation, release links, and FAQs work without it.

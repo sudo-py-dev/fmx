@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://fmx-dun.vercel.app/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://fmx-dun.vercel.app/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://fmx-dun.vercel.app/es/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://fmx-dun.vercel.app/fr/"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://fmx-dun.vercel.app/de/"/>
+    <xhtml:link rel="alternate" hreflang="he" href="https://fmx-dun.vercel.app/he/"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://fmx-dun.vercel.app/ru/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://fmx-dun.vercel.app/"/>
+  </url>
+  <url>
+    <loc>https://fmx-dun.vercel.app/es/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://fmx-dun.vercel.app/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://fmx-dun.vercel.app/es/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://fmx-dun.vercel.app/fr/"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://fmx-dun.vercel.app/de/"/>
+    <xhtml:link rel="alternate" hreflang="he" href="https://fmx-dun.vercel.app/he/"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://fmx-dun.vercel.app/ru/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://fmx-dun.vercel.app/"/>
+  </url>
+  <url>
+    <loc>https://fmx-dun.vercel.app/fr/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://fmx-dun.vercel.app/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://fmx-dun.vercel.app/es/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://fmx-dun.vercel.app/fr/"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://fmx-dun.vercel.app/de/"/>
+    <xhtml:link rel="alternate" hreflang="he" href="https://fmx-dun.vercel.app/he/"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://fmx-dun.vercel.app/ru/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://fmx-dun.vercel.app/"/>
+  </url>
+  <url>
+    <loc>https://fmx-dun.vercel.app/de/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://fmx-dun.vercel.app/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://fmx-dun.vercel.app/es/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://fmx-dun.vercel.app/fr/"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://fmx-dun.vercel.app/de/"/>
+    <xhtml:link rel="alternate" hreflang="he" href="https://fmx-dun.vercel.app/he/"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://fmx-dun.vercel.app/ru/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://fmx-dun.vercel.app/"/>
+  </url>
+  <url>
+    <loc>https://fmx-dun.vercel.app/he/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://fmx-dun.vercel.app/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://fmx-dun.vercel.app/es/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://fmx-dun.vercel.app/fr/"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://fmx-dun.vercel.app/de/"/>
+    <xhtml:link rel="alternate" hreflang="he" href="https://fmx-dun.vercel.app/he/"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://fmx-dun.vercel.app/ru/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://fmx-dun.vercel.app/"/>
+  </url>
+  <url>
+    <loc>https://fmx-dun.vercel.app/ru/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://fmx-dun.vercel.app/"/>
+    <xhtml:link rel="alternate" hreflang="es" href="https://fmx-dun.vercel.app/es/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://fmx-dun.vercel.app/fr/"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://fmx-dun.vercel.app/de/"/>
+    <xhtml:link rel="alternate" hreflang="he" href="https://fmx-dun.vercel.app/he/"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://fmx-dun.vercel.app/ru/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://fmx-dun.vercel.app/"/>
+  </url>
+</urlset>
