@@ -6,7 +6,6 @@ rust-version = "1.89"
 description = "Free Media Xpress (FMX) - A lightweight, fast all-in-one media, document and disc converter with a clean GUI"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sudo-py-dev/fmx"
-homepage = "https://github.com/sudo-py-dev/fmx"
 
 [dependencies]
 calamine = "0.38.0"
