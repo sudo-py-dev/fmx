@@ -723,6 +723,11 @@ impl ImageFormat {
     }
 
     /// ffmpeg encoder flags for formats the native encoders don't cover.
+    /// Formats with lossy compression, whose quality can be chosen.
+    pub fn has_quality(self) -> bool {
+        matches!(self, Self::Jpeg | Self::Webp | Self::Avif | Self::Jxl)
+    }
+
     pub fn ffmpeg_encoder(self) -> Option<&'static [&'static str]> {
         match self {
             Self::Avif => Some(&[

@@ -109,9 +109,19 @@ fn decode_png(png: &[u8], max_alloc: u64) -> Result<DynamicImage, ImageError> {
 
 /// Applies resize/rotation/grayscale options. Never upscales.
 fn transform(img: DynamicImage, opts: &Options, hard_cap: Option<u32>) -> DynamicImage {
-    let user_cap = opts
-        .image_max_side
-        .map(|s| s.clamp(options::MIN_IMAGE_SIDE, options::MAX_IMAGE_SIDE));
+    transform_sized(img, opts, opts.image_max_side, None, hard_cap)
+}
+
+/// [`transform`] with the longest side limited to `max_side` and the final
+/// width (after rotation) to `max_width`, keeping proportions.
+fn transform_sized(
+    img: DynamicImage,
+    opts: &Options,
+    max_side: Option<u32>,
+    max_width: Option<u32>,
+    hard_cap: Option<u32>,
+) -> DynamicImage {
+    let user_cap = max_side.map(|s| s.clamp(options::MIN_IMAGE_SIDE, options::MAX_IMAGE_SIDE));
     let cap = match (user_cap, hard_cap) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -129,6 +139,14 @@ fn transform(img: DynamicImage, opts: &Options, hard_cap: Option<u32>) -> Dynami
         Some(Rotation::FlipHorizontal) => img.fliph(),
         Some(Rotation::FlipVertical) => img.flipv(),
         None => img,
+    };
+    let img = match max_width {
+        Some(w) if img.width() > w => {
+            let h = (u64::from(img.height()) * u64::from(w) + u64::from(img.width()) / 2)
+                / u64::from(img.width());
+            img.resize_exact(w, (h as u32).max(1), FilterType::Lanczos3)
+        }
+        _ => img,
     };
     if opts.grayscale { img.grayscale() } else { img }
 }
@@ -151,9 +169,56 @@ fn jpeg_quality(opts: &Options) -> u8 {
     opts.quality.pick(92, 82, 65)
 }
 
+/// The quality (1-100) the user set for `format` with Configure Preset.
+fn preset_quality(opts: &Options, format: ImageFormat) -> Option<u8> {
+    opts.image_presets
+        .get(&format)
+        .map(|p| p.clamped().quality)
+        .filter(|_| format.has_quality())
+}
+
 /// libwebp's quality for lossy WebP.
-fn webp_quality(opts: &Options) -> &'static str {
-    opts.quality.pick("90", "80", "65")
+fn webp_quality(opts: &Options) -> String {
+    preset_quality(opts, ImageFormat::Webp).map_or_else(
+        || opts.quality.pick("90", "80", "65").to_owned(),
+        |q| q.to_string(),
+    )
+}
+
+/// ffmpeg encoder flags for `format`, with the preset's quality when one is set.
+fn ffmpeg_flags(opts: &Options, format: ImageFormat) -> Vec<String> {
+    let mut flags: Vec<String> = format
+        .ffmpeg_encoder()
+        .unwrap_or_default()
+        .iter()
+        .map(|f| (*f).to_owned())
+        .collect();
+    let Some(q) = preset_quality(opts, format) else {
+        return flags;
+    };
+    let (key, value) = match format {
+        // libaom's CRF runs from 0 (best) to 63.
+        ImageFormat::Avif => ("-crf", ((u32::from(100 - q) * 63 + 50) / 100).to_string()),
+        // libjxl's Butteraugli distance: 0 is lossless, 1 visually lossless
+        // (JxlEncoderDistanceFromQuality's mapping).
+        ImageFormat::Jxl => {
+            let d = if q >= 100 {
+                0.0
+            } else if q >= 30 {
+                0.1 + f32::from(100 - q) * 0.09
+            } else {
+                // ffmpeg's libjxl wrapper accepts distances up to 15.
+                let q = f32::from(q);
+                (53.0 / 3000.0 * q * q - 23.0 / 20.0 * q + 25.0).min(15.0)
+            };
+            ("-distance", format!("{d:.2}"))
+        }
+        _ => return flags,
+    };
+    if let Some(i) = flags.iter().position(|f| f == key) {
+        flags[i + 1] = value;
+    }
+    flags
 }
 
 fn encode_jpeg(img: &DynamicImage, quality: u8, out: impl Write) -> Result<(), ImageError> {
@@ -171,8 +236,13 @@ pub fn convert(
     ffmpeg: Option<&Path>,
 ) -> Result<(), ImageError> {
     let hard_cap = (format == ImageFormat::Ico).then_some(ICO_MAX_SIDE);
+    // A format preset replaces the shared size limit with its own width limit.
+    let (max_side, max_width) = match opts.image_presets.get(&format) {
+        Some(p) => (None, p.clamped().max_width),
+        None => (opts.image_max_side, None),
+    };
     let img = watermark(
-        transform(open(input, ffmpeg)?, opts, hard_cap),
+        transform_sized(open(input, ffmpeg)?, opts, max_side, max_width, hard_cap),
         opts,
         ffmpeg,
     )?;
@@ -195,15 +265,16 @@ fn write_image(
             "-c:v",
             "libwebp",
             "-quality",
-            webp_quality(opts),
+            &webp_quality(opts),
             "-compression_level",
             "6",
         ];
         return encode_with_ffmpeg(img, output, format, &flags, ffmpeg);
     }
     let Some(codec) = format.codec() else {
-        let flags = format.ffmpeg_encoder().unwrap_or_default();
-        return encode_with_ffmpeg(img, output, format, flags, ffmpeg);
+        let flags = ffmpeg_flags(opts, format);
+        let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
+        return encode_with_ffmpeg(img, output, format, &flags, ffmpeg);
     };
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     {
@@ -242,7 +313,11 @@ fn write_image(
                         image::ExtendedColorType::Rgba8,
                     )?;
             }
-            ImageFormat::Jpeg => encode_jpeg(img, jpeg_quality(opts), &mut out)?,
+            ImageFormat::Jpeg => encode_jpeg(
+                img,
+                preset_quality(opts, format).unwrap_or_else(|| jpeg_quality(opts)),
+                &mut out,
+            )?,
             // PNG and TIFF keep 16-bit depth; the rest want 8-bit RGBA.
             ImageFormat::Png | ImageFormat::Tiff => img.write_to(&mut out, codec)?,
             _ => DynamicImage::ImageRgba8(img.to_rgba8()).write_to(&mut out, codec)?,
@@ -1085,6 +1160,76 @@ mod tests {
         assert_eq!((img.width(), img.height()), (20, 10));
         let small = transform(DynamicImage::new_rgb8(10, 5), &opts, None);
         assert_eq!((small.width(), small.height()), (10, 5));
+    }
+
+    #[test]
+    fn format_preset_limits_width_after_rotation() {
+        let opts = Options {
+            image_rotation: Some(Rotation::Clockwise),
+            ..Options::default()
+        };
+        // 40x80 turns into 80x40, then is held to 20 px wide.
+        let img = transform_sized(DynamicImage::new_rgb8(40, 80), &opts, None, Some(20), None);
+        assert_eq!((img.width(), img.height()), (20, 10));
+        let small = transform_sized(DynamicImage::new_rgb8(10, 5), &opts, None, Some(20), None);
+        assert_eq!((small.width(), small.height()), (5, 10));
+    }
+
+    #[test]
+    fn format_preset_replaces_shared_size_and_quality() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.png");
+        DynamicImage::new_rgb8(3000, 1500).save(&input).unwrap();
+        let mut opts = Options {
+            image_max_side: Some(800),
+            ..Options::default()
+        };
+        opts.image_presets.insert(
+            ImageFormat::Jpeg,
+            options::ImageFormatPreset {
+                quality: 95,
+                max_width: Some(2400),
+            },
+        );
+        let jpg = dir.path().join("out.jpg");
+        convert(&input, &jpg, ImageFormat::Jpeg, &opts, None).unwrap();
+        assert_eq!(image::image_dimensions(&jpg).unwrap(), (2400, 1200));
+        assert_eq!(preset_quality(&opts, ImageFormat::Jpeg), Some(95));
+        // Formats without a preset keep the shared limit.
+        let png = dir.path().join("out.png");
+        convert(&input, &png, ImageFormat::Png, &opts, None).unwrap();
+        assert_eq!(image::image_dimensions(&png).unwrap(), (800, 400));
+    }
+
+    #[test]
+    fn format_preset_quality_sets_ffmpeg_flags() {
+        let mut opts = Options::default();
+        assert!(ffmpeg_flags(&opts, ImageFormat::Avif).contains(&"30".to_owned()));
+        for (format, quality) in [(ImageFormat::Avif, 100), (ImageFormat::Jxl, 100)] {
+            opts.image_presets.insert(
+                format,
+                options::ImageFormatPreset {
+                    quality,
+                    max_width: None,
+                },
+            );
+        }
+        let avif = ffmpeg_flags(&opts, ImageFormat::Avif);
+        let crf = avif.iter().position(|f| f == "-crf").unwrap();
+        assert_eq!(avif[crf + 1], "0");
+        let jxl = ffmpeg_flags(&opts, ImageFormat::Jxl);
+        assert_eq!(jxl, ["-c:v", "libjxl", "-distance", "0.00"]);
+        for (quality, distance) in [(30, "6.40"), (20, "9.07"), (1, "15.00")] {
+            opts.image_presets.insert(
+                ImageFormat::Jxl,
+                options::ImageFormatPreset {
+                    quality,
+                    max_width: None,
+                },
+            );
+            let jxl = ffmpeg_flags(&opts, ImageFormat::Jxl);
+            assert_eq!(jxl[3], distance, "quality {quality}");
+        }
     }
 
     #[test]
