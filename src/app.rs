@@ -3374,6 +3374,7 @@ impl FmxApp {
             self.poll_capture_devices(ui.ctx());
         }
         let mut configure_format = None;
+        let has_ffmpeg = self.toolbox.get(External::Ffmpeg).is_some();
         let opts = &mut self.settings.options;
         match tool {
             Tool::Slideshow => {
@@ -3418,7 +3419,7 @@ impl FmxApp {
                 let preset = opts.image_presets.get(&format).copied();
                 let summary = preset.map_or_else(
                     || tr("image_preset.none").to_owned(),
-                    |p| image_preset_summary(format, p),
+                    |p| image_preset_summary(p, quality_applies(format, has_ffmpeg)),
                 );
                 row_hint(ui, tr("image_preset.row"), &summary, |ui| {
                     if widgets::button(
@@ -3769,20 +3770,24 @@ impl FmxApp {
         };
         let width = (ctx.content_rect().width() - 64.0).clamp(1.0, 440.0);
         let format = dialog.format;
+        let adjustable = quality_applies(format, self.toolbox.get(External::Ffmpeg).is_some());
         let mut outcome = None;
         let modal = egui::Modal::new(Id::unique("image_preset_dialog")).show(ctx, |ui| {
             ui.set_width(width);
             dir::vertical(ui, |ui| {
                 ui.heading(trf("image_preset.title", &[("format", &format.label())]));
                 ui.add_space(4.0);
-                let hint = if format.has_quality() {
+                let hint = if adjustable {
                     trf("image_preset.hint", &[("format", &format.label())])
+                } else if format.has_quality() {
+                    // Without ffmpeg, WebP is written by the lossless native encoder.
+                    trf("image_preset.no_encoder", &[("format", &format.label())])
                 } else {
                     trf("image_preset.lossless", &[("format", &format.label())])
                 };
                 ui.add(Label::new(RichText::new(hint).color(theme::palette(ui).text_weak)).wrap());
                 ui.add_space(10.0);
-                if format.has_quality() {
+                if adjustable {
                     row_hint(
                         ui,
                         tr("option.quality"),
@@ -6736,12 +6741,19 @@ fn trim_rows(ui: &mut egui::Ui, edit: &mut Edit) {
 }
 
 /// What a format preset does, in one line: its quality and width limit.
-fn image_preset_summary(format: ImageFormat, preset: options::ImageFormatPreset) -> String {
+/// Whether a preset's quality changes the output: the format is lossy and the
+/// encoder that will write it reads the setting (WebP needs ffmpeg's libwebp;
+/// the native fallback is lossless).
+fn quality_applies(format: ImageFormat, has_ffmpeg: bool) -> bool {
+    format.has_quality() && (format != ImageFormat::Webp || has_ffmpeg)
+}
+
+fn image_preset_summary(preset: options::ImageFormatPreset, show_quality: bool) -> String {
     let width = preset.max_width.map_or_else(
         || tr("image_preset.original_width").to_owned(),
         |px| trf("image_preset.width_px", &[("px", &px)]),
     );
-    if format.has_quality() {
+    if show_quality {
         trf(
             "image_preset.summary",
             &[("quality", &preset.quality), ("width", &width)],

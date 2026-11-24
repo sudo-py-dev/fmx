@@ -608,6 +608,7 @@
   "image_preset.title": "הגדרה קבועה ל־{format}",
   "image_preset.hint": "משמשת בכל המרה של תמונה ל־{format}, במקום האיכות והגודל המשותפים.",
   "image_preset.lossless": "{format} הוא פורמט ללא אובדן, לכן אפשר לקבוע רק את הרוחב. משמשת בכל המרה של תמונה ל־{format}.",
+  "image_preset.no_encoder": "האיכות של {format} דורשת ffmpeg, שלא נמצא, לכן {format} נשמר ללא אובדן ואפשר לקבוע רק את הרוחב.",
   "image_preset.quality_hint": "גבוהה שומרת יותר פרטים; נמוכה יוצרת קבצים קטנים יותר",
   "image_preset.max_width": "רוחב מרבי",
   "image_preset.max_width_hint": "תמונות רחבות יותר מוקטנות; קטנות יותר אף פעם לא מוגדלות",

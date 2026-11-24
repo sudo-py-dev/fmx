@@ -608,6 +608,7 @@
   "image_preset.title": "{format}-Voreinstellung",
   "image_preset.hint": "Wird bei jeder Umwandlung in {format} anstelle der allgemeinen Qualität und Größe verwendet.",
   "image_preset.lossless": "{format} ist verlustfrei, daher lässt sich nur die Breite festlegen. Wird bei jeder Umwandlung in {format} verwendet.",
+  "image_preset.no_encoder": "Die {format}-Qualität braucht ffmpeg, das nicht gefunden wurde. {format} wird daher verlustfrei gespeichert, und nur die Breite lässt sich festlegen.",
   "image_preset.quality_hint": "Höher behält mehr Details, niedriger ergibt kleinere Dateien",
   "image_preset.max_width": "Maximale Breite",
   "image_preset.max_width_hint": "Breitere Bilder werden verkleinert, kleinere nie vergrößert",

@@ -608,6 +608,7 @@
   "image_preset.title": "{format} preset",
   "image_preset.hint": "Used every time an image is converted to {format}, in place of the shared quality and size.",
   "image_preset.lossless": "{format} is lossless, so only the width can be set. Used every time an image is converted to {format}.",
+  "image_preset.no_encoder": "{format} quality needs ffmpeg, which wasn’t found, so {format} is saved lossless and only the width can be set.",
   "image_preset.quality_hint": "Higher keeps more detail; lower makes smaller files",
   "image_preset.max_width": "Max width",
   "image_preset.max_width_hint": "Wider images are scaled down; smaller ones are never enlarged",

@@ -608,6 +608,7 @@
   "image_preset.title": "Préréglage {format}",
   "image_preset.hint": "Utilisé à chaque conversion d’une image en {format}, à la place de la qualité et de la taille communes.",
   "image_preset.lossless": "{format} est sans perte : seule la largeur peut être réglée. Utilisé à chaque conversion d’une image en {format}.",
+  "image_preset.no_encoder": "La qualité {format} nécessite ffmpeg, introuvable : {format} est donc enregistré sans perte et seule la largeur peut être réglée.",
   "image_preset.quality_hint": "Plus haute garde plus de détails ; plus basse donne des fichiers plus légers",
   "image_preset.max_width": "Largeur maximale",
   "image_preset.max_width_hint": "Les images plus larges sont réduites ; les plus petites ne sont jamais agrandies",

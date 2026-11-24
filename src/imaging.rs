@@ -199,15 +199,17 @@ fn ffmpeg_flags(opts: &Options, format: ImageFormat) -> Vec<String> {
     let (key, value) = match format {
         // libaom's CRF runs from 0 (best) to 63.
         ImageFormat::Avif => ("-crf", ((u32::from(100 - q) * 63 + 50) / 100).to_string()),
-        // libjxl's Butteraugli distance: 0 is lossless, 1 visually lossless,
-        // about 15 the lowest useful quality (libjxl's own quality mapping).
+        // libjxl's Butteraugli distance: 0 is lossless, 1 visually lossless
+        // (JxlEncoderDistanceFromQuality's mapping).
         ImageFormat::Jxl => {
             let d = if q >= 100 {
                 0.0
             } else if q >= 30 {
                 0.1 + f32::from(100 - q) * 0.09
             } else {
-                (6.4 + 2.5f32.powf(f32::from(30 - q) / 5.0) / 6.25).min(15.0)
+                // ffmpeg's libjxl wrapper accepts distances up to 15.
+                let q = f32::from(q);
+                (53.0 / 3000.0 * q * q - 23.0 / 20.0 * q + 25.0).min(15.0)
             };
             ("-distance", format!("{d:.2}"))
         }
@@ -1217,6 +1219,17 @@ mod tests {
         assert_eq!(avif[crf + 1], "0");
         let jxl = ffmpeg_flags(&opts, ImageFormat::Jxl);
         assert_eq!(jxl, ["-c:v", "libjxl", "-distance", "0.00"]);
+        for (quality, distance) in [(30, "6.40"), (20, "9.07"), (1, "15.00")] {
+            opts.image_presets.insert(
+                ImageFormat::Jxl,
+                options::ImageFormatPreset {
+                    quality,
+                    max_width: None,
+                },
+            );
+            let jxl = ffmpeg_flags(&opts, ImageFormat::Jxl);
+            assert_eq!(jxl[3], distance, "quality {quality}");
+        }
     }
 
     #[test]

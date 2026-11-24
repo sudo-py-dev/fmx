@@ -608,6 +608,7 @@
   "image_preset.title": "Ajuste de {format}",
   "image_preset.hint": "Se usa cada vez que una imagen se convierte a {format}, en lugar de la calidad y el tamaño generales.",
   "image_preset.lossless": "{format} no tiene pérdida, así que solo se puede fijar el ancho. Se usa cada vez que una imagen se convierte a {format}.",
+  "image_preset.no_encoder": "La calidad de {format} necesita ffmpeg, que no se encontró, así que {format} se guarda sin pérdida y solo se puede fijar el ancho.",
   "image_preset.quality_hint": "Más alta conserva más detalle; más baja da archivos más pequeños",
   "image_preset.max_width": "Ancho máximo",
   "image_preset.max_width_hint": "Las imágenes más anchas se reducen; las pequeñas nunca se amplían",
