@@ -1000,6 +1000,41 @@ pub const MIN_FRAME_INTERVAL_S: f32 = 0.1;
 pub const MAX_FRAME_INTERVAL_S: f32 = 3600.0;
 pub const MIN_IMAGE_SIDE: u32 = 16;
 pub const MAX_IMAGE_SIDE: u32 = 16_384;
+pub const MIN_IMAGE_QUALITY: u8 = 1;
+pub const MAX_IMAGE_QUALITY: u8 = 100;
+
+/// The quality and size the user chose for one image format; used every time
+/// an image is converted to that format, in place of the shared settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageFormatPreset {
+    /// 1 (smallest file) to 100 (best quality); only formats with lossy
+    /// compression (see [`ImageFormat::has_quality`]) use it.
+    pub quality: u8,
+    /// Widest the output may be, keeping its proportions; `None` keeps the
+    /// original width. Images are never enlarged.
+    pub max_width: Option<u32>,
+}
+
+impl Default for ImageFormatPreset {
+    fn default() -> Self {
+        Self {
+            quality: 90,
+            max_width: None,
+        }
+    }
+}
+
+impl ImageFormatPreset {
+    pub fn clamped(self) -> Self {
+        Self {
+            quality: self.quality.clamp(MIN_IMAGE_QUALITY, MAX_IMAGE_QUALITY),
+            max_width: self
+                .max_width
+                .map(|w| w.clamp(MIN_IMAGE_SIDE, MAX_IMAGE_SIDE)),
+        }
+    }
+}
 pub const MAX_VIDEO_KBPS: u32 = 200_000;
 pub const MAX_AUDIO_KBPS: u32 = 640;
 pub const MAX_VOLUME_DB: f32 = 30.0;
@@ -1145,6 +1180,9 @@ pub struct Options {
     pub join_audio_format: AudioFormat,
     /// Longest image side after resizing; `None` keeps the original size.
     pub image_max_side: Option<u32>,
+    /// Per-format quality and width, set with Configure Preset; a format
+    /// listed here ignores `quality` and `image_max_side`.
+    pub image_presets: std::collections::HashMap<ImageFormat, ImageFormatPreset>,
     pub grayscale: bool,
     pub image_rotation: Option<Rotation>,
     pub split_by_parts: bool,
@@ -1226,6 +1264,7 @@ impl Default for Options {
             speed: 1.5,
             join_audio_format: AudioFormat::Mp3,
             image_max_side: None,
+            image_presets: std::collections::HashMap::new(),
             grayscale: false,
             image_rotation: None,
             split_by_parts: false,

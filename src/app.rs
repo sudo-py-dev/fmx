@@ -223,6 +223,14 @@ struct PresetDialog {
     name: String,
 }
 
+/// The Configure Preset box for one image format.
+struct ImagePresetDialog {
+    format: ImageFormat,
+    preset: options::ImageFormatPreset,
+    /// The format already had a preset, so it can be removed.
+    existed: bool,
+}
+
 /// What happens once the whole queue has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AfterDone {
@@ -266,6 +274,7 @@ pub struct FmxApp {
     category: Category,
     show_favorites: bool,
     preset_dialog: Option<PresetDialog>,
+    image_preset_dialog: Option<ImagePresetDialog>,
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
     search: String,
@@ -391,6 +400,7 @@ impl FmxApp {
             category: settings.last_tool.category(),
             show_favorites: !settings.favorite_tools.is_empty() || !settings.presets.is_empty(),
             preset_dialog: None,
+            image_preset_dialog: None,
             in_editor: false,
             search: String::new(),
             reset_tool_scroll: false,
@@ -471,6 +481,12 @@ impl FmxApp {
                     id: None,
                     name: app.tool_title(),
                 });
+            }
+            if crate::devshot::wants_menu("image_preset")
+                && let Tool::ToImage(format) = app.tool
+            {
+                app.welcome_step = None;
+                app.open_image_preset(format);
             }
             if let Some(section) = crate::devshot::wants_settings() {
                 app.show_settings = true;
@@ -566,7 +582,12 @@ impl FmxApp {
             self.toasts.push(ToastKind::Error, tr("preset.missing"));
             return;
         };
-        self.quick_convert(files, &preset.options, |file| {
+        // Format presets are app-wide, not part of a saved preset.
+        let options = Options {
+            image_presets: self.settings.options.image_presets.clone(),
+            ..preset.options
+        };
+        self.quick_convert(files, &options, |file| {
             preset_takes(preset.tool, file).then_some(preset.tool)
         });
     }
@@ -676,9 +697,11 @@ impl FmxApp {
         self.select_tool(preset.tool);
         let edit = std::mem::take(&mut self.settings.options.edit);
         let photos = std::mem::take(&mut self.settings.options.collage_photos);
+        let image_presets = std::mem::take(&mut self.settings.options.image_presets);
         self.settings.options = Options {
             edit,
             collage_photos: photos,
+            image_presets,
             ..preset.options
         };
     }
@@ -3350,6 +3373,7 @@ impl FmxApp {
         if matches!(tool, Tool::Record | Tool::RecordAudio | Tool::Screenshot) {
             self.poll_capture_devices(ui.ctx());
         }
+        let mut configure_format = None;
         let opts = &mut self.settings.options;
         match tool {
             Tool::Slideshow => {
@@ -3390,9 +3414,35 @@ impl FmxApp {
             Tool::ToAudio(_) | Tool::Rotate | Tool::Speed | Tool::Delogo | Tool::PdfCompress => {
                 quality_row(ui, &mut opts.quality);
             }
-            Tool::ToImage(_) | Tool::ImagesToPdf => {
+            Tool::ToImage(format) => {
+                let preset = opts.image_presets.get(&format).copied();
+                let summary = preset.map_or_else(
+                    || tr("image_preset.none").to_owned(),
+                    |p| image_preset_summary(format, p),
+                );
+                row_hint(ui, tr("image_preset.row"), &summary, |ui| {
+                    if widgets::button(
+                        ui,
+                        Some(icons::SLIDERS),
+                        tr("image_preset.configure"),
+                        Kind::Secondary,
+                        Size::Small,
+                    )
+                    .clicked()
+                    {
+                        configure_format = Some(format);
+                    }
+                });
+                // A format preset sets quality and size itself.
+                if preset.is_none() {
+                    quality_row(ui, &mut opts.quality);
+                }
+                image_rows(ui, opts, preset.is_none());
+                watermark_row(ui, &mut opts.edit, "image_wm_corner");
+            }
+            Tool::ImagesToPdf => {
                 quality_row(ui, &mut opts.quality);
-                image_rows(ui, opts);
+                image_rows(ui, opts, true);
                 watermark_row(ui, &mut opts.edit, "image_wm_corner");
             }
             Tool::ToDevice(device) => {
@@ -3686,6 +3736,146 @@ impl FmxApp {
             row_hint(ui, tr("option.logo_area"), tr("hint.rect_exact"), |ui| {
                 rect_editor(ui, &mut opts.delogo)
             });
+        }
+        if let Some(format) = configure_format {
+            self.open_image_preset(format);
+        }
+    }
+
+    /// Opens Configure Preset for `format`, starting from its preset or, when
+    /// it has none, from the current shared settings.
+    fn open_image_preset(&mut self, format: ImageFormat) {
+        let opts = &self.settings.options;
+        let existing = opts.image_presets.get(&format).copied();
+        let preset = existing.unwrap_or(options::ImageFormatPreset {
+            quality: opts.quality.pick(92, 82, 65),
+            max_width: opts.image_max_side,
+        });
+        self.image_preset_dialog = Some(ImagePresetDialog {
+            format,
+            preset,
+            existed: existing.is_some(),
+        });
+    }
+
+    /// The Configure Preset box: quality and maximum width for one image format.
+    fn image_preset_window(&mut self, ctx: &egui::Context) {
+        enum Outcome {
+            Save,
+            Remove,
+        }
+        let Some(dialog) = &mut self.image_preset_dialog else {
+            return;
+        };
+        let width = (ctx.content_rect().width() - 64.0).clamp(1.0, 440.0);
+        let format = dialog.format;
+        let mut outcome = None;
+        let modal = egui::Modal::new(Id::unique("image_preset_dialog")).show(ctx, |ui| {
+            ui.set_width(width);
+            dir::vertical(ui, |ui| {
+                ui.heading(trf("image_preset.title", &[("format", &format.label())]));
+                ui.add_space(4.0);
+                let hint = if format.has_quality() {
+                    trf("image_preset.hint", &[("format", &format.label())])
+                } else {
+                    trf("image_preset.lossless", &[("format", &format.label())])
+                };
+                ui.add(Label::new(RichText::new(hint).color(theme::palette(ui).text_weak)).wrap());
+                ui.add_space(10.0);
+                if format.has_quality() {
+                    row_hint(
+                        ui,
+                        tr("option.quality"),
+                        tr("image_preset.quality_hint"),
+                        |ui| {
+                            theme::slider(
+                                ui,
+                                Slider::new(
+                                    &mut dialog.preset.quality,
+                                    options::MIN_IMAGE_QUALITY..=options::MAX_IMAGE_QUALITY,
+                                ),
+                            );
+                        },
+                    );
+                }
+                row_hint(
+                    ui,
+                    tr("image_preset.max_width"),
+                    tr("image_preset.max_width_hint"),
+                    |ui| {
+                        optional_number(
+                            ui,
+                            &mut dialog.preset.max_width,
+                            1920,
+                            options::MIN_IMAGE_SIDE..=options::MAX_IMAGE_SIDE,
+                            " px",
+                            tr("option.original"),
+                        );
+                    },
+                );
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if dialog.existed
+                        && widgets::button(
+                            ui,
+                            None,
+                            tr("image_preset.remove"),
+                            Kind::Ghost,
+                            Size::Regular,
+                        )
+                        .clicked()
+                    {
+                        outcome = Some(Outcome::Remove);
+                    }
+                    ui.with_layout(dir::trailing(Align::Center), |ui| {
+                        if widgets::button(
+                            ui,
+                            None,
+                            tr("action.save"),
+                            Kind::Primary,
+                            Size::Regular,
+                        )
+                        .clicked()
+                        {
+                            outcome = Some(Outcome::Save);
+                        }
+                        if widgets::button(
+                            ui,
+                            None,
+                            tr("action.cancel"),
+                            Kind::Secondary,
+                            Size::Regular,
+                        )
+                        .clicked()
+                        {
+                            ui.close();
+                        }
+                    });
+                });
+            });
+        });
+        match outcome {
+            Some(Outcome::Save) => {
+                let dialog = self.image_preset_dialog.take().expect("open");
+                self.settings
+                    .options
+                    .image_presets
+                    .insert(format, dialog.preset.clamped());
+                self.toasts.push(
+                    ToastKind::Success,
+                    trf("image_preset.saved", &[("format", &format.label())]),
+                );
+            }
+            Some(Outcome::Remove) => {
+                self.image_preset_dialog = None;
+                self.settings.options.image_presets.remove(&format);
+                self.toasts.push(
+                    ToastKind::Success,
+                    trf("image_preset.removed", &[("format", &format.label())]),
+                );
+            }
+            None if modal.should_close() => self.image_preset_dialog = None,
+            None => {}
         }
     }
 
@@ -6545,17 +6735,37 @@ fn trim_rows(ui: &mut egui::Ui, edit: &mut Edit) {
     });
 }
 
-fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options) {
-    row(ui, tr("option.max_side"), |ui| {
-        optional_number(
-            ui,
-            &mut opts.image_max_side,
-            1920,
-            options::MIN_IMAGE_SIDE..=options::MAX_IMAGE_SIDE,
-            " px",
-            tr("option.original"),
-        );
-    });
+/// What a format preset does, in one line: its quality and width limit.
+fn image_preset_summary(format: ImageFormat, preset: options::ImageFormatPreset) -> String {
+    let width = preset.max_width.map_or_else(
+        || tr("image_preset.original_width").to_owned(),
+        |px| trf("image_preset.width_px", &[("px", &px)]),
+    );
+    if format.has_quality() {
+        trf(
+            "image_preset.summary",
+            &[("quality", &preset.quality), ("width", &width)],
+        )
+    } else {
+        width
+    }
+}
+
+/// Image size, rotation and grayscale rows; `show_size` is off when a format
+/// preset sets the size instead.
+fn image_rows(ui: &mut egui::Ui, opts: &mut options::Options, show_size: bool) {
+    if show_size {
+        row(ui, tr("option.max_side"), |ui| {
+            optional_number(
+                ui,
+                &mut opts.image_max_side,
+                1920,
+                options::MIN_IMAGE_SIDE..=options::MAX_IMAGE_SIDE,
+                " px",
+                tr("option.original"),
+            );
+        });
+    }
     row(ui, tr("option.rotation"), |ui| {
         let mut choices: Vec<Option<Rotation>> = vec![None];
         choices.extend(Rotation::ALL.map(Some));
@@ -7071,6 +7281,7 @@ impl eframe::App for FmxApp {
         self.preview_window(&ctx);
         self.welcome_window(&ctx);
         self.preset_window(&ctx);
+        self.image_preset_window(&ctx);
         if let Some(result) = self
             .shortcut_result
             .as_ref()

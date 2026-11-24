@@ -5,12 +5,13 @@
 //! - `FMX_SCREENSHOT_SETTINGS=1` opens Settings (`=queue`, `=updates`,
 //!   `=programs` or `=about` opens that section);
 //! - `FMX_SCREENSHOT_EXPAND=1` opens every collapsible section;
-//! - `FMX_SCREENSHOT_TOOL=record` opens that tool (`screenshot`, `frames`, `trim`, `rotate`, `mp4`, `download`, `resize`, `cd`);
+//! - `FMX_SCREENSHOT_TOOL=record` opens that tool (`screenshot`, `frames`, `trim`, `rotate`, `mp4`, `download`, `resize`, `jpg`, `cd`);
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue
 //!   (`FMX_SCREENSHOT_RUNNING=1` then shows the first two as running);
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
 //! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`, `presets`),
-//!   or `save_preset` the dialog that names a new preset;
+//!   `save_preset` the dialog that names a new preset, or `image_preset`
+//!   Configure Preset for the open image tool;
 //! - `FMX_SCREENSHOT_UPDATE=1` pretends a newer release was found
 //!   (`=downloading:0.4` pretends it is 40 % downloaded).
 //!
@@ -71,6 +72,7 @@ pub fn wants_tool() -> Option<crate::catalog::Tool> {
         "mp4" => Some(Tool::ToVideo(crate::catalog::VideoFormat::Mp4)),
         "download" => Some(Tool::Download),
         "resize" => Some(Tool::ToImage(crate::catalog::ImageFormat::Png)),
+        "jpg" => Some(Tool::ToImage(crate::catalog::ImageFormat::Jpeg)),
         "cd" => Some(Tool::CdToAudio),
         _ => None,
     }
