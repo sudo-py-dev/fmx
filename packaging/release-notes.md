@@ -1,13 +1,16 @@
 ## What's new
 
-### Compact layouts and translations
-- Improve compact editor and settings layouts.
-- Complete collage translations.
+### Image presets for each format
+- Set your own quality (1–100) and maximum width for each image format with the new
+  **Configure preset** button in the image tools. A format's preset replaces the shared
+  quality and size settings every time an image is converted to it, including from the
+  right-click menu.
+- Quality presets work for JPEG, WebP, AVIF and JPEG XL. Lossless formats take a width
+  limit only.
 
-### Linux reliability and packaging
-- Detect LibreOffice installations outside PATH for document conversion.
-- Add compact UI regression tests and test the optimized Linux application before packaging.
-- Improve compression of the portable Linux download.
+### Maintenance
+- Update dependencies.
+- Improve the website's accessibility, contrast and search listings.
 
 ## Download
 
