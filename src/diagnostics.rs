@@ -250,7 +250,7 @@ fn show_error(message: &str, report: Option<&Path>) {
     };
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title("fmx")
+        .set_title("FMX")
         .set_description(text)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();

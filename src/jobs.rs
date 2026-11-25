@@ -329,6 +329,18 @@ fn default_dir(sub: &str) -> PathBuf {
     if preferred.is_dir() { preferred } else { home }
 }
 
+/// The folder a tool with no source file saves to when no output folder is
+/// set, or `None` when the tool saves beside its source files.
+pub fn default_output_dir(tool: Tool) -> Option<PathBuf> {
+    match tool {
+        Tool::Download => Some(default_dir("Downloads")),
+        Tool::Screenshot => Some(default_dir("Pictures")),
+        Tool::Record => Some(default_dir("Videos")),
+        Tool::RecordAudio => Some(default_dir("Music")),
+        _ => None,
+    }
+}
+
 /// What the user selected for one batch.
 pub struct Selection<'a> {
     pub tool: Tool,

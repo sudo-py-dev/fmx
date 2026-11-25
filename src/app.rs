@@ -27,7 +27,7 @@ use crate::ffmpeg;
 use crate::i18n::{self, tr, trf};
 use crate::icons;
 use crate::instance;
-use crate::jobs::{JobSpec, OutputAllocator, Selection, plan_jobs};
+use crate::jobs::{self, JobSpec, OutputAllocator, Selection, plan_jobs};
 use crate::options::{
     self, Channels, Corner, DownloadKind, Edit, FrameMode, HwAccel, MixLayout, Options, Quality,
     Rect, Resolution, Rotation, SlideTransition,
@@ -330,6 +330,9 @@ pub struct FmxApp {
     shell_menu: bool,
     /// Current page of the first-run guide; also opened from Settings.
     welcome_step: Option<usize>,
+    /// Whether the welcome guide's last page adds the right-click menu, while
+    /// that page still offers it (on the first start only).
+    welcome_shell_offer: Option<bool>,
 }
 
 /// How FMX was started.
@@ -436,6 +439,7 @@ impl FmxApp {
             requests: None,
             shell_menu: shell::is_registered(),
             welcome_step: (!settings.welcome_seen && !self_test).then_some(0),
+            welcome_shell_offer: None,
             settings,
         };
         let due = now_secs().saturating_sub(app.settings.last_update_check)
@@ -453,6 +457,9 @@ impl FmxApp {
         }
         #[cfg(debug_assertions)]
         {
+            if let Ok(query) = std::env::var("FMX_SCREENSHOT_SEARCH") {
+                app.search = query;
+            }
             if let Ok(step) = std::env::var("FMX_SCREENSHOT_WELCOME") {
                 app.welcome_step = Some(step.parse::<usize>().unwrap_or(0).min(3));
             }
@@ -648,25 +655,23 @@ impl FmxApp {
         }
     }
 
-    /// Adds the right-click menu on the first start, and keeps it pointing at
-    /// this FMX in its language. In the background: `reg.exe` takes a moment.
-    /// On Windows the installer asks instead (or Settings, for the zip).
+    /// Keeps the right-click menu pointing at this FMX in its language. In the
+    /// background: `reg.exe` takes a moment. FMX never adds the menu unasked:
+    /// on the first start the welcome guide offers it, otherwise it is in
+    /// Settings. On Windows the installer asks instead (or Settings, for the zip).
     fn setup_shell_menu(&mut self) {
         let first_time = !self.settings.shell_menu_setup && !cfg!(windows);
+        if first_time && self.welcome_step.is_some() {
+            // Decided on the guide's last page; see `welcome_window`.
+            self.welcome_shell_offer = Some(true);
+            return;
+        }
         self.settings.shell_menu_setup = true;
         if first_time {
-            self.shell_menu = true;
+            return;
         }
         let presets = self.settings.presets.clone();
-        std::thread::spawn(move || {
-            if first_time {
-                if let Err(e) = shell::register(&presets) {
-                    tracing::warn!(error = %e, "could not add the right-click menu");
-                }
-            } else {
-                shell::refresh(&presets);
-            }
-        });
+        std::thread::spawn(move || shell::refresh(&presets));
     }
 
     /// Lists the presets in the right-click menu, if it is on.
@@ -1103,7 +1108,11 @@ impl FmxApp {
             (Some(dir), _) => trf("ready.in_folder", &[("folder", &file_name(dir))]),
             // Downloads have no source file; they go to the Downloads folder.
             (None, Tool::Download) => tr("ready.in_downloads").to_owned(),
-            (None, _) => tr("ready.beside_source").to_owned(),
+            // Recordings and screenshots have no source either.
+            (None, tool) => match jobs::default_output_dir(tool) {
+                Some(dir) => trf("ready.in_folder", &[("folder", &file_name(&dir))]),
+                None => tr("ready.beside_source").to_owned(),
+            },
         };
         match self.job_count() {
             1 => trf("ready.summary_one", &[("where", &place)]),
@@ -1367,7 +1376,8 @@ impl FmxApp {
         {
             self.queue.is_running = true;
         }
-        if counts.running + counts.queued > 0
+        // Only running work can be stopped; waiting jobs are removed one by one.
+        if counts.running > 0
             && widgets::button(
                 ui,
                 Some(icons::STOP),
@@ -2179,7 +2189,9 @@ impl FmxApp {
             return;
         }
         let (title, help) = self.input_heading();
-        let input_done = self.input_missing().is_none();
+        // A capture has nothing to add, so its first step is never "done".
+        let input_done =
+            self.tool.input_kind() != InputKind::Capture && self.input_missing().is_none();
         let size = ui.available_size();
         match self.settings_heading() {
             None if size.y >= PANEL_MIN_HEIGHT => {
@@ -4012,29 +4024,49 @@ impl FmxApp {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("queue.title")).strong().size(16.0));
             let total = self.queue.jobs().len();
-            ui.label(
-                RichText::new(trf(
-                    "queue.summary",
-                    &[("done", &counts.done), ("total", &total)],
-                ))
-                .weak(),
-            );
-            if total == 0 {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(icons::label(icons::LIST_PLUS, tr("queue.empty")))
-                        .color(p.text_weak),
-                );
-            } else {
-                ui.add_space(8.0);
-                self.queue_controls(ui);
-            }
             let width = widgets::button_width(
                 ui,
                 Some(icons::DOTS_THREE_VERTICAL),
                 tr("action.more"),
                 Size::Regular,
             );
+            if total == 0 {
+                // One line: the hint is cut short rather than pushing the
+                // menu, or itself, onto another line in a narrow window or a
+                // language with longer words.
+                ui.add_space(8.0);
+                let spacing = ui.spacing().item_spacing.x;
+                let room = (dir::room_left(ui) - width - spacing * 2.0).max(0.0);
+                if room > 60.0 {
+                    let height = ui.spacing().interact_size.y;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(room, height),
+                        dir::leading(Align::Center),
+                        |ui| {
+                            ui.add(
+                                Label::new(
+                                    RichText::new(icons::label(
+                                        icons::LIST_PLUS,
+                                        tr("queue.empty"),
+                                    ))
+                                    .color(p.text_weak),
+                                )
+                                .truncate(),
+                            )
+                        },
+                    );
+                }
+            } else {
+                ui.label(
+                    RichText::new(trf(
+                        "queue.summary",
+                        &[("done", &counts.done), ("total", &total)],
+                    ))
+                    .weak(),
+                );
+                ui.add_space(8.0);
+                self.queue_controls(ui);
+            }
             dir::at_end(ui, width, |ui| self.queue_menu(ui));
         });
         if self.queue.jobs().is_empty() {
@@ -4283,13 +4315,22 @@ impl FmxApp {
         let Some(step) = self.welcome_step else {
             return;
         };
-        let modal = welcome_dialog(ctx, step);
+        let modal = welcome_dialog(ctx, step, self.welcome_shell_offer.as_mut());
         match modal.inner {
             WelcomeAction::Back => self.welcome_step = Some(step.saturating_sub(1)),
             WelcomeAction::Next => self.welcome_step = Some(step + 1),
             _ => {}
         }
         if modal.inner == WelcomeAction::Finish || modal.should_close() {
+            // Only the last page shows the offer, so skipping the guide
+            // earlier leaves the menu off; Settings can still add it.
+            if let Some(add) = self.welcome_shell_offer.take() {
+                self.settings.shell_menu_setup = true;
+                if add && step >= WELCOME_PAGES - 1 && modal.inner == WelcomeAction::Finish {
+                    self.shell_menu = true;
+                    self.toggle_shell_menu();
+                }
+            }
             self.welcome_step = None;
             self.settings.welcome_seen = true;
             ctx.data_mut(|data| data.remove::<usize>(Id::unique("welcome_focus")));
@@ -4559,9 +4600,10 @@ impl FmxApp {
             ui.add_space(4.0);
             group_title(ui, tr("settings.group_core"));
             ui.with_layout(dir::trailing(Align::Center), |ui| {
-                if widgets::icon_button(
+                // Labelled, since the hints below tell people to press it.
+                if widgets::button(
                     ui,
-                    icons::ARROW_CLOCKWISE,
+                    Some(icons::ARROW_CLOCKWISE),
                     tr("action.rescan"),
                     Kind::Ghost,
                     Size::Small,
@@ -4626,12 +4668,6 @@ impl FmxApp {
                 .on_hover_text(tr("settings.ytdlp_hint"));
         });
         ui.add_space(GROUP_GAP);
-        ui.label(
-            RichText::new(tr("settings.install_hint"))
-                .small()
-                .color(p.text_weak),
-        );
-        ui.add_space(6.0);
         pref_group(
             ui,
             Some((tr("settings.programs"), tr("settings.programs_hint"))),
@@ -5079,8 +5115,17 @@ enum WelcomeAction {
 
 /// A clamped welcome page with a scrollable body and persistent navigation.
 /// Uses standard modal/focus behavior and the app's direction-aware controls.
-fn welcome_dialog(ctx: &egui::Context, step: usize) -> egui::ModalResponse<WelcomeAction> {
-    let pages = [
+/// How many pages the welcome guide has.
+const WELCOME_PAGES: usize = 4;
+
+/// `shell_offer` is the right-click menu switch shown on the last page, if
+/// the menu is still to be offered.
+fn welcome_dialog(
+    ctx: &egui::Context,
+    step: usize,
+    shell_offer: Option<&mut bool>,
+) -> egui::ModalResponse<WelcomeAction> {
+    let pages: [_; WELCOME_PAGES] = [
         (
             "welcome.choose_title",
             "welcome.choose_body",
@@ -5157,6 +5202,22 @@ fn welcome_dialog(ctx: &egui::Context, step: usize) -> egui::ModalResponse<Welco
                         }
                     });
                 ui.add_space(12.0);
+                // Outside the scrolling text, so the choice is always in view.
+                if step == pages.len() - 1
+                    && let Some(on) = shell_offer
+                {
+                    line_rows(ui, |ui| {
+                        widgets::pref_row(
+                            ui,
+                            tr("settings.shell_label"),
+                            tr("settings.shell_short"),
+                            |ui| {
+                                widgets::switch(ui, on).on_hover_text(tr("settings.shell_hint"));
+                            },
+                        );
+                    });
+                    ui.add_space(12.0);
+                }
                 ui.vertical_centered(|ui| {
                     ui.label(
                         RichText::new(trf(
@@ -5725,30 +5786,47 @@ fn empty_slot(ui: &mut egui::Ui, number: usize, role: &str) -> bool {
 /// frame that receives the first character. TextEdit's width includes its frame.
 fn tool_search(ui: &mut egui::Ui, text: &mut String) -> (egui::Response, bool) {
     let p = theme::palette(ui);
-    ui.horizontal(|ui| {
-        ui.with_layout(dir::trailing(Align::Center), |ui| {
-            let clear = ui
-                .add_enabled_ui(!text.is_empty(), |ui| {
-                    widgets::icon_button(ui, icons::X, tr("action.clear"), Kind::Ghost, Size::Small)
-                })
-                .inner
-                .clicked();
-            let width = ui.available_width().max(0.0);
-            let search = ui.add_sized(
-                egui::vec2(width, theme::BUTTON_HEIGHT),
-                TextEdit::singleline(text)
-                    .id(Id::unique("tool_search"))
-                    .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
-                    .align(egui::Align2([dir::start(), Align::Center]))
-                    .background_color(p.surface)
-                    .margin(Margin::symmetric(10, 7))
-                    .desired_width(0.0),
-            );
-            (search, clear)
-        })
-        .inner
-    })
-    .inner
+    // The field takes the sidebar's full width; its clear button sits inside
+    // it at the end edge, and only while there is something to clear.
+    const CLEAR: f32 = 22.0;
+    let clear_room = (CLEAR + 10.0) as i8;
+    let margin = if dir::is_rtl() {
+        Margin {
+            left: clear_room,
+            right: 10,
+            top: 7,
+            bottom: 7,
+        }
+    } else {
+        Margin {
+            left: 10,
+            right: clear_room,
+            top: 7,
+            bottom: 7,
+        }
+    };
+    let width = ui.available_width().max(0.0);
+    let search = ui.add_sized(
+        egui::vec2(width, theme::BUTTON_HEIGHT),
+        TextEdit::singleline(text)
+            .id(Id::unique("tool_search"))
+            .hint_text(icons::label(icons::MAGNIFYING_GLASS, tr("grid.search")))
+            .align(egui::Align2([dir::start(), Align::Center]))
+            .background_color(p.surface)
+            .margin(margin)
+            .desired_width(0.0),
+    );
+    let mut clear = false;
+    if !text.is_empty() {
+        let field = search.rect;
+        let x = dir::mirror_x(field, field.right() - 5.0 - CLEAR, CLEAR);
+        let button = egui::Rect::from_min_size(
+            egui::pos2(x, field.center().y - CLEAR / 2.0),
+            egui::Vec2::splat(CLEAR),
+        );
+        clear = widgets::field_clear_button(ui, button, tr("action.clear")).clicked();
+    }
+    (search, clear)
 }
 
 /// Lays out `content` at most `max_width` wide, centered in the available space.
@@ -6837,14 +6915,19 @@ fn optional_number(
     suffix: &str,
     off_label: &str,
 ) {
+    // The value (or what "off" means, such as "Original"), then a switch at
+    // the end edge, as in GNOME's rows; a bare checkbox beside a greyed word
+    // read as a disabled control.
     let mut on = value.is_some();
-    dir::checkbox(ui, &mut on, "");
     let mut number = value.unwrap_or(default);
-    if on {
-        ui.add(DragValue::new(&mut number).range(range).suffix(suffix));
-    } else {
-        ui.label(RichText::new(off_label).weak());
-    }
+    ui.with_layout(dir::leading(Align::Center), |ui| {
+        if on {
+            ui.add(DragValue::new(&mut number).range(range).suffix(suffix));
+        } else {
+            ui.label(RichText::new(off_label).color(theme::palette(ui).text_weak));
+        }
+        widgets::switch(ui, &mut on);
+    });
     *value = on.then_some(number);
 }
 
@@ -7040,9 +7123,16 @@ fn job_controls(
                 *cancel = Some(job.id);
             }
         }
-        JobState::Queued | JobState::Running { .. } => {
-            if icon(ui, icons::X, tr("action.cancel")) {
+        // Stopping running work is a different act from taking a waiting
+        // job off the list, so the two get different icons.
+        JobState::Running { .. } => {
+            if icon(ui, icons::STOP, tr("action.cancel")) {
                 *cancel = Some(job.id);
+            }
+        }
+        JobState::Queued => {
+            if icon(ui, icons::X, tr("action.remove")) {
+                *remove = Some(job.id);
             }
         }
         JobState::Done { .. } => {
@@ -7145,6 +7235,12 @@ fn power_off() {
 }
 
 impl eframe::App for FmxApp {
+    /// The window's background. eframe's default is near black, which shows
+    /// through the 1 px seams between panels as dark lines in light mode.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         #[cfg(debug_assertions)]
@@ -7623,7 +7719,7 @@ mod tests {
                             ..Default::default()
                         };
                         ctx.run_ui(input, |ui| {
-                            bounds = welcome_dialog(ui.ctx(), step).response.rect;
+                            bounds = welcome_dialog(ui.ctx(), step, None).response.rect;
                         })
                         .textures_delta
                         .clear();
