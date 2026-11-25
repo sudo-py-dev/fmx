@@ -247,6 +247,7 @@ impl DocxState {
     fn end_paragraph(&mut self) {
         let spans = std::mem::take(&mut self.spans);
         if !self.tables.is_empty() {
+            self.page_break = false;
             if !self.cell.is_empty() {
                 self.cell.push('\n');
             }
@@ -414,6 +415,7 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                     }
                     let content = std::mem::take(&mut text);
                     if !tables.is_empty() {
+                        heading = None;
                         if !cell.is_empty() {
                             cell.push('\n');
                         }
@@ -704,18 +706,29 @@ pub(crate) fn html_blocks(html: &str) -> Vec<Block> {
                 row.push(text.split_whitespace().collect::<Vec<_>>().join(" "));
                 text.clear();
             }
-            (h, false) if h.len() == 2 && h.starts_with('h') && h[1..].parse::<u8>().is_ok() => {
+            // Inside a table a heading is just cell text.
+            (h, false)
+                if !in_table
+                    && h.len() == 2
+                    && h.starts_with('h')
+                    && h[1..].parse::<u8>().is_ok() =>
+            {
                 flush_text(&mut text, &mut heading, in_item, &mut blocks);
                 heading = h[1..].parse::<u8>().ok().map(|n| n.clamp(1, 4));
+            }
+            (h, true) if h.len() == 2 && h.starts_with('h') && h[1..].parse::<u8>().is_ok() => {
+                if !in_table {
+                    flush_text(&mut text, &mut heading, in_item, &mut blocks);
+                }
+                // An empty heading must not turn the next paragraph into one.
+                heading = None;
             }
             ("li", false) => {
                 flush_text(&mut text, &mut heading, in_item, &mut blocks);
                 in_item = true;
             }
             ("br", _) => text.push('\n'),
-            ("p" | "div" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol", _)
-                if !in_table =>
-            {
+            ("p" | "div" | "li" | "ul" | "ol", _) if !in_table => {
                 flush_text(&mut text, &mut heading, in_item, &mut blocks);
                 if name == "li" && closing {
                     in_item = false;
@@ -759,6 +772,34 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
+/// The text encoding an RTF `\ansicpgN` names; `None` keeps the current one.
+fn rtf_codepage(n: u32) -> Option<&'static encoding_rs::Encoding> {
+    let label = match n {
+        874 => "windows-874".to_owned(),
+        932 => "shift_jis".to_owned(),
+        936 => "gbk".to_owned(),
+        949 => "euc-kr".to_owned(),
+        950 => "big5".to_owned(),
+        1250..=1258 => format!("windows-{n}"),
+        10000 => "macintosh".to_owned(),
+        65001 => "utf-8".to_owned(),
+        _ => return None,
+    };
+    encoding_rs::Encoding::for_label(label.as_bytes())
+}
+
+/// Decodes the `\'hh` bytes read so far, so multi-byte characters stay whole.
+fn flush_rtf_bytes(
+    out: &mut String,
+    bytes: &mut Vec<u8>,
+    codepage: &'static encoding_rs::Encoding,
+) {
+    if !bytes.is_empty() {
+        out.push_str(&codepage.decode_without_bom_handling(bytes).0);
+        bytes.clear();
+    }
+}
+
 /// Plain text from RTF: drops control words and groups such as font tables.
 fn rtf_text(rtf: &str) -> String {
     const SKIP_GROUPS: &[&str] = &["fonttbl", "colortbl", "stylesheet", "info", "pict", "*"];
@@ -770,7 +811,14 @@ fn rtf_text(rtf: &str) -> String {
     // Fallback units after each `\uN` (`\ucN`, scoped to its group; default 1).
     let mut uc = 1usize;
     let mut outer_uc: Vec<usize> = Vec::new();
+    // `\'hh` bytes are in the document's code page (`\ansicpgN`, default 1252).
+    let mut codepage = encoding_rs::WINDOWS_1252;
+    let mut bytes: Vec<u8> = Vec::new();
     while let Some(c) = chars.next() {
+        // Consecutive hex escapes form one character in multi-byte code pages.
+        if !(c == '\\' && chars.peek() == Some(&'\'')) {
+            flush_rtf_bytes(&mut out, &mut bytes, codepage);
+        }
         match c {
             '{' => {
                 depth += 1;
@@ -801,9 +849,13 @@ fn rtf_text(rtf: &str) -> String {
                             if skip_from.is_none()
                                 && let Ok(b) = u8::from_str_radix(&hex, 16)
                             {
-                                out.push(char::from(b));
+                                bytes.push(b);
                             }
                         }
+                        Some('~') if skip_from.is_none() => out.push('\u{00A0}'),
+                        Some('_') if skip_from.is_none() => out.push('\u{2011}'),
+                        // An optional hyphen is only a line-break hint.
+                        Some('-') => {}
                         Some(other) if skip_from.is_none() && !other.is_alphanumeric() => {
                             out.push(other)
                         }
@@ -827,6 +879,11 @@ fn rtf_text(rtf: &str) -> String {
                 if word == "uc" {
                     uc = param.parse().unwrap_or(1);
                 }
+                if word == "ansicpg"
+                    && let Some(encoding) = param.parse().ok().and_then(rtf_codepage)
+                {
+                    codepage = encoding;
+                }
                 if SKIP_GROUPS.contains(&word.as_str()) && skip_from.is_none() {
                     skip_from = Some(depth);
                 }
@@ -834,6 +891,13 @@ fn rtf_text(rtf: &str) -> String {
                     match word.as_str() {
                         "par" | "line" => out.push('\n'),
                         "tab" => out.push('\t'),
+                        "lquote" => out.push('\u{2018}'),
+                        "rquote" => out.push('\u{2019}'),
+                        "ldblquote" => out.push('\u{201C}'),
+                        "rdblquote" => out.push('\u{201D}'),
+                        "endash" => out.push('\u{2013}'),
+                        "emdash" => out.push('\u{2014}'),
+                        "bullet" => out.push('\u{2022}'),
                         "u" => {
                             if let Some(ch) = param
                                 .parse::<i32>()
@@ -875,6 +939,7 @@ fn rtf_text(rtf: &str) -> String {
             _ => {}
         }
     }
+    flush_rtf_bytes(&mut out, &mut bytes, codepage);
     out
 }
 
@@ -1238,6 +1303,40 @@ mod tests {
     }
 
     #[test]
+    fn odf_heading_in_a_table_cell_stays_in_the_cell() {
+        let xml = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text>
+<table:table><table:table-row><table:table-cell><text:h text:outline-level="2">Name</text:h></table:table-cell></table:table-row></table:table>
+<text:p>Body</text:p>
+</office:text></office:body></office:document-content>"#;
+        assert_eq!(
+            odf_blocks(xml).expect("parse"),
+            vec![
+                Block::Table(vec![vec!["Name".into()]]),
+                Block::Paragraph(vec![Span::plain("Body")]),
+            ]
+        );
+    }
+
+    #[test]
+    fn docx_page_break_in_a_table_cell_does_not_leak_past_the_table() {
+        let xml = r#"<w:document xmlns:w="w"><w:body>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t>A</w:t><w:br w:type="page"/></w:r></w:p></w:tc></w:tr></w:tbl>
+<w:p><w:r><w:t>Body</w:t></w:r></w:p>
+</w:body></w:document>"#;
+        assert_eq!(
+            docx_blocks(xml).expect("parse"),
+            vec![
+                Block::Table(vec![vec!["A".into()]]),
+                Block::Paragraph(vec![Span {
+                    text: "Body".into(),
+                    bold: false,
+                    italic: false,
+                }]),
+            ]
+        );
+    }
+
+    #[test]
     fn odf_nested_payload_hits_copy_budget_before_copying() {
         let xml = format!(
             "{}<text:p>{}</text:p>{}",
@@ -1332,6 +1431,27 @@ mod tests {
     }
 
     #[test]
+    fn html_heading_level_does_not_outlive_its_heading() {
+        let body = || Block::Paragraph(vec![Span::plain("Body")]);
+        // An empty heading leaves nothing to style.
+        assert_eq!(html_blocks("<h2></h2><p>Body</p>"), vec![body()]);
+        // A heading in a cell is cell text, and the level stays inside it.
+        assert_eq!(
+            html_blocks("<p>Intro</p><table><tr><td><h2>Name</h2></td></tr></table><p>Body</p>"),
+            vec![
+                Block::Paragraph(vec![Span::plain("Intro")]),
+                Block::Table(vec![vec!["Name".into()]]),
+                body(),
+            ]
+        );
+        // Markup inside a heading still keeps it a heading.
+        assert_eq!(
+            html_blocks("<h3><span>Title</span></h3><p>Body</p>"),
+            vec![Block::Heading(3, "Title".into()), body()]
+        );
+    }
+
+    #[test]
     fn rtf_drops_control_groups() {
         let rtf = r"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\f0 Hello \b world\b0\par caf\'e9 \u8364?}";
         let text = rtf_text(rtf);
@@ -1355,6 +1475,34 @@ mod tests {
         assert_eq!(rtf_text(rtf), "αβCγZ");
         // An escaped symbol such as `\{` is one whole fallback unit.
         assert_eq!(rtf_text(r"{\rtf1\ansi\uc2\u945\'61\{Z}"), "αZ");
+    }
+
+    #[test]
+    fn rtf_hex_escapes_follow_the_code_page() {
+        // Word writes ANSI characters as bare `\'hh`; 0x80-0x9F are not Latin-1.
+        let rtf = r"{\rtf1\ansi\ansicpg1252 \'93Hi\'94 \'96 5\'80\'85}";
+        assert_eq!(
+            rtf_text(rtf),
+            "\u{201C}Hi\u{201D} \u{2013} 5\u{20AC}\u{2026}"
+        );
+        // Without `\uN`, Cyrillic text is only in the code page.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg1251 \'cf\'f0\'e8}"), "При");
+        // Multi-byte code pages: consecutive escapes are one character.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg932 \'82\'a0}"), "あ");
+        // No `\ansicpg` means Windows-1252, as Word assumes.
+        assert_eq!(rtf_text(r"{\rtf1\ansi caf\'e9\'92s}"), "café’s");
+    }
+
+    #[test]
+    fn rtf_symbol_words_and_control_symbols_become_text() {
+        let rtf =
+            r"{\rtf1\ansi \ldblquote a\rdblquote \lquote b\rquote \endash c\emdash \bullet d}";
+        // The space after a control word is its delimiter, not text.
+        assert_eq!(rtf_text(rtf), "“a”‘b’–c—•d");
+        assert_eq!(
+            rtf_text(r"{\rtf1 a\~b\_c co\-op}"),
+            "a\u{00A0}b\u{2011}c coop"
+        );
     }
 
     #[test]
