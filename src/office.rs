@@ -843,19 +843,21 @@ fn rtf_text(rtf: &str) -> String {
                                 out.push(ch);
                             }
                             // Skip the `\ucN` fallback units that follow a Unicode
-                            // escape: each is one character or one `\'hh` escape
-                            // (what Word writes). `\uc0` means there is none.
+                            // escape: each is one character, one `\'hh` escape (what
+                            // Word writes) or one escaped symbol such as `\{`.
+                            // `\uc0` means there is none.
                             for _ in 0..uc {
                                 match chars.peek() {
                                     Some('\\') => {
                                         let mut ahead = chars.clone();
                                         ahead.next();
-                                        if ahead.peek() != Some(&'\'') {
-                                            break;
-                                        }
-                                        chars.next();
-                                        chars.next();
-                                        chars.by_ref().take(2).for_each(drop);
+                                        let len = match ahead.peek() {
+                                            Some('\'') => 4,
+                                            Some(c) if !c.is_ascii_alphabetic() => 2,
+                                            // A control word ends the fallback.
+                                            _ => break,
+                                        };
+                                        chars.by_ref().take(len).for_each(drop);
                                     }
                                     Some('{' | '}') | None => break,
                                     Some(_) => {
@@ -1351,6 +1353,8 @@ mod tests {
         // `\ucN` is scoped to its group and restored when the group ends.
         let rtf = r"{\uc2\u945ab{\uc0\u946\'43}\u947xyZ}";
         assert_eq!(rtf_text(rtf), "αβCγZ");
+        // An escaped symbol such as `\{` is one whole fallback unit.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc2\u945\'61\{Z}"), "αZ");
     }
 
     #[test]
