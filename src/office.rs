@@ -190,32 +190,45 @@ struct DocxState {
     table_copy_bytes: usize,
 }
 
+/// Appends `text` to a table cell, charging `copied` before any byte is copied.
+fn append_budgeted(cell: &mut String, copied: &mut usize, text: &str) -> Result<(), OfficeError> {
+    *copied = copied
+        .checked_add(text.len())
+        .filter(|&bytes| bytes <= MAX_DOCX_TABLE_COPY_BYTES)
+        .ok_or_else(|| corrupt("nested table copy limit exceeded"))?;
+    cell.push_str(text);
+    Ok(())
+}
+
+/// Appends a nested table to its parent cell as text: cells joined with ` | `,
+/// rows with line breaks. Every copied byte, including separators, is charged
+/// before allocation; the budget is shared across the entire document.
+fn append_nested_rows(
+    cell: &mut String,
+    copied: &mut usize,
+    rows: &[Vec<String>],
+) -> Result<(), OfficeError> {
+    for (row_index, row) in rows.iter().enumerate() {
+        if row_index > 0 {
+            append_budgeted(cell, copied, "\n")?;
+        }
+        for (cell_index, text) in row.iter().enumerate() {
+            if cell_index > 0 {
+                append_budgeted(cell, copied, " | ")?;
+            }
+            append_budgeted(cell, copied, text)?;
+        }
+    }
+    Ok(())
+}
+
 impl DocxState {
     fn append_nested_text(&mut self, text: &str) -> Result<(), OfficeError> {
-        self.table_copy_bytes = self
-            .table_copy_bytes
-            .checked_add(text.len())
-            .filter(|&bytes| bytes <= MAX_DOCX_TABLE_COPY_BYTES)
-            .ok_or_else(|| corrupt("DOCX nested table copy limit exceeded"))?;
-        self.cell.push_str(text);
-        Ok(())
+        append_budgeted(&mut self.cell, &mut self.table_copy_bytes, text)
     }
 
     fn append_nested_table(&mut self, rows: &[Vec<String>]) -> Result<(), OfficeError> {
-        // Append directly so every copied byte, including separators, is charged
-        // before allocation. The budget is shared across the entire document.
-        for (row_index, row) in rows.iter().enumerate() {
-            if row_index > 0 {
-                self.append_nested_text("\n")?;
-            }
-            for (cell_index, cell) in row.iter().enumerate() {
-                if cell_index > 0 {
-                    self.append_nested_text(" | ")?;
-                }
-                self.append_nested_text(cell)?;
-            }
-        }
-        Ok(())
+        append_nested_rows(&mut self.cell, &mut self.table_copy_bytes, rows)
     }
 
     fn push_text(&mut self, text: &str) {
@@ -428,15 +441,10 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                         } else if let Some((outer_row, outer_cell)) = outer.pop() {
                             // A nested table becomes text inside its parent cell.
                             (row, cell) = (outer_row, outer_cell);
-                            let text = flatten_table(&rows);
-                            copied = copied
-                                .checked_add(text.len() + 1)
-                                .filter(|&n| n <= MAX_DOCX_TABLE_COPY_BYTES)
-                                .ok_or_else(|| corrupt("ODF nested table copy limit exceeded"))?;
                             if !cell.is_empty() {
-                                cell.push('\n');
+                                append_budgeted(&mut cell, &mut copied, "\n")?;
                             }
-                            cell.push_str(&text);
+                            append_nested_rows(&mut cell, &mut copied, &rows)?;
                         }
                     }
                 }
@@ -447,14 +455,6 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
         }
     }
     Ok(blocks)
-}
-
-/// A nested table as text: cells joined with ` | `, rows with line breaks.
-fn flatten_table(rows: &[Vec<String>]) -> String {
-    rows.iter()
-        .map(|row| row.join(" | "))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// One page per slide; the first text box becomes the slide's heading.
@@ -767,14 +767,21 @@ fn rtf_text(rtf: &str) -> String {
     // Brace depth at which an ignored group started, if any.
     let mut skip_from: Option<usize> = None;
     let mut depth = 0usize;
+    // Fallback units after each `\uN` (`\ucN`, scoped to its group; default 1).
+    let mut uc = 1usize;
+    let mut outer_uc: Vec<usize> = Vec::new();
     while let Some(c) = chars.next() {
         match c {
-            '{' => depth += 1,
+            '{' => {
+                depth += 1;
+                outer_uc.push(uc);
+            }
             '}' => {
                 if skip_from == Some(depth) {
                     skip_from = None;
                 }
                 depth = depth.saturating_sub(1);
+                uc = outer_uc.pop().unwrap_or(1);
             }
             '\\' => {
                 let mut word = String::new();
@@ -817,6 +824,9 @@ fn rtf_text(rtf: &str) -> String {
                 if chars.peek() == Some(&' ') {
                     chars.next();
                 }
+                if word == "uc" {
+                    uc = param.parse().unwrap_or(1);
+                }
                 if SKIP_GROUPS.contains(&word.as_str()) && skip_from.is_none() {
                     skip_from = Some(depth);
                 }
@@ -832,21 +842,25 @@ fn rtf_text(rtf: &str) -> String {
                             {
                                 out.push(ch);
                             }
-                            // Skip the fallback that follows a Unicode escape: one
-                            // character, or one `\'hh` escape (what Word writes).
-                            match chars.peek() {
-                                Some('\\') => {
-                                    let mut ahead = chars.clone();
-                                    ahead.next();
-                                    if ahead.peek() == Some(&'\'') {
+                            // Skip the `\ucN` fallback units that follow a Unicode
+                            // escape: each is one character or one `\'hh` escape
+                            // (what Word writes). `\uc0` means there is none.
+                            for _ in 0..uc {
+                                match chars.peek() {
+                                    Some('\\') => {
+                                        let mut ahead = chars.clone();
+                                        ahead.next();
+                                        if ahead.peek() != Some(&'\'') {
+                                            break;
+                                        }
                                         chars.next();
                                         chars.next();
                                         chars.by_ref().take(2).for_each(drop);
                                     }
-                                }
-                                Some('{' | '}') | None => {}
-                                Some(_) => {
-                                    chars.next();
+                                    Some('{' | '}') | None => break,
+                                    Some(_) => {
+                                        chars.next();
+                                    }
                                 }
                             }
                         }
@@ -1222,6 +1236,18 @@ mod tests {
     }
 
     #[test]
+    fn odf_nested_payload_hits_copy_budget_before_copying() {
+        let xml = format!(
+            "{}<text:p>{}</text:p>{}",
+            "<table:table><table:table-row><table:table-cell>".repeat(18),
+            "x".repeat(4 << 20),
+            "</table:table-cell></table:table-row></table:table>".repeat(18)
+        );
+        assert!(matches!(odf_blocks(&xml),
+            Err(OfficeError::Corrupt(message)) if message.contains("copy limit")));
+    }
+
+    #[test]
     fn odf_reads_headings_spaces_and_tables() {
         let xml = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text>
 <text:h text:outline-level="2">Intro</text:h><text:p>a<text:s text:c="2"/>b</text:p>
@@ -1316,6 +1342,15 @@ mod tests {
         // Word writes each non-ASCII letter as \uN followed by a \'hh fallback.
         let rtf = r"{\rtf1\ansi\ansicpg1251\uc1 \u1055\'cf\u1088\'f0\u1080\'e8 \u1513\'f9!}";
         assert_eq!(rtf_text(rtf), "При ש!");
+    }
+
+    #[test]
+    fn rtf_fallback_count_follows_uc_and_its_group() {
+        // `\uc0` means no fallback, so the hex escape is real text.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc0\u945\'42}"), "αB");
+        // `\ucN` is scoped to its group and restored when the group ends.
+        let rtf = r"{\uc2\u945ab{\uc0\u946\'43}\u947xyZ}";
+        assert_eq!(rtf_text(rtf), "αβCγZ");
     }
 
     #[test]
