@@ -20,7 +20,7 @@ const MAX_PART_BYTES: u64 = 64 << 20;
 const MAX_PPTX_CONTENT_BYTES: usize = 128 << 20;
 /// Largest plain-text input read whole.
 const MAX_TEXT_BYTES: u64 = 32 << 20;
-/// Bound nested DOCX table state and total bytes copied while flattening tables.
+/// Bound nested DOCX and ODF table state and total bytes copied while flattening tables.
 const MAX_DOCX_TABLE_DEPTH: usize = 32;
 const MAX_DOCX_TABLE_COPY_BYTES: usize = 64 << 20;
 /// Spreadsheet rows rendered per sheet.
@@ -185,6 +185,8 @@ struct DocxState {
     tables: Vec<Vec<Vec<String>>>,
     row: Vec<String>,
     cell: String,
+    /// The enclosing row and cell, saved while a nested table is read.
+    outer: Vec<(Vec<String>, String)>,
     table_copy_bytes: usize,
 }
 
@@ -282,6 +284,10 @@ fn docx_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                     if st.tables.len() >= MAX_DOCX_TABLE_DEPTH {
                         return Err(corrupt("DOCX table nesting limit exceeded"));
                     }
+                    if !st.tables.is_empty() {
+                        let saved = (std::mem::take(&mut st.row), std::mem::take(&mut st.cell));
+                        st.outer.push(saved);
+                    }
                     st.tables.push(Vec::new());
                 }
                 "tr" => st.row.clear(),
@@ -312,6 +318,13 @@ fn docx_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                         if st.tables.is_empty() {
                             st.blocks.push(Block::Table(rows));
                         } else {
+                            if let Some((row, cell)) = st.outer.pop() {
+                                st.row = row;
+                                st.cell = cell;
+                            }
+                            if !st.cell.is_empty() {
+                                st.append_nested_text("\n")?;
+                            }
                             // A nested table becomes text inside its parent cell.
                             st.append_nested_table(&rows)?;
                         }
@@ -337,6 +350,9 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
     let mut tables: Vec<Vec<Vec<String>>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut cell = String::new();
+    // The enclosing row and cell, saved while a nested table is read.
+    let mut outer: Vec<(Vec<String>, String)> = Vec::new();
+    let mut copied = 0usize;
     loop {
         match reader.read_event().map_err(corrupt)? {
             Event::Start(e) => match e.local_name().as_ref() {
@@ -348,7 +364,15 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                 }
                 "p" => depth_text += 1,
                 "list" => list_depth += 1,
-                "table" => tables.push(Vec::new()),
+                "table" => {
+                    if tables.len() >= MAX_DOCX_TABLE_DEPTH {
+                        return Err(corrupt("ODF table nesting limit exceeded"));
+                    }
+                    if !tables.is_empty() {
+                        outer.push((std::mem::take(&mut row), std::mem::take(&mut cell)));
+                    }
+                    tables.push(Vec::new());
+                }
                 "table-row" => row.clear(),
                 "table-cell" => cell.clear(),
                 "page" if !blocks.is_empty() => blocks.push(Block::PageBreak),
@@ -399,7 +423,21 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                 }
                 "table" => {
                     if let Some(rows) = tables.pop() {
-                        blocks.push(Block::Table(rows));
+                        if tables.is_empty() {
+                            blocks.push(Block::Table(rows));
+                        } else if let Some((outer_row, outer_cell)) = outer.pop() {
+                            // A nested table becomes text inside its parent cell.
+                            (row, cell) = (outer_row, outer_cell);
+                            let text = flatten_table(&rows);
+                            copied = copied
+                                .checked_add(text.len() + 1)
+                                .filter(|&n| n <= MAX_DOCX_TABLE_COPY_BYTES)
+                                .ok_or_else(|| corrupt("ODF nested table copy limit exceeded"))?;
+                            if !cell.is_empty() {
+                                cell.push('\n');
+                            }
+                            cell.push_str(&text);
+                        }
                     }
                 }
                 _ => {}
@@ -409,6 +447,14 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
         }
     }
     Ok(blocks)
+}
+
+/// A nested table as text: cells joined with ` | `, rows with line breaks.
+fn flatten_table(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|row| row.join(" | "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One page per slide; the first text box becomes the slide's heading.
@@ -786,9 +832,22 @@ fn rtf_text(rtf: &str) -> String {
                             {
                                 out.push(ch);
                             }
-                            // Skip the plain-text fallback that follows a Unicode escape.
-                            if chars.peek().is_some_and(|c| !matches!(c, '\\' | '{' | '}')) {
-                                chars.next();
+                            // Skip the fallback that follows a Unicode escape: one
+                            // character, or one `\'hh` escape (what Word writes).
+                            match chars.peek() {
+                                Some('\\') => {
+                                    let mut ahead = chars.clone();
+                                    ahead.next();
+                                    if ahead.peek() == Some(&'\'') {
+                                        chars.next();
+                                        chars.next();
+                                        chars.by_ref().take(2).for_each(drop);
+                                    }
+                                }
+                                Some('{' | '}') | None => {}
+                                Some(_) => {
+                                    chars.next();
+                                }
                             }
                         }
                         _ => {}
@@ -1127,6 +1186,42 @@ mod tests {
     }
 
     #[test]
+    fn docx_nested_table_keeps_outer_cells() {
+        let xml = r#"<w:document xmlns:w="w"><w:body><w:tbl><w:tr>
+<w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>x</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>y</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc>
+<w:tc><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc>
+</w:tr></w:tbl></w:body></w:document>"#;
+        assert_eq!(
+            docx_blocks(xml).expect("parse"),
+            vec![Block::Table(vec![vec![
+                "A".into(),
+                "before\nx | y".into(),
+                "C".into()
+            ]])]
+        );
+    }
+
+    #[test]
+    fn odf_nested_table_keeps_outer_cells() {
+        let xml = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text>
+<table:table><table:table-row>
+<table:table-cell><text:p>A</text:p></table:table-cell>
+<table:table-cell><text:p>before</text:p><table:table><table:table-row><table:table-cell><text:p>x</text:p></table:table-cell><table:table-cell><text:p>y</text:p></table:table-cell></table:table-row></table:table></table:table-cell>
+<table:table-cell><text:p>C</text:p></table:table-cell>
+</table:table-row></table:table>
+</office:text></office:body></office:document-content>"#;
+        assert_eq!(
+            odf_blocks(xml).expect("parse"),
+            vec![Block::Table(vec![vec![
+                "A".into(),
+                "before\nx | y".into(),
+                "C".into()
+            ]])]
+        );
+    }
+
+    #[test]
     fn odf_reads_headings_spaces_and_tables() {
         let xml = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text>
 <text:h text:outline-level="2">Intro</text:h><text:p>a<text:s text:c="2"/>b</text:p>
@@ -1214,6 +1309,13 @@ mod tests {
         let text = rtf_text(rtf);
         assert!(text.starts_with("Hello world\ncafé €"), "{text:?}");
         assert!(!text.contains("Arial"));
+    }
+
+    #[test]
+    fn rtf_word_unicode_fallbacks_are_skipped() {
+        // Word writes each non-ASCII letter as \uN followed by a \'hh fallback.
+        let rtf = r"{\rtf1\ansi\ansicpg1251\uc1 \u1055\'cf\u1088\'f0\u1080\'e8 \u1513\'f9!}";
+        assert_eq!(rtf_text(rtf), "При ש!");
     }
 
     #[test]

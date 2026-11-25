@@ -822,7 +822,11 @@ fn office(spec: &JobSpec, toolbox: &Toolbox, cancel: &AtomicBool) -> Result<(), 
     run_plain(soffice, &args, cancel)?;
     let ext = "pdf";
     let stem = input.file_stem().ok_or(JobError::NoOutput)?;
-    let produced = staging.path().join(stem).with_extension(ext);
+    // LibreOffice replaces only the last extension: "a.v2.doc" becomes "a.v2.pdf".
+    let mut name = stem.to_os_string();
+    name.push(".");
+    name.push(ext);
+    let produced = staging.path().join(name);
     if !produced.is_file() {
         return Err(JobError::NoOutput);
     }

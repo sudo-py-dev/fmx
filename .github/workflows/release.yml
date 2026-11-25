@@ -169,14 +169,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Cache release signer
-        id: signer
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo/bin/rsign
-          key: rsign2-0.6.7-${{ runner.os }}-${{ runner.arch }}-v1
       - name: Install release signer
-        if: steps.signer.outputs.cache-hit != 'true'
+        # Built fresh on every release: a cached binary could be replaced by any
+        # workflow that can write this repository's Actions cache.
         run: cargo install rsign2 --locked --version 0.6.7
       - name: Record package sizes
         run: |
