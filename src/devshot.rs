@@ -8,6 +8,7 @@
 //! - `FMX_SCREENSHOT_TOOL=record` opens that tool (`screenshot`, `frames`, `trim`, `rotate`, `mp4`, `download`, `resize`, `jpg`, `cd`);
 //! - `FMX_SCREENSHOT_ENQUEUE=1` adds the editor's files to the queue
 //!   (`FMX_SCREENSHOT_RUNNING=1` then shows the first two as running);
+//! - `FMX_SCREENSHOT_SEARCH=<text>` types that into the tool search;
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
 //! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`, `presets`),
 //!   `save_preset` the dialog that names a new preset, or `image_preset`

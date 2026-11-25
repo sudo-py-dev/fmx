@@ -114,6 +114,44 @@ pub fn icon_button(
     response.on_hover_text(label)
 }
 
+/// The small round "clear" button drawn inside a text field at `rect`. It
+/// takes no room in the layout and has no frame: a weak × that gains a soft
+/// round highlight on hover, and a thin accent ring only for keyboard focus.
+pub fn field_clear_button(ui: &mut egui::Ui, rect: Rect, label: &str) -> Response {
+    let p = theme::palette(ui);
+    let response = ui
+        .interact(rect, ui.next_auto_id().with("field_clear"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand);
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label));
+    let painter = ui.painter_at(rect);
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) / 2.0;
+    if response.is_pointer_button_down_on() {
+        painter.circle_filled(center, radius, p.control_pressed);
+    } else if response.hovered() {
+        painter.circle_filled(center, radius, p.control_hover);
+    }
+    if response.has_focus() && !response.hovered() {
+        painter.circle_stroke(center, radius - 1.0, Stroke::new(1.5, p.accent));
+    }
+    let color = if response.hovered() {
+        p.text
+    } else {
+        p.text_weak
+    };
+    let arm = radius * 0.38;
+    let stroke = Stroke::new(1.5, color);
+    painter.line_segment(
+        [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(arm, -arm), center + Vec2::new(-arm, arm)],
+        stroke,
+    );
+    response.on_hover_text(label)
+}
+
 /// A small icon action with an inset highlight and the full click target.
 pub fn compact_icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> Response {
     let response = button_tinted_inset(ui, Some(icon), None, "", Kind::Ghost, Size::Small, 4.0);
