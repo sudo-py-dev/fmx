@@ -154,7 +154,11 @@ impl Args {
     }
 
     fn input(self, path: &Path) -> Self {
-        self.flag("-i", input_url(path, None))
+        // A crafted playlist or container must not make ffmpeg open URLs or
+        // other protocols: user files may only read local files. `crypto`
+        // decrypts local AES-128 HLS segments and can only wrap those.
+        self.flag("-protocol_whitelist", "file,pipe,crypto")
+            .flag("-i", input_url(path, None))
     }
 
     fn output(mut self, path: &Path) -> PendingPlan {
@@ -2132,7 +2136,9 @@ mod tests {
         )
         .unwrap();
         let cmd = joined(&p);
-        assert!(cmd.contains("-loop 1 -framerate 30 -i file:/in/photo.png"));
+        assert!(cmd.contains(
+            "-loop 1 -framerate 30 -protocol_whitelist file,pipe,crypto -i file:/in/photo.png"
+        ));
         assert!(cmd.contains("xfade=transition=slideright:duration=1.000000:offset=1.000000"));
         assert!(cmd.contains("anullsrc") && cmd.contains("acrossfade"));
         assert_eq!(p.expected_secs, Some(4.0));
@@ -2278,7 +2284,7 @@ mod tests {
         )
         .expect("plan");
         let cmd = joined(&p);
-        assert!(cmd.contains("-ss 5.000 -to 15.000 -i"));
+        assert!(cmd.contains("-ss 5.000 -to 15.000 -protocol_whitelist file,pipe,crypto -i"));
         assert!(
             cmd.contains(
                 "-vf crop=640:360:10:20,transpose=1,subtitles=filename=/s/it\\\\\\'s\\\\: a\\,b.srt"

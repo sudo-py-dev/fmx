@@ -131,7 +131,13 @@ fn bundled_dirs() -> Vec<PathBuf> {
 /// so a release always runs the exact tools it shipped with.
 fn find_program(names: &[&str]) -> Option<PathBuf> {
     let path_dirs = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        // Empty or relative entries mean "the current folder", which may hold
+        // downloaded files; only absolute folders are searched.
+        .map(|path| {
+            std::env::split_paths(&path)
+                .filter(|d| d.is_absolute())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let dirs: Vec<PathBuf> = bundled_dirs().into_iter().chain(path_dirs).collect();
     names.iter().find_map(|name| {

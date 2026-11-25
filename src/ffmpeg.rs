@@ -115,7 +115,8 @@ fn add_input(args: &mut Vec<OsString>, path: &Path, demuxer: Option<&str>) {
         args.extend(["-f".into(), format.into()]);
     }
     if demuxer.is_none() {
-        args.extend(["-protocol_whitelist".into(), "file,pipe".into()]);
+        // Same set as conversion inputs: local files and AES-128 HLS segments.
+        args.extend(["-protocol_whitelist".into(), "file,pipe,crypto".into()]);
     }
     args.extend(["-i".into(), input_url(path, demuxer)]);
 }

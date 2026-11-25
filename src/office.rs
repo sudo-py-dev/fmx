@@ -20,7 +20,7 @@ const MAX_PART_BYTES: u64 = 64 << 20;
 const MAX_PPTX_CONTENT_BYTES: usize = 128 << 20;
 /// Largest plain-text input read whole.
 const MAX_TEXT_BYTES: u64 = 32 << 20;
-/// Bound nested DOCX table state and total bytes copied while flattening tables.
+/// Bound nested DOCX and ODF table state and total bytes copied while flattening tables.
 const MAX_DOCX_TABLE_DEPTH: usize = 32;
 const MAX_DOCX_TABLE_COPY_BYTES: usize = 64 << 20;
 /// Spreadsheet rows rendered per sheet.
@@ -185,35 +185,50 @@ struct DocxState {
     tables: Vec<Vec<Vec<String>>>,
     row: Vec<String>,
     cell: String,
+    /// The enclosing row and cell, saved while a nested table is read.
+    outer: Vec<(Vec<String>, String)>,
     table_copy_bytes: usize,
+}
+
+/// Appends `text` to a table cell, charging `copied` before any byte is copied.
+fn append_budgeted(cell: &mut String, copied: &mut usize, text: &str) -> Result<(), OfficeError> {
+    *copied = copied
+        .checked_add(text.len())
+        .filter(|&bytes| bytes <= MAX_DOCX_TABLE_COPY_BYTES)
+        .ok_or_else(|| corrupt("nested table copy limit exceeded"))?;
+    cell.push_str(text);
+    Ok(())
+}
+
+/// Appends a nested table to its parent cell as text: cells joined with ` | `,
+/// rows with line breaks. Every copied byte, including separators, is charged
+/// before allocation; the budget is shared across the entire document.
+fn append_nested_rows(
+    cell: &mut String,
+    copied: &mut usize,
+    rows: &[Vec<String>],
+) -> Result<(), OfficeError> {
+    for (row_index, row) in rows.iter().enumerate() {
+        if row_index > 0 {
+            append_budgeted(cell, copied, "\n")?;
+        }
+        for (cell_index, text) in row.iter().enumerate() {
+            if cell_index > 0 {
+                append_budgeted(cell, copied, " | ")?;
+            }
+            append_budgeted(cell, copied, text)?;
+        }
+    }
+    Ok(())
 }
 
 impl DocxState {
     fn append_nested_text(&mut self, text: &str) -> Result<(), OfficeError> {
-        self.table_copy_bytes = self
-            .table_copy_bytes
-            .checked_add(text.len())
-            .filter(|&bytes| bytes <= MAX_DOCX_TABLE_COPY_BYTES)
-            .ok_or_else(|| corrupt("DOCX nested table copy limit exceeded"))?;
-        self.cell.push_str(text);
-        Ok(())
+        append_budgeted(&mut self.cell, &mut self.table_copy_bytes, text)
     }
 
     fn append_nested_table(&mut self, rows: &[Vec<String>]) -> Result<(), OfficeError> {
-        // Append directly so every copied byte, including separators, is charged
-        // before allocation. The budget is shared across the entire document.
-        for (row_index, row) in rows.iter().enumerate() {
-            if row_index > 0 {
-                self.append_nested_text("\n")?;
-            }
-            for (cell_index, cell) in row.iter().enumerate() {
-                if cell_index > 0 {
-                    self.append_nested_text(" | ")?;
-                }
-                self.append_nested_text(cell)?;
-            }
-        }
-        Ok(())
+        append_nested_rows(&mut self.cell, &mut self.table_copy_bytes, rows)
     }
 
     fn push_text(&mut self, text: &str) {
@@ -282,6 +297,10 @@ fn docx_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                     if st.tables.len() >= MAX_DOCX_TABLE_DEPTH {
                         return Err(corrupt("DOCX table nesting limit exceeded"));
                     }
+                    if !st.tables.is_empty() {
+                        let saved = (std::mem::take(&mut st.row), std::mem::take(&mut st.cell));
+                        st.outer.push(saved);
+                    }
                     st.tables.push(Vec::new());
                 }
                 "tr" => st.row.clear(),
@@ -312,6 +331,13 @@ fn docx_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                         if st.tables.is_empty() {
                             st.blocks.push(Block::Table(rows));
                         } else {
+                            if let Some((row, cell)) = st.outer.pop() {
+                                st.row = row;
+                                st.cell = cell;
+                            }
+                            if !st.cell.is_empty() {
+                                st.append_nested_text("\n")?;
+                            }
                             // A nested table becomes text inside its parent cell.
                             st.append_nested_table(&rows)?;
                         }
@@ -337,6 +363,9 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
     let mut tables: Vec<Vec<Vec<String>>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut cell = String::new();
+    // The enclosing row and cell, saved while a nested table is read.
+    let mut outer: Vec<(Vec<String>, String)> = Vec::new();
+    let mut copied = 0usize;
     loop {
         match reader.read_event().map_err(corrupt)? {
             Event::Start(e) => match e.local_name().as_ref() {
@@ -348,7 +377,15 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                 }
                 "p" => depth_text += 1,
                 "list" => list_depth += 1,
-                "table" => tables.push(Vec::new()),
+                "table" => {
+                    if tables.len() >= MAX_DOCX_TABLE_DEPTH {
+                        return Err(corrupt("ODF table nesting limit exceeded"));
+                    }
+                    if !tables.is_empty() {
+                        outer.push((std::mem::take(&mut row), std::mem::take(&mut cell)));
+                    }
+                    tables.push(Vec::new());
+                }
                 "table-row" => row.clear(),
                 "table-cell" => cell.clear(),
                 "page" if !blocks.is_empty() => blocks.push(Block::PageBreak),
@@ -399,7 +436,16 @@ fn odf_blocks(xml: &str) -> Result<Vec<Block>, OfficeError> {
                 }
                 "table" => {
                     if let Some(rows) = tables.pop() {
-                        blocks.push(Block::Table(rows));
+                        if tables.is_empty() {
+                            blocks.push(Block::Table(rows));
+                        } else if let Some((outer_row, outer_cell)) = outer.pop() {
+                            // A nested table becomes text inside its parent cell.
+                            (row, cell) = (outer_row, outer_cell);
+                            if !cell.is_empty() {
+                                append_budgeted(&mut cell, &mut copied, "\n")?;
+                            }
+                            append_nested_rows(&mut cell, &mut copied, &rows)?;
+                        }
                     }
                 }
                 _ => {}
@@ -721,14 +767,21 @@ fn rtf_text(rtf: &str) -> String {
     // Brace depth at which an ignored group started, if any.
     let mut skip_from: Option<usize> = None;
     let mut depth = 0usize;
+    // Fallback units after each `\uN` (`\ucN`, scoped to its group; default 1).
+    let mut uc = 1usize;
+    let mut outer_uc: Vec<usize> = Vec::new();
     while let Some(c) = chars.next() {
         match c {
-            '{' => depth += 1,
+            '{' => {
+                depth += 1;
+                outer_uc.push(uc);
+            }
             '}' => {
                 if skip_from == Some(depth) {
                     skip_from = None;
                 }
                 depth = depth.saturating_sub(1);
+                uc = outer_uc.pop().unwrap_or(1);
             }
             '\\' => {
                 let mut word = String::new();
@@ -771,6 +824,9 @@ fn rtf_text(rtf: &str) -> String {
                 if chars.peek() == Some(&' ') {
                     chars.next();
                 }
+                if word == "uc" {
+                    uc = param.parse().unwrap_or(1);
+                }
                 if SKIP_GROUPS.contains(&word.as_str()) && skip_from.is_none() {
                     skip_from = Some(depth);
                 }
@@ -786,9 +842,28 @@ fn rtf_text(rtf: &str) -> String {
                             {
                                 out.push(ch);
                             }
-                            // Skip the plain-text fallback that follows a Unicode escape.
-                            if chars.peek().is_some_and(|c| !matches!(c, '\\' | '{' | '}')) {
-                                chars.next();
+                            // Skip the `\ucN` fallback units that follow a Unicode
+                            // escape: each is one character, one `\'hh` escape (what
+                            // Word writes) or one escaped symbol such as `\{`.
+                            // `\uc0` means there is none.
+                            for _ in 0..uc {
+                                match chars.peek() {
+                                    Some('\\') => {
+                                        let mut ahead = chars.clone();
+                                        ahead.next();
+                                        let len = match ahead.peek() {
+                                            Some('\'') => 4,
+                                            Some(c) if !c.is_ascii_alphabetic() => 2,
+                                            // A control word ends the fallback.
+                                            _ => break,
+                                        };
+                                        chars.by_ref().take(len).for_each(drop);
+                                    }
+                                    Some('{' | '}') | None => break,
+                                    Some(_) => {
+                                        chars.next();
+                                    }
+                                }
                             }
                         }
                         _ => {}
@@ -1127,6 +1202,54 @@ mod tests {
     }
 
     #[test]
+    fn docx_nested_table_keeps_outer_cells() {
+        let xml = r#"<w:document xmlns:w="w"><w:body><w:tbl><w:tr>
+<w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>
+<w:tc><w:p><w:r><w:t>before</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>x</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>y</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc>
+<w:tc><w:p><w:r><w:t>C</w:t></w:r></w:p></w:tc>
+</w:tr></w:tbl></w:body></w:document>"#;
+        assert_eq!(
+            docx_blocks(xml).expect("parse"),
+            vec![Block::Table(vec![vec![
+                "A".into(),
+                "before\nx | y".into(),
+                "C".into()
+            ]])]
+        );
+    }
+
+    #[test]
+    fn odf_nested_table_keeps_outer_cells() {
+        let xml = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text>
+<table:table><table:table-row>
+<table:table-cell><text:p>A</text:p></table:table-cell>
+<table:table-cell><text:p>before</text:p><table:table><table:table-row><table:table-cell><text:p>x</text:p></table:table-cell><table:table-cell><text:p>y</text:p></table:table-cell></table:table-row></table:table></table:table-cell>
+<table:table-cell><text:p>C</text:p></table:table-cell>
+</table:table-row></table:table>
+</office:text></office:body></office:document-content>"#;
+        assert_eq!(
+            odf_blocks(xml).expect("parse"),
+            vec![Block::Table(vec![vec![
+                "A".into(),
+                "before\nx | y".into(),
+                "C".into()
+            ]])]
+        );
+    }
+
+    #[test]
+    fn odf_nested_payload_hits_copy_budget_before_copying() {
+        let xml = format!(
+            "{}<text:p>{}</text:p>{}",
+            "<table:table><table:table-row><table:table-cell>".repeat(18),
+            "x".repeat(4 << 20),
+            "</table:table-cell></table:table-row></table:table>".repeat(18)
+        );
+        assert!(matches!(odf_blocks(&xml),
+            Err(OfficeError::Corrupt(message)) if message.contains("copy limit")));
+    }
+
+    #[test]
     fn odf_reads_headings_spaces_and_tables() {
         let xml = r#"<office:document-content xmlns:office="o" xmlns:text="t" xmlns:table="b"><office:body><office:text>
 <text:h text:outline-level="2">Intro</text:h><text:p>a<text:s text:c="2"/>b</text:p>
@@ -1214,6 +1337,24 @@ mod tests {
         let text = rtf_text(rtf);
         assert!(text.starts_with("Hello world\ncafé €"), "{text:?}");
         assert!(!text.contains("Arial"));
+    }
+
+    #[test]
+    fn rtf_word_unicode_fallbacks_are_skipped() {
+        // Word writes each non-ASCII letter as \uN followed by a \'hh fallback.
+        let rtf = r"{\rtf1\ansi\ansicpg1251\uc1 \u1055\'cf\u1088\'f0\u1080\'e8 \u1513\'f9!}";
+        assert_eq!(rtf_text(rtf), "При ש!");
+    }
+
+    #[test]
+    fn rtf_fallback_count_follows_uc_and_its_group() {
+        // `\uc0` means no fallback, so the hex escape is real text.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc0\u945\'42}"), "αB");
+        // `\ucN` is scoped to its group and restored when the group ends.
+        let rtf = r"{\uc2\u945ab{\uc0\u946\'43}\u947xyZ}";
+        assert_eq!(rtf_text(rtf), "αβCγZ");
+        // An escaped symbol such as `\{` is one whole fallback unit.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc2\u945\'61\{Z}"), "αZ");
     }
 
     #[test]
