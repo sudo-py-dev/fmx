@@ -716,10 +716,18 @@ pub(crate) fn html_blocks(html: &str) -> Vec<Block> {
                 flush_text(&mut text, &mut heading, in_item, &mut blocks);
                 heading = h[1..].parse::<u8>().ok().map(|n| n.clamp(1, 4));
             }
+            // A heading in a cell still ends a word: `<h2>A</h2><h2>B</h2>` is "A B".
+            (h, _)
+                if in_table
+                    && h.len() == 2
+                    && h.starts_with('h')
+                    && h[1..].parse::<u8>().is_ok() =>
+            {
+                text.push(' ');
+                heading = None;
+            }
             (h, true) if h.len() == 2 && h.starts_with('h') && h[1..].parse::<u8>().is_ok() => {
-                if !in_table {
-                    flush_text(&mut text, &mut heading, in_item, &mut blocks);
-                }
+                flush_text(&mut text, &mut heading, in_item, &mut blocks);
                 // An empty heading must not turn the next paragraph into one.
                 heading = None;
             }
@@ -788,6 +796,42 @@ fn rtf_codepage(n: u32) -> Option<&'static encoding_rs::Encoding> {
     encoding_rs::Encoding::for_label(label.as_bytes())
 }
 
+/// RTF control words that stand for one character.
+const RTF_SYMBOLS: &[(&str, char)] = &[
+    ("lquote", '\u{2018}'),
+    ("rquote", '\u{2019}'),
+    ("ldblquote", '\u{201C}'),
+    ("rdblquote", '\u{201D}'),
+    ("endash", '\u{2013}'),
+    ("emdash", '\u{2014}'),
+    ("bullet", '\u{2022}'),
+];
+
+fn rtf_symbol(word: &str) -> Option<char> {
+    RTF_SYMBOLS
+        .iter()
+        .find(|(w, _)| *w == word)
+        .map(|(_, c)| *c)
+}
+
+/// Whether the last `\'hh` byte read is the lead byte of a double-byte
+/// character whose trail byte is still to come. Only East Asian code pages
+/// have trail bytes that can be plain ASCII letters.
+fn awaits_trail_byte(bytes: &[u8], codepage: &'static encoding_rs::Encoding) -> bool {
+    let is_lead: fn(u8) -> bool = if codepage == encoding_rs::SHIFT_JIS {
+        |b| matches!(b, 0x81..=0x9F | 0xE0..=0xFC)
+    } else if [encoding_rs::GBK, encoding_rs::EUC_KR, encoding_rs::BIG5].contains(&codepage) {
+        |b| matches!(b, 0x81..=0xFE)
+    } else {
+        return false;
+    };
+    let mut i = 0;
+    while i < bytes.len() {
+        i += if is_lead(bytes[i]) { 2 } else { 1 };
+    }
+    i > bytes.len()
+}
+
 /// Decodes the `\'hh` bytes read so far, so multi-byte characters stay whole.
 fn flush_rtf_bytes(
     out: &mut String,
@@ -815,8 +859,18 @@ fn rtf_text(rtf: &str) -> String {
     let mut codepage = encoding_rs::WINDOWS_1252;
     let mut bytes: Vec<u8> = Vec::new();
     while let Some(c) = chars.next() {
-        // Consecutive hex escapes form one character in multi-byte code pages.
-        if !(c == '\\' && chars.peek() == Some(&'\'')) {
+        // An escaped lead byte may be followed by a plain ASCII trail byte
+        // (`\'83n` is one Shift-JIS character); it joins the pending bytes.
+        if matches!(c, '\x40'..='\x7E')
+            && !matches!(c, '\\' | '{' | '}')
+            && awaits_trail_byte(&bytes, codepage)
+        {
+            bytes.push(c as u8);
+            continue;
+        }
+        // Consecutive hex escapes form one character in multi-byte code
+        // pages, and source line breaks are not text, so neither splits them.
+        if !(c == '\\' && chars.peek() == Some(&'\'')) && !matches!(c, '\r' | '\n') {
             flush_rtf_bytes(&mut out, &mut bytes, codepage);
         }
         match c {
@@ -891,13 +945,9 @@ fn rtf_text(rtf: &str) -> String {
                     match word.as_str() {
                         "par" | "line" => out.push('\n'),
                         "tab" => out.push('\t'),
-                        "lquote" => out.push('\u{2018}'),
-                        "rquote" => out.push('\u{2019}'),
-                        "ldblquote" => out.push('\u{201C}'),
-                        "rdblquote" => out.push('\u{201D}'),
-                        "endash" => out.push('\u{2013}'),
-                        "emdash" => out.push('\u{2014}'),
-                        "bullet" => out.push('\u{2022}'),
+                        symbol if rtf_symbol(symbol).is_some() => {
+                            out.extend(rtf_symbol(symbol));
+                        }
                         "u" => {
                             if let Some(ch) = param
                                 .parse::<i32>()
@@ -908,8 +958,8 @@ fn rtf_text(rtf: &str) -> String {
                             }
                             // Skip the `\ucN` fallback units that follow a Unicode
                             // escape: each is one character, one `\'hh` escape (what
-                            // Word writes) or one escaped symbol such as `\{`.
-                            // `\uc0` means there is none.
+                            // Word writes), one escaped symbol such as `\{`, or one
+                            // symbol word such as `\bullet`. `\uc0` means there is none.
                             for _ in 0..uc {
                                 match chars.peek() {
                                     Some('\\') => {
@@ -918,8 +968,22 @@ fn rtf_text(rtf: &str) -> String {
                                         let len = match ahead.peek() {
                                             Some('\'') => 4,
                                             Some(c) if !c.is_ascii_alphabetic() => 2,
-                                            // A control word ends the fallback.
-                                            _ => break,
+                                            _ => {
+                                                let word: String = ahead
+                                                    .by_ref()
+                                                    .take_while(char::is_ascii_alphabetic)
+                                                    .collect();
+                                                // Other control words, such as `\par`
+                                                // or formatting, end the fallback.
+                                                if rtf_symbol(&word).is_none() {
+                                                    break;
+                                                }
+                                                // The backslash, the word, and the space
+                                                // that delimits it (`take_while` ate it).
+                                                let delimiter =
+                                                    chars.clone().nth(1 + word.len()) == Some(' ');
+                                                1 + word.len() + usize::from(delimiter)
+                                            }
                                         };
                                         chars.by_ref().take(len).for_each(drop);
                                     }
@@ -1444,6 +1508,11 @@ mod tests {
                 body(),
             ]
         );
+        // Headings in one cell keep a word break between them.
+        assert_eq!(
+            html_blocks("<table><tr><td><h2>Name</h2><h2>Value</h2></td></tr></table>"),
+            vec![Block::Table(vec![vec!["Name Value".into()]])]
+        );
         // Markup inside a heading still keeps it a heading.
         assert_eq!(
             html_blocks("<h3><span>Title</span></h3><p>Body</p>"),
@@ -1475,6 +1544,13 @@ mod tests {
         assert_eq!(rtf_text(rtf), "αβCγZ");
         // An escaped symbol such as `\{` is one whole fallback unit.
         assert_eq!(rtf_text(r"{\rtf1\ansi\uc2\u945\'61\{Z}"), "αZ");
+        // So is a symbol word: `\bullet` as the fallback prints no second bullet.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc1\u8226\bullet X}"), "•X");
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc1\u8226\bullet\par X}"), "•\nX");
+        // Other control words end the fallback and still apply.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc1\u945\par X}"), "α\nX");
+        // Without a fallback, `\bullet` is text.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\uc0\u8226\bullet X}"), "••X");
     }
 
     #[test]
@@ -1489,6 +1565,16 @@ mod tests {
         assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg1251 \'cf\'f0\'e8}"), "При");
         // Multi-byte code pages: consecutive escapes are one character.
         assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg932 \'82\'a0}"), "あ");
+        // A source line break inside a character doesn't split it.
+        assert_eq!(
+            rtf_text("{\\rtf1\\ansi\\ansicpg65001 \\'e2\n\\'82\\'ac}"),
+            "€"
+        );
+        // An escaped lead byte may take a plain ASCII trail byte.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg932 \'83n}"), "ハ");
+        assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg932 \'83\'6e}"), "ハ");
+        // Single-byte code pages never join a plain letter to an escape.
+        assert_eq!(rtf_text(r"{\rtf1\ansi\ansicpg1251 \'cfn}"), "Пn");
         // No `\ansicpg` means Windows-1252, as Word assumes.
         assert_eq!(rtf_text(r"{\rtf1\ansi caf\'e9\'92s}"), "café’s");
     }
