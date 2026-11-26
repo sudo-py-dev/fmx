@@ -37,6 +37,9 @@ pub const CARET_UP: &str = "\u{E13C}";
 pub const CHECK: &str = "\u{E182}";
 pub const DOTS_THREE_VERTICAL: &str = "\u{E208}";
 pub const CHECK_CIRCLE: &str = "\u{E184}";
+pub const DESKTOP: &str = "\u{E560}";
+pub const PENCIL_SIMPLE: &str = "\u{E3B4}";
+pub const TRASH: &str = "\u{E4A6}";
 pub const CLIPBOARD: &str = "\u{E196}";
 pub const DISC: &str = "\u{E564}";
 pub const EYE: &str = "\u{E220}";
@@ -125,6 +128,9 @@ mod tests {
             CHECK,
             CHECK_CIRCLE,
             CLIPBOARD,
+            DESKTOP,
+            PENCIL_SIMPLE,
+            TRASH,
             DISC,
             EYE,
             DOWNLOAD,

@@ -11,7 +11,7 @@
 //! - `FMX_SCREENSHOT_SEARCH=<text>` types that into the tool search;
 //! - `FMX_SCREENSHOT_SIZE=<width>x<height>` resizes the window;
 //! - `FMX_SCREENSHOT_MENU=<id>` opens that drop-down (e.g. `after_done`, `presets`),
-//!   `save_preset` the dialog that names a new preset, or `image_preset`
+//!   `preset_actions` the first preset card's ⋮ menu, `undo_toast` a toast with Undo, `save_preset` the dialog that names a new preset, or `image_preset`
 //!   Configure Preset for the open image tool;
 //! - `FMX_SCREENSHOT_UPDATE=1` pretends a newer release was found
 //!   (`=downloading:0.4` pretends it is 40 % downloaded).

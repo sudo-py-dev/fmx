@@ -80,6 +80,8 @@ const THUMBNAIL_WIDTH: f32 = 200.0;
 const FILE_TILE: f32 = 32.0;
 /// Only this many files of one batch are probed for their length.
 const MAX_PROBED_FILES: usize = 200;
+/// The widest the editor's presets menu grows; longer names end in "…".
+const PRESET_MENU_WIDTH: f32 = 320.0;
 /// How many extensions the drop zone lists before "…".
 const SHOWN_EXTENSIONS: usize = 10;
 const SHUTDOWN_DELAY: Duration = Duration::from_secs(60);
@@ -274,6 +276,9 @@ pub struct FmxApp {
     category: Category,
     show_favorites: bool,
     preset_dialog: Option<PresetDialog>,
+    /// Presets deleted while their toast's Undo is up: the Undo id, where
+    /// each was, and the preset.
+    deleted_presets: Vec<(u64, usize, settings::Preset)>,
     image_preset_dialog: Option<ImagePresetDialog>,
     /// Whether the selected tool's editor is open (otherwise the tool grid shows).
     in_editor: bool,
@@ -403,6 +408,7 @@ impl FmxApp {
             category: settings.last_tool.category(),
             show_favorites: !settings.favorite_tools.is_empty() || !settings.presets.is_empty(),
             preset_dialog: None,
+            deleted_presets: Vec::new(),
             image_preset_dialog: None,
             in_editor: false,
             search: String::new(),
@@ -482,6 +488,13 @@ impl FmxApp {
             }
             if let Some(tool) = crate::devshot::wants_tool() {
                 app.select_tool(tool);
+            }
+            if crate::devshot::wants_menu("undo_toast") {
+                app.toasts.push_action(
+                    ToastKind::Success,
+                    trf("preset.deleted", &[("name", &"Compress for email")]),
+                    tr("action.undo"),
+                );
             }
             if crate::devshot::wants_menu("save_preset") {
                 app.preset_dialog = Some(PresetDialog {
@@ -685,6 +698,19 @@ impl FmxApp {
         }
     }
 
+    /// Does what a toast's button stands for.
+    fn toast_action(&mut self, id: u64) {
+        if let Some(i) = self
+            .deleted_presets
+            .iter()
+            .position(|(undo, ..)| *undo == id)
+        {
+            let (_, index, preset) = self.deleted_presets.remove(i);
+            self.settings.restore_preset(index, preset);
+            self.presets_changed();
+        }
+    }
+
     /// Opens a preset's tool with its settings, or runs it at once on the files
     /// already added when they all fit it.
     fn use_preset(&mut self, id: u32) {
@@ -699,6 +725,14 @@ impl FmxApp {
             self.in_editor = false;
             return;
         }
+        self.open_preset(id);
+    }
+
+    /// Opens a preset's tool with its settings, without running it.
+    fn open_preset(&mut self, id: u32) {
+        let Some(preset) = self.settings.preset(id).cloned() else {
+            return;
+        };
         self.select_tool(preset.tool);
         let edit = std::mem::take(&mut self.settings.options.edit);
         let photos = std::mem::take(&mut self.settings.options.collage_photos);
@@ -732,15 +766,18 @@ impl FmxApp {
     fn tool_menu(&mut self, ui: &mut egui::Ui, tool: Tool) -> bool {
         let more =
             widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("shortcut.actions"));
-        let popup = egui::Popup::menu(&more).show(|ui| {
+        let popup = card_menu(&more).show(|ui| {
             dir::menu(ui, |ui| {
                 let favorite = self.settings.favorite_tools.contains(&tool);
                 if ui
-                    .button(tr(if favorite {
-                        "favorites.remove"
-                    } else {
-                        "favorites.add"
-                    }))
+                    .button(icons::label(
+                        icons::STAR,
+                        tr(if favorite {
+                            "favorites.remove"
+                        } else {
+                            "favorites.add"
+                        }),
+                    ))
                     .clicked()
                 {
                     self.settings.toggle_favorite(tool);
@@ -752,7 +789,7 @@ impl FmxApp {
                 if ui
                     .add_enabled(
                         self.shortcut_result.is_none(),
-                        egui::Button::new(tr("shortcut.create")),
+                        egui::Button::new(icons::label(icons::DESKTOP, tr("shortcut.create"))),
                     )
                     .clicked()
                 {
@@ -1823,26 +1860,58 @@ impl FmxApp {
     /// Rename and delete for a preset card.
     fn preset_menu(&mut self, ui: &mut egui::Ui, preset: &settings::Preset) -> bool {
         let more =
-            widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("shortcut.actions"));
-        let popup = egui::Popup::menu(&more).show(|ui| {
+            widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("preset.actions"));
+        #[cfg(debug_assertions)]
+        if crate::devshot::wants_menu("preset_actions")
+            && self
+                .settings
+                .presets
+                .first()
+                .is_some_and(|p| p.id == preset.id)
+        {
+            egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&more));
+        }
+        let popup = card_menu(&more).show(|ui| {
             dir::menu(ui, |ui| {
-                if ui.button(tr("preset.rename")).clicked() {
+                if ui
+                    .button(icons::label(icons::SLIDERS, tr("preset.open")))
+                    .on_hover_text(tr("preset.open_hint"))
+                    .clicked()
+                {
+                    self.open_preset(preset.id);
+                    ui.close();
+                }
+                if ui
+                    .button(icons::label(icons::PENCIL_SIMPLE, tr("preset.rename")))
+                    .clicked()
+                {
                     self.preset_dialog = Some(PresetDialog {
                         id: Some(preset.id),
                         name: preset.name.clone(),
                     });
                     ui.close();
                 }
+                ui.separator();
                 if ui
-                    .button(RichText::new(tr("preset.delete")).color(theme::palette(ui).danger))
+                    .button(
+                        RichText::new(icons::label(icons::TRASH, tr("preset.delete")))
+                            .color(theme::palette(ui).danger),
+                    )
                     .clicked()
                 {
-                    self.settings.remove_preset(preset.id);
+                    if let Some((index, removed)) = self.settings.remove_preset(preset.id) {
+                        let undo = self.toasts.push_action(
+                            ToastKind::Success,
+                            trf("preset.deleted", &[("name", &preset.name)]),
+                            tr("action.undo"),
+                        );
+                        // Only the last few toasts stay up to be undone.
+                        if self.deleted_presets.len() == 4 {
+                            self.deleted_presets.remove(0);
+                        }
+                        self.deleted_presets.push((undo, index, removed));
+                    }
                     self.presets_changed();
-                    self.toasts.push(
-                        ToastKind::Success,
-                        trf("preset.deleted", &[("name", &preset.name)]),
-                    );
                     ui.close();
                 }
             })
@@ -1860,27 +1929,12 @@ impl FmxApp {
         }
         egui::Popup::menu(&button).show(|ui| {
             dir::menu(ui, |ui| {
-                let mut picked = None;
-                for preset in &self.settings.presets {
-                    if ui
-                        .button(&preset.name)
-                        .on_hover_text(preset_summary(preset))
-                        .clicked()
-                    {
-                        picked = Some(preset.id);
-                        ui.close();
-                    }
-                }
-                if let Some(id) = picked {
-                    self.use_preset(id);
-                }
-                if !self.settings.presets.is_empty() {
-                    ui.separator();
-                }
+                ui.set_max_width(PRESET_MENU_WIDTH);
+                // Saving is what this menu is always for, so it comes first.
                 if ui
                     .add_enabled(
                         self.tool != Tool::MediaInfo,
-                        egui::Button::new(tr("preset.save")),
+                        egui::Button::new(icons::label(icons::PLUS, tr("preset.save"))),
                     )
                     .clicked()
                 {
@@ -1889,6 +1943,42 @@ impl FmxApp {
                         name: self.tool_title(),
                     });
                     ui.close();
+                }
+                ui.separator();
+                let weak = theme::palette(ui).text_weak;
+                if self.settings.presets.is_empty() {
+                    ui.add(
+                        Label::new(RichText::new(tr("preset.empty")).color(weak).small()).wrap(),
+                    );
+                    return;
+                }
+                // This tool's presets first: they keep the files already added.
+                let mut presets: Vec<_> = self.settings.presets.iter().collect();
+                presets.sort_by_key(|p| p.tool != self.tool);
+                let mut picked = None;
+                for preset in presets {
+                    // The name sits at the start and gives way to "…"; the
+                    // tool sits at the end.
+                    use egui::AtomExt as _;
+                    let name = RichText::new(&preset.name).atom_shrink(true);
+                    let tool = RichText::new(preset.tool.label()).color(weak).small();
+                    let button = if dir::is_rtl() {
+                        egui::Button::new((name, icons::LIGHTNING)).left_text(tool)
+                    } else {
+                        egui::Button::new((icons::LIGHTNING, name)).right_text(tool)
+                    };
+                    let row = ui.add(button.truncate()).on_hover_text(format!(
+                        "{}\n{}",
+                        preset.name,
+                        preset_summary(preset)
+                    ));
+                    if row.clicked() {
+                        picked = Some(preset.id);
+                        ui.close();
+                    }
+                }
+                if let Some(id) = picked {
+                    self.use_preset(id);
                 }
             })
         });
@@ -6089,6 +6179,17 @@ fn preset_summary(preset: &settings::Preset) -> String {
     }
 }
 
+/// A card's ⋮ menu, opening under the button and lined up with its end edge
+/// so it stays over its own card.
+fn card_menu(button: &egui::Response) -> egui::Popup<'_> {
+    let align = if dir::is_rtl() {
+        egui::RectAlign::BOTTOM_START
+    } else {
+        egui::RectAlign::BOTTOM_END
+    };
+    egui::Popup::menu(button).align(align)
+}
+
 /// Whether a preset of `tool` runs on `path` as it is: a file of a kind the tool
 /// takes. Tools that take folders, drives or nothing open their editor instead.
 fn preset_takes(tool: Tool, path: &Path) -> bool {
@@ -7404,7 +7505,9 @@ impl eframe::App for FmxApp {
                 ),
             }
         }
-        self.toasts.show(&ctx);
+        if let Some(id) = self.toasts.show(&ctx) {
+            self.toast_action(id);
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

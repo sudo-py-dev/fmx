@@ -157,8 +157,19 @@ impl Settings {
         }
     }
 
-    pub fn remove_preset(&mut self, id: u32) {
-        self.presets.retain(|p| p.id != id);
+    /// Removes a preset, returning it and where it was so it can be put back.
+    pub fn remove_preset(&mut self, id: u32) -> Option<(usize, Preset)> {
+        let index = self.presets.iter().position(|p| p.id == id)?;
+        Some((index, self.presets.remove(index)))
+    }
+
+    /// Puts back a preset [`Self::remove_preset`] took out, at the same place.
+    /// It keeps its id unless a newer preset took it meanwhile.
+    pub fn restore_preset(&mut self, index: usize, mut preset: Preset) {
+        if self.presets.iter().any(|p| p.id == preset.id) {
+            preset.id = self.presets.iter().map(|p| p.id).max().unwrap_or(0) + 1;
+        }
+        self.presets.insert(index.min(self.presets.len()), preset);
     }
 
     /// Normalizes saved settings, including removing duplicate favorites while
@@ -301,8 +312,12 @@ mod tests {
         restored.rename_preset(web, "Blog");
         restored.rename_preset(web, "   ");
         assert_eq!(restored.preset(web).unwrap().name, "Blog");
-        restored.remove_preset(web);
+        let (index, removed) = restored.remove_preset(web).expect("there");
         assert!(restored.preset(web).is_none());
+        // Undo puts it back where it was, with the same id.
+        restored.restore_preset(index, removed.clone());
+        assert_eq!(restored.presets[index], removed);
+        restored.remove_preset(web);
         // A new preset never reuses a live id.
         let next = restored.add_preset("Again", Tool::Record, &Options::default());
         assert!(next > mp3);

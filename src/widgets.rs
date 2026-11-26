@@ -1404,15 +1404,21 @@ struct Toast {
     text: String,
     kind: ToastKind,
     born: Instant,
+    /// A button on the toast, such as "Undo", and the id [`Toasts::show`]
+    /// returns when it is pressed.
+    action: Option<(String, u64)>,
 }
 
 /// Short-lived notifications in the bottom-right corner that fade in and out.
 #[derive(Default)]
 pub struct Toasts {
     items: Vec<Toast>,
+    next_action: u64,
 }
 
 const TOAST_LIFETIME: Duration = Duration::from_secs(4);
+/// Long enough to notice a mistake and press the toast's button.
+const TOAST_ACTION_LIFETIME: Duration = Duration::from_secs(8);
 const TOAST_ERROR_LIFETIME: Duration = Duration::from_secs(8);
 const TOAST_FADE: f32 = 0.25;
 const MAX_TOASTS: usize = 4;
@@ -1426,21 +1432,42 @@ impl Toasts {
             text: text.into(),
             kind,
             born: Instant::now(),
+            action: None,
         });
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
-        let lifetime = |kind| {
-            if kind == ToastKind::Error {
+    /// Shows a toast with a button, such as "Undo". Returns the id that
+    /// [`Toasts::show`] gives back when the button is pressed.
+    pub fn push_action(
+        &mut self,
+        kind: ToastKind,
+        text: impl Into<String>,
+        action: impl Into<String>,
+    ) -> u64 {
+        self.push(kind, text);
+        self.next_action += 1;
+        if let Some(toast) = self.items.last_mut() {
+            toast.action = Some((action.into(), self.next_action));
+        }
+        self.next_action
+    }
+
+    /// Draws the toasts. Returns the id of the toast button pressed, if any.
+    pub fn show(&mut self, ctx: &egui::Context) -> Option<u64> {
+        let lifetime = |t: &Toast| {
+            if t.action.is_some() {
+                TOAST_ACTION_LIFETIME
+            } else if t.kind == ToastKind::Error {
                 TOAST_ERROR_LIFETIME
             } else {
                 TOAST_LIFETIME
             }
         };
-        self.items.retain(|t| t.born.elapsed() < lifetime(t.kind));
+        self.items.retain(|t| t.born.elapsed() < lifetime(t));
         if self.items.is_empty() {
-            return;
+            return None;
         }
+        let mut acted = None;
         let reduce_motion = ctx.global_style().animation_time == 0.0;
         let mut dismissed = None;
         egui::Area::new(Id::unique("toasts"))
@@ -1458,7 +1485,7 @@ impl Toasts {
                 let p = theme::palette(ui);
                 for (i, toast) in self.items.iter().enumerate() {
                     let age = toast.born.elapsed().as_secs_f32();
-                    let left = lifetime(toast.kind).as_secs_f32() - age;
+                    let left = lifetime(toast).as_secs_f32() - age;
                     let alpha = if reduce_motion {
                         1.0
                     } else {
@@ -1478,9 +1505,28 @@ impl Toasts {
                         let response = frame
                             .show(ui, |ui| {
                                 ui.set_max_width(380.0);
+                                // The icon at the start and the button at the end,
+                                // in either reading direction; a row from the
+                                // right would stretch the toast to its widest.
                                 ui.horizontal(|ui| {
-                                    ui.colored_label(accent, egui::RichText::new(icon).size(18.0));
-                                    ui.label(&toast.text);
+                                    let mut action = |ui: &mut egui::Ui| {
+                                        if let Some((label, id)) = &toast.action
+                                            && button(ui, None, label, Kind::Secondary, Size::Small)
+                                                .clicked()
+                                        {
+                                            acted = Some((i, *id));
+                                        }
+                                    };
+                                    let mark = egui::RichText::new(icon).size(18.0);
+                                    if dir::is_rtl() {
+                                        action(ui);
+                                        ui.label(&toast.text);
+                                        ui.colored_label(accent, mark);
+                                    } else {
+                                        ui.colored_label(accent, mark);
+                                        ui.label(&toast.text);
+                                        action(ui);
+                                    }
                                 });
                             })
                             .response
@@ -1491,10 +1537,14 @@ impl Toasts {
                     });
                 }
             });
+        if let Some((i, _)) = acted {
+            dismissed = Some(i);
+        }
         if let Some(i) = dismissed {
             self.items.remove(i);
         }
         ctx.request_repaint_after(Duration::from_millis(16));
+        acted.map(|(_, id)| id)
     }
 }
 
