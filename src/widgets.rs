@@ -19,7 +19,7 @@ const SEGMENT_HEIGHT: f32 = 28.0;
 const SEGMENT_PAD: f32 = 12.0;
 /// The track's margin around a toggle group's items.
 const SEGMENT_INSET: f32 = 3.0;
-const STEP_BADGE: f32 = 28.0;
+pub const STEP_BADGE: f32 = 28.0;
 
 const FOCUS_RING: f32 = 2.0;
 const ICON_GAP: f32 = 7.0;
@@ -152,6 +152,49 @@ pub fn field_clear_button(ui: &mut egui::Ui, rect: Rect, label: &str) -> Respons
     response.on_hover_text(label)
 }
 
+/// The round ⋮ button that opens an item's menu. It keeps a soft fill so it
+/// is easy to find on a card, darkens on hover, and stays pressed while its
+/// menu is open. The dots are drawn, so they are crisper than the font glyph.
+pub fn actions_button(ui: &mut egui::Ui, label: &str) -> Response {
+    let p = theme::palette(ui);
+    let side = 28.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    if ui.is_rect_visible(rect) {
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+        let id = response.id;
+        let hover = animate(ui, id.with("hover"), response.hovered(), MOTION);
+        let press = animate(
+            ui,
+            id.with("press"),
+            open || response.is_pointer_button_down_on(),
+            MOTION * 0.5,
+        );
+        let fill = mix(
+            mix(p.control, p.control_hover, hover),
+            p.control_pressed,
+            press,
+        );
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let center = rect.center();
+        painter.circle_filled(center, side / 2.0, fill);
+        if response.has_focus() {
+            painter.circle_stroke(
+                center,
+                side / 2.0 + FOCUS_RING,
+                Stroke::new(FOCUS_RING, p.accent.gamma_multiply(0.5)),
+            );
+        }
+        let color = mix(p.text_weak, p.text, hover.max(press));
+        for dy in [-5.0, 0.0, 5.0] {
+            painter.circle_filled(center + Vec2::new(0.0, dy), 1.8, color);
+        }
+    }
+    response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(label)
+}
+
 /// A small icon action with an inset highlight and the full click target.
 pub fn compact_icon_button(ui: &mut egui::Ui, icon: &str, label: &str) -> Response {
     let response = button_tinted_inset(ui, Some(icon), None, "", Kind::Ghost, Size::Small, 4.0);
@@ -269,8 +312,24 @@ fn button_tinted_inset(
             enabled && response.is_pointer_button_down_on(),
             MOTION * 0.5,
         );
-        let fill = mix(mix(fills[0], fills[1], hover), fills[2], press);
-        let opacity = if enabled { 1.0 } else { DISABLED_OPACITY };
+        let mut fill = mix(mix(fills[0], fills[1], hover), fills[2], press);
+        // A disabled button turns plain gray with readable text, rather than a
+        // washed-out color that looks broken and is hard to read.
+        let disabled_flat = !enabled && kind != Kind::Ghost;
+        if disabled_flat {
+            fill = p.control;
+        }
+        let text_color = if disabled_flat {
+            p.text_weak
+        } else {
+            text_color
+        };
+        let tint = if disabled_flat { None } else { tint };
+        let opacity = if enabled || disabled_flat {
+            1.0
+        } else {
+            DISABLED_OPACITY
+        };
         let painter = ui.painter().with_clip_rect(ui.clip_rect());
         let stroke = border.map_or(Stroke::NONE, |c| {
             Stroke::new(1.0, c.gamma_multiply(opacity))
@@ -1270,13 +1329,17 @@ pub fn pref_block(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui
     }
 }
 
-/// A numbered step marker: the number in a circle, or a check once the step is complete.
-pub fn step_badge(ui: &mut egui::Ui, number: usize, done: bool) -> Response {
+/// A numbered step marker: the number in a circle, or a check once the step is
+/// complete. A step that has to wait for an earlier one (`ready` is false) is
+/// gray, so the accent marks only the step to do now.
+pub fn step_badge(ui: &mut egui::Ui, number: usize, done: bool, ready: bool) -> Response {
     let p = theme::palette(ui);
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(STEP_BADGE), Sense::hover());
     if ui.is_rect_visible(rect) {
         let t = animate(ui, response.id.with("done"), done, MOTION * 2.0);
-        let fill = mix(p.accent, p.success, t);
+        let r = animate(ui, response.id.with("ready"), ready || done, MOTION * 2.0);
+        let fill = mix(mix(p.control_pressed, p.accent, r), p.success, t);
+        let ink = mix(p.text_weak, p.on_accent, r.max(t));
         let painter = ui.painter();
         painter.circle_filled(rect.center(), STEP_BADGE / 2.0, fill);
         let number = number.to_string();
@@ -1285,13 +1348,7 @@ pub fn step_badge(ui: &mut egui::Ui, number: usize, done: bool) -> Response {
         } else {
             (number.as_str(), FontId::proportional(14.5))
         };
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            font,
-            p.on_accent,
-        );
+        painter.text(rect.center(), Align2::CENTER_CENTER, text, font, ink);
     }
     response
 }
@@ -1319,13 +1376,27 @@ pub fn drop_zone(
             MOTION,
         );
         let painter = ui.painter();
-        painter.rect(
+        // At rest a quiet dashed outline, the usual sign of a drop target;
+        // the accent comes in only while it can take something.
+        painter.rect_filled(
             rect,
             CornerRadius::same(12),
-            mix(p.sunken, p.accent, 0.03 + hover * 0.07),
-            Stroke::new(1.0 + hover, mix(p.border, p.accent, 0.35 + hover * 0.65)),
-            StrokeKind::Inside,
+            mix(p.sunken, p.accent, hover * 0.08),
         );
+        let outline = rounded_outline(rect.shrink(1.0), 12.0);
+        if hover > 0.5 {
+            painter.add(egui::Shape::closed_line(
+                outline,
+                Stroke::new(2.0, mix(p.border, p.accent, hover)),
+            ));
+        } else {
+            painter.extend(egui::Shape::dashed_line(
+                &outline,
+                Stroke::new(1.5, mix(ink(ui).gamma_multiply(0.28), p.accent, hover)),
+                7.0,
+                5.0,
+            ));
+        }
         let c = rect.center();
         let lift = -3.0 * hover;
         painter.circle_filled(
@@ -1371,6 +1442,26 @@ pub fn drop_zone(
         }
     }
     response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// The points around a rounded rectangle, closed back to the first one.
+fn rounded_outline(rect: Rect, radius: f32) -> Vec<Pos2> {
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let corners = [
+        (Pos2::new(rect.right() - r, rect.top() + r), -90.0_f32),
+        (Pos2::new(rect.right() - r, rect.bottom() - r), 0.0),
+        (Pos2::new(rect.left() + r, rect.bottom() - r), 90.0),
+        (Pos2::new(rect.left() + r, rect.top() + r), 180.0),
+    ];
+    let mut points = Vec::with_capacity(4 * 9 + 1);
+    for (center, start) in corners {
+        for i in 0..=8 {
+            let a = (start + 90.0 * i as f32 / 8.0).to_radians();
+            points.push(center + Vec2::new(a.cos(), a.sin()) * r);
+        }
+    }
+    points.push(points[0]);
+    points
 }
 
 /// A centered icon with a message, for empty lists.

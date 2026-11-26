@@ -64,6 +64,9 @@ const PANEL_GAP: f32 = 14.0;
 /// Share of the width the file panel gets, beside settings or a video preview.
 const FILES_SHARE: f32 = 0.46;
 const FILES_SHARE_BESIDE_PREVIEW: f32 = 0.34;
+/// The narrowest the files column gets, so its add buttons fit on one row
+/// in every language instead of pushing the settings column off screen.
+const FILES_MIN_WIDTH: f32 = 330.0;
 const MIN_DROP_HEIGHT: f32 = 120.0;
 /// Sizes used when the panels are stacked on narrow windows.
 const STACKED_DROP_HEIGHT: f32 = 170.0;
@@ -764,8 +767,7 @@ impl FmxApp {
 
     /// Favorite and desktop shortcut actions shared by every tool card and editor.
     fn tool_menu(&mut self, ui: &mut egui::Ui, tool: Tool) -> bool {
-        let more =
-            widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("shortcut.actions"));
+        let more = widgets::actions_button(ui, tr("shortcut.actions"));
         let popup = card_menu(&more).show(|ui| {
             dir::menu(ui, |ui| {
                 let favorite = self.settings.favorite_tools.contains(&tool);
@@ -1101,12 +1103,17 @@ impl FmxApp {
                     None
                 }
             }
-            InputKind::Device => self
-                .settings
-                .cd_device
-                .trim()
-                .is_empty()
-                .then(|| tr("need.device").to_owned()),
+            InputKind::Device => {
+                let device = self.settings.cd_device.trim();
+                if device.is_empty() {
+                    Some(tr("need.device").to_owned())
+                } else if device.starts_with("/dev/") && !Path::new(device).exists() {
+                    // Nothing to read: don't offer a job that can only fail.
+                    Some(trf("need.drive_missing", &[("path", &device)]))
+                } else {
+                    None
+                }
+            }
             InputKind::Capture => None,
             _ => {
                 if let Some(missing) = self.files.iter().find(|p| !p.exists()) {
@@ -1859,8 +1866,7 @@ impl FmxApp {
 
     /// Rename and delete for a preset card.
     fn preset_menu(&mut self, ui: &mut egui::Ui, preset: &settings::Preset) -> bool {
-        let more =
-            widgets::compact_icon_button(ui, icons::DOTS_THREE_VERTICAL, tr("preset.actions"));
+        let more = widgets::actions_button(ui, tr("preset.actions"));
         #[cfg(debug_assertions)]
         if crate::devshot::wants_menu("preset_actions")
             && self
@@ -2282,18 +2288,26 @@ impl FmxApp {
         // A capture has nothing to add, so its first step is never "done".
         let input_done =
             self.tool.input_kind() != InputKind::Capture && self.input_missing().is_none();
+        // Settings wait for the input, except for captures, which have none.
+        let settings_ready = input_done || self.tool.input_kind() == InputKind::Capture;
         let size = ui.available_size();
         match self.settings_heading() {
-            None if size.y >= PANEL_MIN_HEIGHT => {
-                step_panel(ui, size, 1, input_done, title, &help, |ui| {
+            None if size.y >= PANEL_MIN_HEIGHT => step_panel(
+                ui,
+                size,
+                1,
+                StepState::first(input_done),
+                title,
+                &help,
+                |ui| {
                     self.input_ui(ui, true);
-                })
-            }
+                },
+            ),
             None => {
                 theme::page_scroll()
                     .id_salt("editor_stacked")
                     .show(ui, |ui| {
-                        step(ui, 1, input_done, title, &help, |ui| {
+                        step(ui, 1, StepState::first(input_done), title, &help, |ui| {
                             self.input_ui(ui, false)
                         });
                     });
@@ -2309,20 +2323,28 @@ impl FmxApp {
                 } else {
                     FILES_SHARE
                 };
-                let left = ((size.x - PANEL_GAP) * share).floor();
+                let left = ((size.x - PANEL_GAP) * share).floor().max(FILES_MIN_WIDTH);
                 let right = size.x - PANEL_GAP - left;
                 ui.horizontal_top(|ui| {
                     let files = egui::vec2(left, size.y);
-                    step_panel(ui, files, 1, input_done, title, &help, |ui| {
-                        self.input_ui(ui, true);
-                    });
+                    step_panel(
+                        ui,
+                        files,
+                        1,
+                        StepState::first(input_done),
+                        title,
+                        &help,
+                        |ui| {
+                            self.input_ui(ui, true);
+                        },
+                    );
                     ui.add_space(PANEL_GAP - ui.spacing().item_spacing.x);
                     let settings = egui::vec2(right, size.y);
                     step_panel(
                         ui,
                         settings,
                         2,
-                        false,
+                        StepState::later(settings_ready),
                         settings_title,
                         settings_help,
                         |ui| {
@@ -2345,13 +2367,20 @@ impl FmxApp {
                     .id_salt("editor_stacked")
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        step(ui, 1, input_done, title, &help, |ui| {
+                        step(ui, 1, StepState::first(input_done), title, &help, |ui| {
                             self.input_ui(ui, false)
                         });
                         ui.add_space(12.0);
-                        step(ui, 2, false, settings_title, settings_help, |ui| {
-                            self.settings_step(ui, STACKED_PREVIEW_HEIGHT);
-                        });
+                        step(
+                            ui,
+                            2,
+                            StepState::later(settings_ready),
+                            settings_title,
+                            settings_help,
+                            |ui| {
+                                self.settings_step(ui, STACKED_PREVIEW_HEIGHT);
+                            },
+                        );
                     });
             }
         }
@@ -2659,7 +2688,8 @@ impl FmxApp {
                         ui,
                         icons::EYE,
                         tr("preview.add_file_first"),
-                        max_height.min(240.0),
+                        // Short, so the settings under it still fit.
+                        max_height.min(150.0),
                     );
                 });
             return;
@@ -5616,18 +5646,40 @@ fn slot_roles(tool: Tool) -> Option<[&'static str; 2]> {
     }
 }
 
+/// Where a step of the task editor stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StepState {
+    /// Waiting for an earlier step.
+    Waiting,
+    /// The step to do now.
+    Current,
+    Done,
+}
+
+impl StepState {
+    /// The first step: done, or the one to do now.
+    fn first(done: bool) -> Self {
+        if done { Self::Done } else { Self::Current }
+    }
+
+    /// A later step, which waits until it can be done.
+    fn later(ready: bool) -> Self {
+        if ready { Self::Current } else { Self::Waiting }
+    }
+}
+
 /// One numbered step of the task editor: a card with a badge, a title and a
 /// short explanation above its controls.
 fn step(
     ui: &mut egui::Ui,
     number: usize,
-    done: bool,
+    state: StepState,
     title: &str,
     help: &str,
     content: impl FnOnce(&mut egui::Ui),
 ) {
     card(ui, |ui| {
-        step_header(ui, number, done, title, help);
+        step_header(ui, number, state, title, help);
         ui.add_space(12.0);
         content(ui);
     });
@@ -5638,7 +5690,7 @@ fn step_panel(
     ui: &mut egui::Ui,
     size: egui::Vec2,
     number: usize,
-    done: bool,
+    state: StepState,
     title: &str,
     help: &str,
     content: impl FnOnce(&mut egui::Ui),
@@ -5652,7 +5704,7 @@ fn step_panel(
             .show(ui, |ui| {
                 ui.set_min_size(inner);
                 ui.set_max_size(inner);
-                step_header(ui, number, done, title, help);
+                step_header(ui, number, state, title, help);
                 ui.add_space(10.0);
                 content(ui);
             });
@@ -5660,16 +5712,28 @@ fn step_panel(
 }
 
 /// A step's badge, title and one-line explanation.
-fn step_header(ui: &mut egui::Ui, number: usize, done: bool, title: &str, help: &str) {
+fn step_header(ui: &mut egui::Ui, number: usize, state: StepState, title: &str, help: &str) {
     let p = theme::palette(ui);
+    // The text gets exactly the width beside the badge, so a long line wraps
+    // instead of pushing the card wider than its column.
+    let width = ui.available_width();
     ui.horizontal(|ui| {
-        widgets::step_badge(ui, number, done);
+        ui.set_max_width(width);
+        widgets::step_badge(
+            ui,
+            number,
+            state == StepState::Done,
+            state != StepState::Waiting,
+        );
         ui.add_space(4.0);
+        let text_width = (width - widgets::STEP_BADGE - 4.0 - ui.spacing().item_spacing.x).max(1.0);
         dir::vertical(ui, |ui| {
+            ui.set_max_width(text_width);
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(RichText::new(title).strong().size(16.5));
+            // Wrapped, so a long line in a narrow card never pushes it wider.
+            ui.add(Label::new(RichText::new(title).strong().size(16.5)).wrap());
             if !help.is_empty() {
-                ui.label(RichText::new(help).color(p.text_weak));
+                ui.add(Label::new(RichText::new(help).color(p.text_weak)).wrap());
             }
         });
     });
